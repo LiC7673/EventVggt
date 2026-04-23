@@ -1,0 +1,64 @@
+pretrained: ./ckpt/model.pt
+
+seed: 0
+benchmark: false
+mixed_precision: bf16
+
+batch_size: 1
+accum_iter: 1
+epochs: 10
+start_epoch: 0
+lr: 1e-4
+min_lr: 1e-6
+warmup_epochs: 0.2
+weight_decay: 0.05
+clip_grad: 1.0
+
+num_workers: 4
+pin_mem: true
+print_freq: 10
+log_freq: 10
+save_every_steps: 500
+eval_every_steps: 500  # Run test evaluation every N steps (0 to disable)
+
+save_dir: ./checkpoints
+exp_name: finetune_no_event_rgb
+logdir: ${save_dir}/${exp_name}/logs
+output_dir: ${save_dir}/${exp_name}
+
+model:
+  img_size: 518
+  patch_size: 14
+  embed_dim: 1024
+
+train:
+  unfreeze_heads: true
+  unfreeze_aggregator_blocks: true
+
+loss:
+  pose_weight: 0.1
+  depth_weight: 1.0
+  points_weight: 1.0
+  align_depth_scale: true
+  depth_min: 1.0e-6
+  depth_max: null
+
+vis:
+  save_every_steps: 200
+  frame_index: 0
+  sample_index: 0
+
+data:
+  root: /data1/lzh/dataset/reflective_raw
+  num_views: 4
+  resolution: [518, 392]
+  fps: 120
+  scene_names: null
+  initial_scene_idx: 0
+  active_scene_count: 5  # Increase to train on multiple scenes
+  test_frame_count: 10  # Last N frames used for test set, rest for train
+
+hydra:
+  verbose: false
+  run:
+    dir: ${output_dir}
