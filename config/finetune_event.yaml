@@ -40,6 +40,7 @@ loss:
   pose_weight: 1.0
   depth_weight: 1.0
   points_weight: 1.0
+  points_loss_type: "cd"  # Options: "l1" or "cd" (Chamfer Distance)
   align_depth_scale: false
   depth_min: 1.0e-6
   depth_max: null
@@ -51,7 +52,7 @@ vis:
 
 data:
   root: /data1/lzh/dataset/reflective_raw
-  num_views: 4
+  num_views: 10
   resolution: [518, 392]
   fps: 120
   scene_names: null

@@ -285,7 +285,7 @@ def depth_to_camera_points(depth: torch.Tensor, intrinsics: torch.Tensor) -> tor
     _, _, height, width = depth.shape
     device = depth.device
     dtype = depth.dtype
-    print(depth.dtype)
+    
     ys, xs = torch.meshgrid(
         torch.arange(height, device=device, dtype=dtype),
         torch.arange(width, device=device, dtype=dtype),
@@ -302,13 +302,9 @@ def depth_to_camera_points(depth: torch.Tensor, intrinsics: torch.Tensor) -> tor
     x_cam = (xs - cx) * depth / fx.clamp_min(1e-6)
     y_cam = (ys - cy) * depth / fy.clamp_min(1e-6)
     z_cam = depth
-    # cam_points = torch.stack([x_cam, y_cam, z_cam], dim=-1)
-    pts_cam = np.stack(([x_cam, y_cam, z_cam], np.ones_like(z_cam)), axis=-1).reshape(-1, 4)
     
-    # 4. 剔除背景点 (Z <= 0 的点)
-    valid_mask = Z.reshape(-1) > 0.0
-    valid_pts_cam = pts_cam[valid_mask]
-    return valid_pts_cam
+    cam_points = torch.stack([x_cam, y_cam, z_cam], dim=-1)
+    return cam_points
 
 
 def align_depth_scale(
@@ -418,6 +414,7 @@ class EventSupervisedLoss(nn.Module):
         depth_min: float = 1e-6,
         depth_max: Optional[float] = None,
         align_depth_scale_enabled: bool = False,
+        points_loss_type: str = "cd",  # "l1" or "cd" (Chamfer Distance)
     ):
         super().__init__()
         self.pose_weight = pose_weight
@@ -427,12 +424,16 @@ class EventSupervisedLoss(nn.Module):
         self.depth_min = depth_min
         self.depth_max = depth_max
         self.align_depth_scale_enabled = align_depth_scale_enabled
+        self.points_loss_type = points_loss_type.lower()
+        
+        if self.points_loss_type not in ["l1", "cd"]:
+            raise ValueError(f"points_loss_type must be 'l1' or 'cd', got '{self.points_loss_type}'")
 
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]) -> Tuple[torch.Tensor, Dict[str, float], Dict[str, torch.Tensor]]:
         pred = model_output.ress
 
         depth_pred = torch.stack([res["depth"] for res in pred], dim=1).squeeze(-1)
-        points_pred = torch.stack([res["pts3d_in_other_view"] for res in pred], dim=1)
+        points_pred_raw = torch.stack([res["pts3d_in_other_view"] for res in pred], dim=1)
         pose_pred = torch.stack([res["camera_pose"] for res in pred], dim=1)
 
         depth_gt = stack_view_field(views, "depthmap").to(device=depth_pred.device, dtype=depth_pred.dtype)
@@ -446,8 +447,36 @@ class EventSupervisedLoss(nn.Module):
             depth_gt_aligned = depth_gt
             depth_scales = depth_gt.new_ones(depth_gt.shape[:2])
 
+        # ============ 计算对齐后的 pose 矩阵 ============
+        # 首先计算 pose encoding 的对齐
+        pose_gt = camera_pose_to_pose_encoding(
+            pose_matrix_gt,
+            intrinsics_gt,
+            image_size_hw=(depth_gt.shape[-2], depth_gt.shape[-1]),
+        ).to(device=pose_pred.device, dtype=pose_pred.dtype)
+        
+        # 计算第一帧的pose对齐矩阵
+        pose_first_pred = pose_pred[:, 0:1, :]  # [B, 1, D]
+        pose_first_gt = pose_gt[:, 0:1, :]      # [B, 1, D]
+        pose_alignment = pose_first_gt - pose_first_pred  # [B, 1, D]
+        
+        # 对 GT pose matrix 进行对齐（用于计算对齐后的点云）
+        # 这里使用一个简单的对齐策略：对平移部分进行调整
+        pose_matrix_gt_aligned = pose_matrix_gt.clone()
+        
+        # 计算第一帧的平移对齐向量（从pose encoding的差异推断）
+        # pose encoding 包含了位置信息，我们用这个对齐向量来调整 GT pose 矩阵的平移部分
+        if pose_alignment.shape[-1] >= 3:
+            # 从对齐编码中提取平移信息（前3个通常对应位置）
+            trans_alignment = pose_alignment[:, 0, :3]  # [B, 3]
+            pose_matrix_gt_aligned[:, 1:, :3, 3] = pose_matrix_gt[:, 1:, :3, 3] + trans_alignment.unsqueeze(1)
+
+        # 使用对齐后的 pose 和 depth_pred 计算点云
         points_gt_aligned = depth_to_world_points(depth_gt_aligned, intrinsics_gt, pose_matrix_gt)
         points_gt = points_gt_aligned  # Use world coordinates for consistency with points_pred
+        
+        # 使用对齐后的 pose 矩阵计算预测点云
+        points_pred = depth_to_world_points(depth_pred, intrinsics_gt, pose_matrix_gt_aligned)
         points_mask = valid_mask.unsqueeze(-1).expand_as(points_gt)
        
 
@@ -480,22 +509,29 @@ class EventSupervisedLoss(nn.Module):
         pred_normals = depth_to_normals(depth_pred, intrinsics_gt)
         normal_loss = masked_cosine_loss(pred_normals, gt_normals, normal_mask)
 
-        # 将数据集里的 camera_pose (c2w) 转成 VGGT 的 pose encoding 输入格式
-        height, width = depth_gt.shape[-2:]
-        pose_gt = camera_pose_to_pose_encoding(
-            pose_matrix_gt,
-            intrinsics_gt,
-            image_size_hw=(height, width),
-        ).to(device=pose_pred.device, dtype=pose_pred.dtype)
+        # ============ Pose Loss 计算 ============
+        # 将对齐矩阵应用到其他帧的预测 pose (frame 1 onwards)
+        pose_pred_aligned = pose_pred.clone()
+        pose_pred_aligned[:, 1:, :] = pose_pred[:, 1:, :] + pose_alignment  # 广播应用对齐
+        
+        # Pose loss 只计算第一帧以外的帧 (skip first frame for pose supervision)
+        if pose_pred_aligned.shape[1] > 1:
+            pose_loss = F.smooth_l1_loss(pose_pred_aligned[:, 1:, :], pose_gt[:, 1:, :])
+        else:
+            # 如果只有一帧，则pose loss为0
+            pose_loss = pose_pred.new_tensor(0.0, requires_grad=True)
+        
         if self.align_depth_scale_enabled:
             pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
 
         # depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
-        # points_loss = masked_l1(points_pred, points_gt, points_mask)
-        # points_loss = masked_chamfer_distance(points_pred, points_gt, # 必须使用未被 expand 过的原始二维 valid_mask
-        points_loss = masked_chamfer_distance(points_pred, points_gt, valid_mask)
-        pose_loss = F.smooth_l1_loss(pose_pred, pose_gt)
+        
+        # points_loss 根据 points_loss_type 选择 L1 或 Chamfer Distance
+        if self.points_loss_type == "l1":
+            points_loss = masked_l1(points_pred, points_gt, points_mask)
+        else:  # "cd"
+            points_loss = masked_chamfer_distance(points_pred, points_gt, valid_mask)
 
         total_loss = (
             # self.depth_weight * depth_loss
@@ -519,6 +555,8 @@ class EventSupervisedLoss(nn.Module):
             "points_pred": points_pred.detach(),
             "points_gt": points_gt.detach(),
             "valid_mask": valid_mask.detach(),
+            "pose_pred": pose_pred_aligned.detach(),
+            "pose_gt": pose_gt.detach(),
         }
         return total_loss, details, aux
 
@@ -769,13 +807,19 @@ def evaluate_on_test_set(
         
         # Accumulate for visualization (limit to first few samples)
         if batch_idx < 2:  # Save visualization for first 2 batches
-            for i in range(min(aux["depth_pred"].shape[0], 1)):
-                aux_accum["depth_pred_all"].append(aux["depth_pred"][i])
-                aux_accum["depth_gt_all"].append(aux["depth_gt"][i])
-                aux_accum["valid_mask_all"].append(aux["valid_mask"][i])
+            batch_size = aux["depth_pred"].shape[0]
+            num_views = aux["depth_pred"].shape[1]
+            num_views_to_save = min(10, num_views)
+            
+            for i in range(min(batch_size, 1)):
+                for frame_idx in range(num_views_to_save):
+                    aux_accum["depth_pred_all"].append(aux["depth_pred"][i, frame_idx])
+                    aux_accum["depth_gt_all"].append(aux["depth_gt"][i, frame_idx])
+                    aux_accum["valid_mask_all"].append(aux["valid_mask"][i, frame_idx])
                 
-                # Save per-batch visualization
-                save_training_visuals(cfg, views, aux, global_step * 1000 + batch_idx)
+                # Save per-batch visualization for each frame
+                for frame_idx in range(num_views_to_save):
+                    save_training_visuals(cfg, views, aux, global_step * 1000 + batch_idx, frame_idx, i)
     
     metric_logger.synchronize_between_processes(accelerator)
     test_stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
@@ -938,61 +982,77 @@ def save_training_visuals(
     views: List[Dict[str, torch.Tensor]],
     aux: Dict[str, torch.Tensor],
     global_step: int,
+    frame_idx: Optional[int] = None,
+    sample_idx: Optional[int] = None,
 ) -> None:
     vis_cfg = getattr(cfg, "vis", None)
     save_every = getattr(vis_cfg, "save_every_steps", 200)
     if save_every <= 0 or global_step % save_every != 0:
         return
 
-    frame_idx = int(getattr(vis_cfg, "frame_index", 0))
-    sample_idx = int(getattr(vis_cfg, "sample_index", 0))
-
-    rgb = views[frame_idx]["img"][sample_idx]
-    depth_gt = aux["depth_gt"][sample_idx, frame_idx]
-    depth_pred = aux["depth_pred"][sample_idx, frame_idx]
-    valid_mask = aux["valid_mask"][sample_idx, frame_idx]
-
-    intrinsics = views[frame_idx]["camera_intrinsics"][sample_idx]
-    pred_normals = depth_to_normals(depth_pred, intrinsics)
-    gt_normals = depth_to_normals(depth_gt, intrinsics)
-
-    panels = [
-        make_labeled_panel("rgb", tensor_rgb_to_uint8(rgb, valid_mask)),
-        make_labeled_panel("gt_depth", depth_to_uint8(depth_gt, valid_mask)),
-        make_labeled_panel("pred_depth", depth_to_uint8(depth_pred, valid_mask)),
-        make_labeled_panel("pred_normal", normal_to_uint8(pred_normals, valid_mask)),
-        make_labeled_panel("gt_normal", normal_to_uint8(gt_normals, valid_mask)),
-    ]
-
-    total_width = sum(panel.width for panel in panels)
-    max_height = max(panel.height for panel in panels)
-    canvas = Image.new("RGB", (total_width, max_height), color=(0, 0, 0))
-    x_offset = 0
-    for panel in panels:
-        canvas.paste(panel, (x_offset, 0))
-        x_offset += panel.width
-
+    if sample_idx is None:
+        sample_idx = int(getattr(vis_cfg, "sample_index", 0))
+    
+    # 获取所有视角数量
+    num_views = len(views)
+    
+    # 如果指定了frame_idx，只保存该frame；否则保存所有frame（最多10张）
+    if frame_idx is not None:
+        frames_to_save = [frame_idx]
+    else:
+        num_views_to_save = min(10, num_views)
+        frames_to_save = list(range(num_views_to_save))
+    
     vis_dir = Path(cfg.output_dir) / "train_vis"
     vis_dir.mkdir(parents=True, exist_ok=True)
-
+    
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    canvas_name = f"{timestamp}_step_{global_step:07d}.png"
-    canvas.save(vis_dir / canvas_name)
+    
+    # 为每个视角保存可视化面板和点云
+    for frame_id in frames_to_save:
+        rgb = views[frame_id]["img"][sample_idx]
+        depth_gt = aux["depth_gt"][sample_idx, frame_id]
+        depth_pred = aux["depth_pred"][sample_idx, frame_id]
+        valid_mask = aux["valid_mask"][sample_idx, frame_id]
 
-    # Save point cloud for this frame
-    pointcloud = aux["points_pred"][sample_idx, frame_idx]  # [H, W, 3]
-    if isinstance(rgb, torch.Tensor):
-        rgb_np = tensor_rgb_to_uint8(rgb, valid_mask)
-    else:
-        rgb_np = np.array(rgb)
+        intrinsics = views[frame_id]["camera_intrinsics"][sample_idx]
+        pred_normals = depth_to_normals(depth_pred, intrinsics)
+        gt_normals = depth_to_normals(depth_gt, intrinsics)
 
-    pcl_name = f"{timestamp}_step_{global_step:07d}.ply"
-    save_pointcloud_ply(pointcloud, rgb_np, valid_mask, vis_dir / pcl_name)
+        panels = [
+            make_labeled_panel("rgb", tensor_rgb_to_uint8(rgb, valid_mask)),
+            make_labeled_panel("gt_depth", depth_to_uint8(depth_gt, valid_mask)),
+            make_labeled_panel("pred_depth", depth_to_uint8(depth_pred, valid_mask)),
+            make_labeled_panel("pred_normal", normal_to_uint8(pred_normals, valid_mask)),
+            make_labeled_panel("gt_normal", normal_to_uint8(gt_normals, valid_mask)),
+        ]
 
-    # Save GT point cloud for this frame
-    gt_pointcloud = aux["points_gt"][sample_idx, frame_idx]  # [H, W, 3]
-    gt_pcl_name = f"{timestamp}_step_{global_step:07d}_gt.ply"
-    save_pointcloud_ply(gt_pointcloud, rgb_np, valid_mask, vis_dir / gt_pcl_name)
+        total_width = sum(panel.width for panel in panels)
+        max_height = max(panel.height for panel in panels)
+        canvas = Image.new("RGB", (total_width, max_height), color=(0, 0, 0))
+        x_offset = 0
+        for panel in panels:
+            canvas.paste(panel, (x_offset, 0))
+            x_offset += panel.width
+
+        # 保存可视化面板，frame编号为frame_id
+        canvas_name = f"{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}.png"
+        canvas.save(vis_dir / canvas_name)
+
+        # 保存预测点云
+        pointcloud = aux["points_pred"][sample_idx, frame_id]  # [H, W, 3]
+        if isinstance(rgb, torch.Tensor):
+            rgb_np = tensor_rgb_to_uint8(rgb, valid_mask)
+        else:
+            rgb_np = np.array(rgb)
+
+        pcl_name = f"{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}.ply"
+        save_pointcloud_ply(pointcloud, rgb_np, valid_mask, vis_dir / pcl_name)
+
+        # 保存GT点云
+        gt_pointcloud = aux["points_gt"][sample_idx, frame_id]  # [H, W, 3]
+        gt_pcl_name = f"{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}_gt.ply"
+        save_pointcloud_ply(gt_pointcloud, rgb_np, valid_mask, vis_dir / gt_pcl_name)
 
 
 def train(cfg):
@@ -1050,7 +1110,11 @@ def train(cfg):
         depth_min=float(getattr(cfg.loss, "depth_min", 1e-6)),
         depth_max=(float(cfg.loss.depth_max) if getattr(cfg.loss, "depth_max", None) is not None else None),
         align_depth_scale_enabled=bool(getattr(cfg.loss, "align_depth_scale",True)),
+        points_loss_type=str(getattr(cfg.loss, "points_loss_type", "cd")),
     )
+    
+    printer.info("Loss configuration: pose_weight=%.4f, depth_weight=%.4f, points_weight=%.4f, points_loss_type=%s",
+                 cfg.loss.pose_weight, cfg.loss.depth_weight, cfg.loss.points_weight, criterion.points_loss_type)
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     if not trainable_params:
