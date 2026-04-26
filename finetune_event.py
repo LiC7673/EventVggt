@@ -254,6 +254,32 @@ def depth_to_world_points(depth: torch.Tensor, intrinsics: torch.Tensor, pose: t
     return world_points
 
 
+def camera_pose_to_pose_encoding(
+    camera_pose: torch.Tensor,
+    intrinsics: torch.Tensor,
+    image_size_hw: Tuple[int, int],
+) -> torch.Tensor:
+    """Convert dataset camera_pose into VGGT pose encoding.
+
+    The dataset stores camera_pose as a 4x4 camera-to-world transform (c2w).
+    VGGT pose encoding expects world-to-camera extrinsics in OpenCV coordinates.
+    """
+    if camera_pose.shape[-2:] == (3, 4):
+        bottom_row = torch.tensor([0, 0, 0, 1], device=camera_pose.device, dtype=camera_pose.dtype)
+        bottom_row = bottom_row.view(1, 1, 1, 4).expand(*camera_pose.shape[:-2], 1, 4)
+        camera_pose = torch.cat([camera_pose, bottom_row], dim=-2)
+
+    if camera_pose.shape[-2:] != (4, 4):
+        raise ValueError(f"Expected camera_pose shape [...,4,4] or [...,3,4], got {camera_pose.shape}")
+
+    w2c = torch.linalg.inv(camera_pose)
+    return extri_intri_to_pose_encoding(
+        w2c[..., :3, :],
+        intrinsics,
+        image_size_hw=image_size_hw,
+    )
+
+
 def depth_to_camera_points(depth: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tensor:
     """Convert depth map to camera coordinate points using only intrinsics."""
     _, _, height, width = depth.shape
@@ -454,20 +480,10 @@ class EventSupervisedLoss(nn.Module):
         pred_normals = depth_to_normals(depth_pred, intrinsics_gt)
         normal_loss = masked_cosine_loss(pred_normals, gt_normals, normal_mask)
 
-        c2w_gt=pose_matrix_gt 
-        if c2w_gt.shape[-2] == 3:
-            # 如果是 3x4，补全成 4x4
-            bottom_row = torch.tensor([0, 0, 0, 1], device=c2w_gt.device, dtype=c2w_gt.dtype)
-            bottom_row = bottom_row.view(1, 1, 1, 4).expand(*c2w_gt.shape[:-2], 1, 4)
-            c2w_4x4 = torch.cat([c2w_gt, bottom_row], dim=-2)
-        else:
-            c2w_4x4 = c2w_gt
-
-        # 求逆得到 World-to-Camera (Extrinsics) 矩阵
-        w2c_gt = torch.linalg.inv(c2w_4x4)
+        # 将数据集里的 camera_pose (c2w) 转成 VGGT 的 pose encoding 输入格式
         height, width = depth_gt.shape[-2:]
-        pose_gt = extri_intri_to_pose_encoding(
-            w2c_gt[..., :3, :],
+        pose_gt = camera_pose_to_pose_encoding(
+            pose_matrix_gt,
             intrinsics_gt,
             image_size_hw=(height, width),
         ).to(device=pose_pred.device, dtype=pose_pred.dtype)
