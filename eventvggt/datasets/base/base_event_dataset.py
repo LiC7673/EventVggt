@@ -43,7 +43,7 @@ class BaseEventMultiViewDataset(EasyDataset):
         self.allow_repeat = allow_repeat
         self.fps = fps
         self.dt_us = int(1e6 / fps)
-
+        print(f"Initialized {type(self).__name__} with {self.get_stats()} and resolutions {self._resolutions},views={self.num_views}, split={self.split}, seed={self.seed}, transform={transform}, aug_crop={aug_crop}, seq_aug_crop={seq_aug_crop}")
         self.is_seq_color_jitter = False
         if isinstance(transform, str):
             transform = eval(transform)

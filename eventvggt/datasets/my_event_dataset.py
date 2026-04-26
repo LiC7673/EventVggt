@@ -63,7 +63,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         intrinsics[1, 1] = data["fl_y"]
         intrinsics[0, 2] = data["cx"]
         intrinsics[1, 2] = data["cy"]
-
+        
         poses = np.stack(
             [np.asarray(frame["transform_matrix"], dtype=np.float32) for frame in data["frames"]],
             axis=0,

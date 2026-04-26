@@ -33,7 +33,7 @@ from eventvggt.datasets.my_event_dataset import (
     get_combined_dataset,
 )
 from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
-from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding
+from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -280,6 +280,42 @@ def camera_pose_to_pose_encoding(
     )
 
 
+def ensure_homogeneous_pose(pose: torch.Tensor) -> torch.Tensor:
+    if pose.shape[-2:] == (3, 4):
+        bottom_row = torch.tensor([0, 0, 0, 1], device=pose.device, dtype=pose.dtype)
+        bottom_row = bottom_row.view(*([1] * (pose.ndim - 2)), 1, 4).expand(*pose.shape[:-2], 1, 4)
+        pose = torch.cat([pose, bottom_row], dim=-2)
+    if pose.shape[-2:] != (4, 4):
+        raise ValueError(f"Expected pose shape [...,4,4] or [...,3,4], got {pose.shape}")
+    return pose
+
+
+def pose_encoding_to_c2w(
+    pose_encoding: torch.Tensor,
+    image_size_hw: Tuple[int, int],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    w2c, intrinsics = pose_encoding_to_extri_intri(
+        pose_encoding,
+        image_size_hw=image_size_hw,
+    )
+    w2c = ensure_homogeneous_pose(w2c)
+    c2w = torch.linalg.inv(w2c)
+    return c2w, intrinsics
+
+
+def relative_c2w_to_first(c2w: torch.Tensor) -> torch.Tensor:
+    c2w = ensure_homogeneous_pose(c2w)
+    first_inv = torch.linalg.inv(c2w[:, 0:1])
+    return torch.matmul(first_inv, c2w)
+
+
+def transform_points(points: torch.Tensor, transform: torch.Tensor) -> torch.Tensor:
+    transform = ensure_homogeneous_pose(transform)
+    rot = transform[..., :3, :3]
+    trans = transform[..., :3, 3]
+    return torch.einsum("bsij,bshwj->bshwi", rot, points) + trans.unsqueeze(-2).unsqueeze(-2)
+
+
 def depth_to_camera_points(depth: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tensor:
     """Convert depth map to camera coordinate points using only intrinsics."""
     _, _, height, width = depth.shape
@@ -355,9 +391,9 @@ def masked_chamfer_distance(pred_pts: torch.Tensor, gt_pts: torch.Tensor, mask: 
         num_samples: 随机采样的点数上限
     """
     # 统一降维到 [Batch, N, 3] 结构来处理，避免 B 和 S 维度的复杂性
-    pred_flat = pred_pts.view(-1, pred_pts.shape[-3], pred_pts.shape[-2], 3)
-    gt_flat = gt_pts.view(-1, gt_pts.shape[-3], gt_pts.shape[-2], 3)
-    mask_flat = mask.view(-1, mask.shape[-2], mask.shape[-1]).bool()
+    pred_flat = pred_pts.reshape(-1, pred_pts.shape[-3], pred_pts.shape[-2], 3)
+    gt_flat = gt_pts.reshape(-1, gt_pts.shape[-3], gt_pts.shape[-2], 3)
+    mask_flat = mask.reshape(-1, mask.shape[-2], mask.shape[-1]).bool()
     
     B_total = pred_flat.shape[0]
     total_loss = 0.0
@@ -433,7 +469,7 @@ class EventSupervisedLoss(nn.Module):
         pred = model_output.ress
 
         depth_pred = torch.stack([res["depth"] for res in pred], dim=1).squeeze(-1)
-        points_pred_raw = torch.stack([res["pts3d_in_other_view"] for res in pred], dim=1)
+        points_pred = torch.stack([res["pts3d_in_other_view"] for res in pred], dim=1)
         pose_pred = torch.stack([res["camera_pose"] for res in pred], dim=1)
 
         depth_gt = stack_view_field(views, "depthmap").to(device=depth_pred.device, dtype=depth_pred.dtype)
@@ -447,36 +483,8 @@ class EventSupervisedLoss(nn.Module):
             depth_gt_aligned = depth_gt
             depth_scales = depth_gt.new_ones(depth_gt.shape[:2])
 
-        # ============ 计算对齐后的 pose 矩阵 ============
-        # 首先计算 pose encoding 的对齐
-        pose_gt = camera_pose_to_pose_encoding(
-            pose_matrix_gt,
-            intrinsics_gt,
-            image_size_hw=(depth_gt.shape[-2], depth_gt.shape[-1]),
-        ).to(device=pose_pred.device, dtype=pose_pred.dtype)
-        
-        # 计算第一帧的pose对齐矩阵
-        pose_first_pred = pose_pred[:, 0:1, :]  # [B, 1, D]
-        pose_first_gt = pose_gt[:, 0:1, :]      # [B, 1, D]
-        pose_alignment = pose_first_gt - pose_first_pred  # [B, 1, D]
-        
-        # 对 GT pose matrix 进行对齐（用于计算对齐后的点云）
-        # 这里使用一个简单的对齐策略：对平移部分进行调整
-        pose_matrix_gt_aligned = pose_matrix_gt.clone()
-        
-        # 计算第一帧的平移对齐向量（从pose encoding的差异推断）
-        # pose encoding 包含了位置信息，我们用这个对齐向量来调整 GT pose 矩阵的平移部分
-        if pose_alignment.shape[-1] >= 3:
-            # 从对齐编码中提取平移信息（前3个通常对应位置）
-            trans_alignment = pose_alignment[:, 0, :3]  # [B, 3]
-            pose_matrix_gt_aligned[:, 1:, :3, 3] = pose_matrix_gt[:, 1:, :3, 3] + trans_alignment.unsqueeze(1)
-
-        # 使用对齐后的 pose 和 depth_pred 计算点云
         points_gt_aligned = depth_to_world_points(depth_gt_aligned, intrinsics_gt, pose_matrix_gt)
         points_gt = points_gt_aligned  # Use world coordinates for consistency with points_pred
-        
-        # 使用对齐后的 pose 矩阵计算预测点云
-        points_pred = depth_to_world_points(depth_pred, intrinsics_gt, pose_matrix_gt_aligned)
         points_mask = valid_mask.unsqueeze(-1).expand_as(points_gt)
        
 
@@ -509,29 +517,55 @@ class EventSupervisedLoss(nn.Module):
         pred_normals = depth_to_normals(depth_pred, intrinsics_gt)
         normal_loss = masked_cosine_loss(pred_normals, gt_normals, normal_mask)
 
+        # ============ 计算 Pose 对齐 ============
+        # 将数据集里的 camera_pose (c2w) 转成 VGGT 的 pose encoding 输入格式
+        # Matrix-relative supervision: frame 0 is an anchor only.
+        # Frames 1..S-1 are compared in their first-frame coordinate systems.
+        height, width = depth_gt.shape[-2:]
+        pred_c2w, _ = pose_encoding_to_c2w(pose_pred, image_size_hw=(height, width))
+        gt_c2w = ensure_homogeneous_pose(pose_matrix_gt)
+        
+        # 计算第一帧的pose对齐矩阵 (used to align other frames)
+        pose_pred_relative = relative_c2w_to_first(pred_c2w)
+        pose_gt_relative = relative_c2w_to_first(gt_c2w)
+
+        pred_world_to_first = torch.linalg.inv(pred_c2w[:, 0:1]).expand(-1, points_pred.shape[1], -1, -1)
+        gt_world_to_first = torch.linalg.inv(gt_c2w[:, 0:1]).expand(-1, points_gt.shape[1], -1, -1)
+        points_pred_aligned = transform_points(points_pred, pred_world_to_first)
+        points_gt_aligned_for_loss = transform_points(points_gt, gt_world_to_first)
+
         # ============ Pose Loss 计算 ============
         # 将对齐矩阵应用到其他帧的预测 pose (frame 1 onwards)
-        pose_pred_aligned = pose_pred.clone()
-        pose_pred_aligned[:, 1:, :] = pose_pred[:, 1:, :] + pose_alignment  # 广播应用对齐
         
         # Pose loss 只计算第一帧以外的帧 (skip first frame for pose supervision)
-        if pose_pred_aligned.shape[1] > 1:
-            pose_loss = F.smooth_l1_loss(pose_pred_aligned[:, 1:, :], pose_gt[:, 1:, :])
+        if pose_pred_relative.shape[1] > 1:
+            pose_loss = F.smooth_l1_loss(
+                pose_pred_relative[:, 1:, :3, :],
+                pose_gt_relative[:, 1:, :3, :],
+            )
         else:
             # 如果只有一帧，则pose loss为0
             pose_loss = pose_pred.new_tensor(0.0, requires_grad=True)
         
-        if self.align_depth_scale_enabled:
-            pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
-
         # depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         
         # points_loss 根据 points_loss_type 选择 L1 或 Chamfer Distance
-        if self.points_loss_type == "l1":
-            points_loss = masked_l1(points_pred, points_gt, points_mask)
-        else:  # "cd"
-            points_loss = masked_chamfer_distance(points_pred, points_gt, valid_mask)
+        if points_pred_aligned.shape[1] > 1:
+            if self.points_loss_type == "l1":
+                points_loss = masked_l1(
+                    points_pred_aligned[:, 1:],
+                    points_gt_aligned_for_loss[:, 1:],
+                    points_mask[:, 1:],
+                )
+            else:  # "cd"
+                points_loss = masked_chamfer_distance(
+                    points_pred_aligned[:, 1:],
+                    points_gt_aligned_for_loss[:, 1:],
+                    valid_mask[:, 1:],
+                )
+        else:
+            points_loss = points_pred.new_tensor(0.0, requires_grad=True)
 
         total_loss = (
             # self.depth_weight * depth_loss
@@ -552,11 +586,11 @@ class EventSupervisedLoss(nn.Module):
             "depth_pred": depth_pred.detach(),
             "depth_gt": depth_gt.detach(),
             "depth_gt_aligned": depth_gt_aligned.detach(),
-            "points_pred": points_pred.detach(),
-            "points_gt": points_gt.detach(),
+            "points_pred": points_pred_aligned.detach(),
+            "points_gt": points_gt_aligned_for_loss.detach(),
             "valid_mask": valid_mask.detach(),
-            "pose_pred": pose_pred_aligned.detach(),
-            "pose_gt": pose_gt.detach(),
+            "pose_pred": pose_pred_relative.detach(),
+            "pose_gt": pose_gt_relative.detach(),
         }
         return total_loss, details, aux
 
@@ -819,7 +853,16 @@ def evaluate_on_test_set(
                 
                 # Save per-batch visualization for each frame
                 for frame_idx in range(num_views_to_save):
-                    save_training_visuals(cfg, views, aux, global_step * 1000 + batch_idx, frame_idx, i)
+                    save_training_visuals(
+                        cfg,
+                        views,
+                        aux,
+                        global_step * 1000 + batch_idx,
+                        frame_idx,
+                        i,
+                        vis_dir=test_vis_dir,
+                        force_save=True,
+                    )
     
     metric_logger.synchronize_between_processes(accelerator)
     test_stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
@@ -984,10 +1027,12 @@ def save_training_visuals(
     global_step: int,
     frame_idx: Optional[int] = None,
     sample_idx: Optional[int] = None,
+    vis_dir: Optional[Path] = None,
+    force_save: bool = False,
 ) -> None:
     vis_cfg = getattr(cfg, "vis", None)
     save_every = getattr(vis_cfg, "save_every_steps", 200)
-    if save_every <= 0 or global_step % save_every != 0:
+    if not force_save and (save_every <= 0 or global_step % save_every != 0):
         return
 
     if sample_idx is None:
@@ -1003,7 +1048,8 @@ def save_training_visuals(
         num_views_to_save = min(10, num_views)
         frames_to_save = list(range(num_views_to_save))
     
-    vis_dir = Path(cfg.output_dir) / "train_vis"
+    if vis_dir is None:
+        vis_dir = Path(cfg.output_dir) / "train_vis"
     vis_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
