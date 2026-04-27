@@ -357,9 +357,12 @@ class SupervisedLoss(nn.Module):
         normal_mask[..., :, 0] = False
         normal_mask[..., :, -1] = False
 
-        pred_normals = depth_to_normals(depth_pred, intrinsics_gt)
-        gt_normals = depth_to_normals(depth_gt, intrinsics_gt)
-        normal_loss = masked_cosine_loss(pred_normals, gt_normals, normal_mask)
+        if self.normal_weight > 0.0:
+            pred_normals = depth_to_normals(depth_pred, intrinsics_gt)
+            gt_normals = depth_to_normals(depth_gt, intrinsics_gt)
+            normal_loss = masked_cosine_loss(pred_normals, gt_normals, normal_mask)
+        else:
+            normal_loss = depth_pred.new_tensor(0.0)
 
         height, width = depth_gt.shape[-2:]
         pose_gt = extri_intri_to_pose_encoding(
