@@ -29,6 +29,19 @@ def _list_files(folder, suffixes):
     )
 
 
+def _format_ldr_event_dir(ldr_event_id):
+    if ldr_event_id is None or str(ldr_event_id).lower() == "auto":
+        return None
+    value = str(ldr_event_id)
+    return value if value.startswith("ev_") else f"ev_{value}"
+
+
+def _numeric_ev_key(name):
+    if name.startswith("ev_") and name[3:].isdigit():
+        return (0, int(name[3:]))
+    return (1, name)
+
+
 class MyEventDataset(BaseEventMultiViewDataset):
     """Event/RGB sequential dataset with lazy per-scene loading."""
 
@@ -40,6 +53,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         initial_scene_idx=0,
         active_scene_count=1,
         test_frame_count=10,
+        ldr_event_id="auto",
         **kwargs,
     ):
         self.ROOT = ROOT
@@ -47,6 +61,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.current_scene_index = initial_scene_idx
         self.active_scene_count = active_scene_count
         self.test_frame_count = test_frame_count
+        self.ldr_event_id = ldr_event_id
         self.is_metric = False
         self.video = True
         # Extract split from kwargs, default to 'train'
@@ -72,9 +87,29 @@ class MyEventDataset(BaseEventMultiViewDataset):
         intrinsics = np.repeat(intrinsics[None], len(poses), axis=0).astype(np.float32)
         return intrinsics, poses
 
+    def _resolve_ldr_dir(self, scene_dir):
+        ldr_root = osp.join(scene_dir, "LDR")
+        requested = _format_ldr_event_dir(self.ldr_event_id)
+        if requested is not None:
+            return osp.join(ldr_root, requested)
+
+        if not osp.isdir(ldr_root):
+            return osp.join(ldr_root, "ev_auto_missing")
+
+        candidates = [
+            name
+            for name in os.listdir(ldr_root)
+            if osp.isdir(osp.join(ldr_root, name)) and name.startswith("ev_")
+        ]
+        if not candidates:
+            return osp.join(ldr_root, "ev_auto_missing")
+
+        return osp.join(ldr_root, sorted(candidates, key=_numeric_ev_key)[-1])
+
     def _probe_scene(self, scene_name):
         scene_dir = osp.join(self.ROOT, scene_name)
-        image_paths = _list_files(osp.join(scene_dir, "LDR","ev_5"), {".png", ".jpg", ".jpeg"})
+        ldr_dir = self._resolve_ldr_dir(scene_dir)
+        image_paths = _list_files(ldr_dir, {".png", ".jpg", ".jpeg"})
         event_path = osp.join(scene_dir, "event", "v2e-dvs-events.h5")
         pose_json = osp.join(scene_dir, "transforms.json")
 
@@ -89,6 +124,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         return {
             "scene": scene_name,
             "scene_dir": scene_dir,
+            "ldr_dir": ldr_dir,
             "frame_count": frame_count,
             "event_h5": event_path,
             "pose_json": pose_json,
@@ -132,7 +168,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         record = self.scene_records[scene_name]
         scene_dir = record["scene_dir"]
         # image_paths = _list_files(osp.join(scene_dir, "HDR"), {".png", ".jpg", ".jpeg"})
-        image_paths = _list_files(osp.join(scene_dir, "LDR","ev_2"), {".png", ".jpg", ".jpeg"})
+        image_paths = _list_files(record["ldr_dir"], {".png", ".jpg", ".jpeg"})
         normal_paths = _list_files(osp.join(scene_dir, "Normal"), {".png", ".jpg", ".jpeg"})
         mask_paths = _list_files(osp.join(scene_dir, "Mask"), {".png", ".jpg", ".jpeg"})
         # depth_paths = _list_files(
@@ -454,6 +490,7 @@ def get_combined_dataset(
     active_scene_count=1,
     split="train",
     test_frame_count=10,
+    ldr_event_id="auto",
 ):
     return MyEventDataset(
         ROOT=root,
@@ -467,6 +504,7 @@ def get_combined_dataset(
         initial_scene_idx=initial_scene_idx,
         active_scene_count=active_scene_count,
         test_frame_count=test_frame_count,
+        ldr_event_id=ldr_event_id,
         # normalize=True
     )
 

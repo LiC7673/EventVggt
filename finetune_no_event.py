@@ -32,7 +32,7 @@ from eventvggt.datasets.my_event_dataset import (
     event_multiview_collate,
     get_combined_dataset,
 )
-from streamvggt.models.streamvggt import StreamVGGT
+from eventvggt.models.streamvggt_rgb import StreamVGGT as RGBStreamVGGT
 from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -41,110 +41,6 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 
 printer = get_logger(__name__, log_level="INFO")
-
-
-class RGBStreamVGGT(StreamVGGT):
-    """StreamVGGT that uses RGB images directly instead of event_encoder"""
-    def forward(self, views, **kwargs):
-        # Convert RGB images to normalized tensor directly (skip event_encoder)
-        images = []
-        normals = []
-        for view in views:
-            img = view["img"]
-            if torch.is_tensor(img):
-                img_tensor = img.float()
-                if img_tensor.max() > 2.0:
-                    img_tensor = img_tensor / 127.5 - 1.0
-            elif isinstance(img, np.ndarray):
-                img_tensor = torch.from_numpy(img).float() / 127.5 - 1.0
-            elif isinstance(img, Image.Image):
-                img_tensor = torch.from_numpy(np.array(img, copy=True)).float() / 127.5 - 1.0
-            else:
-                raise TypeError(f"Unsupported image type: {type(img)}")
-            images.append(img_tensor)
-
-            # Normal map reading (if present)
-            if "normal" in view:
-                normal = view["normal"]
-                if torch.is_tensor(normal):
-                    normal_tensor = normal.float()
-                elif isinstance(normal, np.ndarray):
-                    normal_tensor = torch.from_numpy(normal).float()
-                elif isinstance(normal, Image.Image):
-                    normal_tensor = torch.from_numpy(np.array(normal, copy=True)).float()
-                else:
-                    raise TypeError(f"Unsupported normal type: {type(normal)}")
-                normals.append(normal_tensor)
-
-        images = torch.stack(images, dim=0)  # [S, H, W, 3] or [S, 3, H, W]
-        if images.ndim == 4 and images.shape[-1] == 3:
-            images = images.permute(0, 3, 1, 2)  # [S, 3, H, W]
-        images = images.unsqueeze(0)  # [1, S, 3, H, W]
-
-        # Stack normals if present
-        if normals:
-            normals = torch.stack(normals, dim=0)
-            if normals.ndim == 4 and normals.shape[-1] == 3:
-                normals = normals.permute(0, 3, 1, 2)
-            normals = normals.unsqueeze(0)  # [1, S, 3, H, W]
-        else:
-            normals = None
-        
-        # Continue with normal StreamVGGT forward from aggregator
-        aggregated_tokens_list, patch_start_idx = self.aggregator(images)
-        predictions = {}
-
-        with torch.amp.autocast(device_type='cuda', enabled=False):
-            if self.camera_head is not None:
-                pose_enc_list = self.camera_head(aggregated_tokens_list)
-                predictions["pose_enc"] = pose_enc_list[-1]
-
-            if self.depth_head is not None:
-                depth, depth_conf = self.depth_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
-                )
-                predictions["depth"] = depth
-                predictions["depth_conf"] = depth_conf
-
-            if self.point_head is not None:
-                pts3d, pts3d_conf = self.point_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
-                )
-                predictions["world_points"] = pts3d
-                predictions["world_points_conf"] = pts3d_conf
-
-            if self.track_head is not None and "query_points" in kwargs:
-                track_list, vis, conf = self.track_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx, 
-                    query_points=kwargs["query_points"]
-                )
-                predictions["track"] = track_list[-1]
-                predictions["vis"] = vis
-                predictions["conf"] = conf
-            predictions["images"] = images
-            if normals is not None:
-                predictions["normals"] = normals
-
-            B, S = images.shape[:2]
-            ress = []
-            for s in range(S):
-                res = {
-                    'pts3d_in_other_view': predictions['world_points'][:, s],
-                    'conf': predictions['world_points_conf'][:, s],
-                    'depth': predictions['depth'][:, s],
-                    'depth_conf': predictions['depth_conf'][:, s],
-                    'camera_pose': predictions['pose_enc'][:, s, :],
-                }
-                if 'valid_mask' in views[s]:
-                    res['valid_mask'] = views[s]["valid_mask"]
-                if 'track' in predictions:
-                    res['track'] = predictions['track'][:, s]
-                    res['vis'] = predictions['vis'][:, s]
-                    res['track_conf'] = predictions['conf'][:, s]
-                ress.append(res)
-
-            from transformers.file_utils import ModelOutput
-            return ModelOutput(ress=ress, views=images, normals=normals if normals is not None else None)
 
 
 def save_current_code(outdir: str):
@@ -192,7 +88,7 @@ def unwrap_state_dict(ckpt):
     return ckpt
 
 
-def build_rgb_loader(cfg):
+def build_rgb_loader(cfg, split="train"):
     """Build dataloader with RGB images (still loads event data but won't use it)"""
     dataset = get_combined_dataset(
         root=cfg.data.root,
@@ -203,6 +99,9 @@ def build_rgb_loader(cfg):
         scene_names=cfg.data.scene_names if cfg.data.scene_names else None,
         initial_scene_idx=cfg.data.initial_scene_idx,
         active_scene_count=cfg.data.active_scene_count,
+        split=split,
+        test_frame_count=getattr(cfg.data, "test_frame_count", 10),
+        ldr_event_id=getattr(cfg.data, "ldr_event_id", "auto"),
     )
     if len(dataset) <= 0:
         scene_stats = []
@@ -230,7 +129,8 @@ def build_rgb_loader(cfg):
         collate_fn=event_multiview_collate,
     )
     printer.info(
-        "RGB dataset loaded from %s with %d active scenes and %d samples (uses RGB only, ignores events)",
+        "RGB %s dataset loaded from %s with %d active scenes and %d samples (uses RGB only, ignores events)",
+        split,
         cfg.data.root,
         len(dataset.get_active_scenes()),
         len(dataset),
@@ -927,7 +827,11 @@ def train(cfg):
     random.seed(seed)
     cudnn.benchmark = cfg.benchmark
 
-    data_loader = build_rgb_loader(cfg)
+    data_loader_train = build_rgb_loader(cfg, split="train")
+    data_loader_test = build_rgb_loader(cfg, split="test")
+    train_samples_count = len(data_loader_train)
+    test_samples_count = len(data_loader_test)
+    printer.info("RGB train dataset: %d batches, test dataset: %d batches", train_samples_count, test_samples_count)
 
     # Use RGB version of StreamVGGT (no event_encoder)
     model = RGBStreamVGGT(
@@ -967,7 +871,7 @@ def train(cfg):
     )
     loss_scaler = NativeScaler(accelerator=accelerator)
 
-    model, optimizer, data_loader = accelerator.prepare(model, optimizer, data_loader)
+    model, optimizer, data_loader_train = accelerator.prepare(model, optimizer, data_loader_train)
     criterion = criterion.to(accelerator.device)
 
     log_writer = SummaryWriter(log_dir=cfg.logdir) if accelerator.is_main_process else None
@@ -982,12 +886,12 @@ def train(cfg):
         metric_logger.add_meter("lr", misc.SmoothedValue(window_size=1, fmt="{value:.6f}"))
         header = f"Epoch: [{epoch}]"
 
-        for data_iter_step, views in enumerate(metric_logger.log_every(data_loader, cfg.print_freq, accelerator, header)):
+        for data_iter_step, views in enumerate(metric_logger.log_every(data_loader_train, cfg.print_freq, accelerator, header)):
             with accelerator.accumulate(model):
                 views = maybe_denormalize_views(views)
 
                 if global_step % cfg.accum_iter == 0:
-                    epoch_f = epoch + data_iter_step / max(len(data_loader), 1)
+                    epoch_f = epoch + data_iter_step / max(len(data_loader_train), 1)
                     misc.adjust_learning_rate(optimizer, epoch_f, cfg)
 
                 model_output = model(views)

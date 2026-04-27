@@ -53,6 +53,7 @@ data:
   num_views: 4
   resolution: [518, 392]
   fps: 120
+  ldr_event_id: auto  # auto picks largest LDR/ev_xx; set 10 or ev_10 for a fixed high exposure folder
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 5  # Increase to train on multiple scenes

@@ -55,6 +55,7 @@ data:
   num_views: 10
   resolution: [518, 392]
   fps: 120
+  ldr_event_id: 5  # auto picks the largest LDR/ev_xx folder; set 2, 5, 10, or ev_10 to choose explicitly
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 5  # Increase to train on multiple scenes
