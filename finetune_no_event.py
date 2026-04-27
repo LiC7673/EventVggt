@@ -498,33 +498,37 @@ def normal_to_uint8(normal: torch.Tensor, mask: Optional[torch.Tensor] = None) -
 
 
 def depth_to_normals(depth: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tensor:
-    H, W = depth.shape
+    # depth: [..., H, W], intrinsics: [..., 3, 3]
+    *batch_dims, H, W = depth.shape
     device = depth.device
+    dtype = depth.dtype
 
     ys, xs = torch.meshgrid(
-        torch.arange(H, device=device, dtype=depth.dtype),
-        torch.arange(W, device=device, dtype=depth.dtype),
+        torch.arange(H, device=device, dtype=dtype),
+        torch.arange(W, device=device, dtype=dtype),
         indexing='ij',
     )
+    expand_dims = [1] * len(batch_dims) + [H, W]
+    xs = xs.view(*expand_dims)
+    ys = ys.view(*expand_dims)
 
-    fx = intrinsics[0, 0]
-    fy = intrinsics[1, 1]
-    cx = intrinsics[0, 2]
-    cy = intrinsics[1, 2]
+    fx = intrinsics[..., 0, 0].view(*batch_dims, 1, 1)
+    fy = intrinsics[..., 1, 1].view(*batch_dims, 1, 1)
+    cx = intrinsics[..., 0, 2].view(*batch_dims, 1, 1)
+    cy = intrinsics[..., 1, 2].view(*batch_dims, 1, 1)
 
-    x = (xs - cx) / fx * depth
-    y = (ys - cy) / fy * depth
+    x = (xs - cx) / fx.clamp_min(1e-6) * depth
+    y = (ys - cy) / fy.clamp_min(1e-6) * depth
     z = depth
     pts = torch.stack([x, y, z], dim=-1)
 
-    # central difference for consistent interior output (H-2, W-2)
-    fx = pts[1:-1, 2:, :] - pts[1:-1, :-2, :]
-    fy = pts[2:, 1:-1, :] - pts[:-2, 1:-1, :]
-    core = torch.cross(fy, fx, dim=-1)
+    fx_diff = pts[..., 1:-1, 2:, :] - pts[..., 1:-1, :-2, :]
+    fy_diff = pts[..., 2:, 1:-1, :] - pts[..., :-2, 1:-1, :]
+    core = torch.cross(fy_diff, fx_diff, dim=-1)
     core = F.normalize(core, dim=-1, eps=1e-6)
 
     normals = torch.zeros_like(pts)
-    normals[1:-1, 1:-1, :] = core
+    normals[..., 1:-1, 1:-1, :] = core
     return normals
 
 

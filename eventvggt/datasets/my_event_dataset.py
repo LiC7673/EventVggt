@@ -62,6 +62,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.active_scene_count = active_scene_count
         self.test_frame_count = test_frame_count
         self.ldr_event_id = ldr_event_id
+        self.start_img_ids = []
         self.is_metric = False
         self.video = True
         # Extract split from kwargs, default to 'train'
