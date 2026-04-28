@@ -36,10 +36,11 @@ train:
   unfreeze_aggregator_blocks: true
 
 loss:
-  pose_weight: 0.1
+  pose_weight: 1.0
   depth_weight: 1.0
   points_weight: 1.0
-  align_depth_scale: true
+  points_loss_type: "l1"  # Options: "l1" or "cd" (Chamfer Distance)
+  align_depth_scale: false
   depth_min: 1.0e-6
   depth_max: null
 

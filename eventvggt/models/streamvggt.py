@@ -17,9 +17,10 @@ class StreamVGGTOutput(ModelOutput):
     views: Optional[torch.Tensor] = None
 
 class StreamVGGT(nn.Module, PyTorchModelHubMixin):
-    def __init__(self, img_size=518, patch_size=14, embed_dim=1024, event_hidden_dim=32):
+    def __init__(self, img_size=518, patch_size=14, embed_dim=1024, event_hidden_dim=32, head_frames_chunk_size=8):
         super().__init__()
 
+        self.head_frames_chunk_size = head_frames_chunk_size
         self.event_encoder = SimpleEventEncoder(hidden_dim=event_hidden_dim)
         self.event_patch_embed = nn.Conv2d(
             in_channels=256, 
@@ -44,9 +45,6 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         use_cache=False,
         past_frame_idx=0
     ):
-        images, event_features= self._build_model_inputs(views)
-
-# 1. 同时获取 RGB 和 事件流特征
         images, event_features = self._build_model_inputs(views)
 
         if len(images.shape) == 4:
@@ -105,14 +103,20 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
 
             if self.depth_head is not None:
                 depth, depth_conf = self.depth_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                    aggregated_tokens_list,
+                    images=images,
+                    patch_start_idx=patch_start_idx,
+                    frames_chunk_size=self.head_frames_chunk_size,
                 )
                 predictions["depth"] = depth
                 predictions["depth_conf"] = depth_conf
 
             if self.point_head is not None:
                 pts3d, pts3d_conf = self.point_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                    aggregated_tokens_list,
+                    images=images,
+                    patch_start_idx=patch_start_idx,
+                    frames_chunk_size=self.head_frames_chunk_size,
                 )
                 predictions["world_points"] = pts3d
                 predictions["world_points_conf"] = pts3d_conf
@@ -192,14 +196,20 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
 
                 if self.depth_head is not None:
                     depth, depth_conf = self.depth_head(
-                        aggregated_tokens, images=images, patch_start_idx=patch_start_idx
+                        aggregated_tokens,
+                        images=images,
+                        patch_start_idx=patch_start_idx,
+                        frames_chunk_size=self.head_frames_chunk_size,
                     )
                     depth = depth[:, 0] 
                     depth_conf = depth_conf[:, 0]
                 
                 if self.point_head is not None:
                     pts3d, pts3d_conf = self.point_head(
-                        aggregated_tokens, images=images, patch_start_idx=patch_start_idx
+                        aggregated_tokens,
+                        images=images,
+                        patch_start_idx=patch_start_idx,
+                        frames_chunk_size=self.head_frames_chunk_size,
                     )
                     pts3d = pts3d[:, 0] 
                     pts3d_conf = pts3d_conf[:, 0]

@@ -4,3 +4,4 @@ ckpt/*
 debug_*/*
 *.ply
 *.pt
+res/*

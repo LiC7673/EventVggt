@@ -1079,6 +1079,7 @@ def train(cfg):
         patch_size=cfg.model.patch_size,
         embed_dim=cfg.model.embed_dim,
         event_hidden_dim=cfg.model.event_hidden_dim,
+        head_frames_chunk_size=int(getattr(cfg.model, "head_frames_chunk_size", 2)),
     )
 
     if cfg.pretrained:
