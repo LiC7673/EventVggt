@@ -22,10 +22,16 @@ class StreamVGGTOutput(ModelOutput):
 
 
 class GlobalTokenFusion(nn.Module):
-    """Build a sequence-level token from RGB views and refine it with events."""
+    """Build a sequence-level global token from RGB views and refine it with events.
+
+    The DPT heads require the patch-token count to remain unchanged, so the
+    global token is injected with lightweight FiLM modulation instead of being
+    appended to the token sequence.
+    """
 
     def __init__(self, token_dim: int, event_channels: int = 256):
         super().__init__()
+        self.global_token = nn.Parameter(torch.zeros(1, token_dim))
         self.rgb_norm = nn.LayerNorm(token_dim)
         self.rgb_mlp = nn.Sequential(
             nn.Linear(token_dim, token_dim),
@@ -33,38 +39,56 @@ class GlobalTokenFusion(nn.Module):
             nn.Linear(token_dim, token_dim),
         )
         self.event_mlp = nn.Sequential(
-            nn.LayerNorm(event_channels),
-            nn.Linear(event_channels, token_dim),
+            nn.LayerNorm(token_dim),
             nn.GELU(),
             nn.Linear(token_dim, token_dim),
         )
         self.event_gate = nn.Sequential(
-            nn.LayerNorm(token_dim),
-            nn.Linear(token_dim, token_dim),
+            nn.LayerNorm(token_dim * 2),
+            nn.Linear(token_dim * 2, token_dim),
             nn.Sigmoid(),
         )
         self.inject = nn.Sequential(
             nn.LayerNorm(token_dim),
             nn.Linear(token_dim, 2 * token_dim),
         )
+        self.special_token_bias = nn.Sequential(
+            nn.LayerNorm(token_dim),
+            nn.Linear(token_dim, token_dim),
+        )
 
-    def forward(self, aggregated_tokens_list, patch_start_idx: int, event_features: Optional[torch.Tensor] = None):
+        nn.init.normal_(self.global_token, std=1e-6)
+
+    def forward(
+        self,
+        aggregated_tokens_list,
+        patch_start_idx: int,
+        event_tokens: Optional[torch.Tensor] = None,
+    ):
         last_tokens = aggregated_tokens_list[-1]
         rgb_summary = last_tokens[:, :, patch_start_idx:, :].mean(dim=(1, 2))
-        global_token_rgb = self.rgb_mlp(self.rgb_norm(rgb_summary))
+        global_token_rgb = self.rgb_mlp(self.rgb_norm(rgb_summary)) + self.global_token.to(rgb_summary.dtype)
 
-        if event_features is None:
+        if event_tokens is None:
             global_token_event = torch.zeros_like(global_token_rgb)
             refined_global_token = global_token_rgb
         else:
-            event_summary = event_features.mean(dim=(1, 3, 4))
+            event_summary = event_tokens.mean(dim=(1, 2))
             global_token_event = self.event_mlp(event_summary)
-            refined_global_token = global_token_rgb + self.event_gate(global_token_event) * global_token_event
+            gate = self.event_gate(torch.cat([global_token_rgb, global_token_event], dim=-1))
+            refined_global_token = global_token_rgb + gate * global_token_event
 
         scale, shift = self.inject(refined_global_token).chunk(2, dim=-1)
         scale = 0.1 * torch.tanh(scale).unsqueeze(1).unsqueeze(1)
         shift = 0.1 * torch.tanh(shift).unsqueeze(1).unsqueeze(1)
-        fused_tokens = [tokens * (1.0 + scale) + shift for tokens in aggregated_tokens_list]
+        special_bias = 0.1 * torch.tanh(self.special_token_bias(refined_global_token)).unsqueeze(1).unsqueeze(1)
+
+        fused_tokens = []
+        for tokens in aggregated_tokens_list:
+            fused = tokens * (1.0 + scale) + shift
+            fused = fused.clone()
+            fused[:, :, :patch_start_idx, :] = fused[:, :, :patch_start_idx, :] + special_bias
+            fused_tokens.append(fused)
 
         return {
             "tokens": fused_tokens,
@@ -75,9 +99,10 @@ class GlobalTokenFusion(nn.Module):
         }
 
 class StreamVGGT(nn.Module, PyTorchModelHubMixin):
-    def __init__(self, img_size=518, patch_size=14, embed_dim=1024, event_hidden_dim=32):
+    def __init__(self, img_size=518, patch_size=14, embed_dim=1024, event_hidden_dim=32, head_frames_chunk_size=8):
         super().__init__()
 
+        self.head_frames_chunk_size = head_frames_chunk_size
         self.event_encoder = SimpleEventEncoder(hidden_dim=event_hidden_dim)
         self.event_patch_embed = nn.Conv2d(
             in_channels=256, 
@@ -104,9 +129,6 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         use_cache=False,
         past_frame_idx=0
     ):
-        images, event_features= self._build_model_inputs(views)
-
-# 1. 同时获取 RGB 和 事件流特征
         images, event_features = self._build_model_inputs(views)
 
         if len(images.shape) == 4:
@@ -121,6 +143,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         aggregated_tokens_list, patch_start_idx = self.aggregator(images)
 
         # 3. 事件流走专属的 PatchEmbed，并与 RGB Tokens 融合
+        event_tokens_for_global = None
         if event_features is not None:
             # event_features 形状为 [B, S, C, H, W]
             B, S, C, H, W = event_features.shape
@@ -135,29 +158,33 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             # ViT 的输出通常带一个 [CLS] Token，所以 N 比 event_tokens 多 1
             # 我们给 event_tokens 头部补一个全零的 CLS Token 以对齐维度
             event_tokens = event_tokens.view(B, S, event_tokens.shape[1], event_tokens.shape[-1])
-            cls_pad = torch.zeros(B, S, 1, event_tokens.shape[-1], device=event_tokens.device, dtype=event_tokens.dtype)
-            event_tokens_padded = torch.cat([cls_pad, event_tokens], dim=2)
-
+            event_tokens_for_global = event_tokens
             # 将事件特征加到多层/多尺度的 aggregated_tokens 中
             if isinstance(aggregated_tokens_list, list):
                 fused_tokens_list = []
                 for tokens in aggregated_tokens_list:
                     # 检查维度是否对齐 (有些层可能不带 CLS 或者分辨率不同)
-                    if tokens.shape[2] == event_tokens_padded.shape[2] and tokens.shape[-1] == event_tokens_padded.shape[-1]:
-                        fused_tokens_list.append(tokens + event_tokens_padded)
-                    elif tokens.shape[2] == event_tokens.shape[2] and tokens.shape[-1] == event_tokens.shape[-1]:
-                        fused_tokens_list.append(tokens + event_tokens)
+                    if (
+                        tokens.shape[2] - patch_start_idx == event_tokens.shape[2]
+                        and tokens.shape[-1] == event_tokens.shape[-1]
+                    ):
+                        fused = tokens.clone()
+                        fused[:, :, patch_start_idx:, :] = fused[:, :, patch_start_idx:, :] + event_tokens
+                        fused_tokens_list.append(fused)
                     else:
                         fused_tokens_list.append(tokens)
                 aggregated_tokens_list = fused_tokens_list
             else:
-                if aggregated_tokens_list.shape[2] == event_tokens_padded.shape[2]:
-                    aggregated_tokens_list = aggregated_tokens_list + event_tokens_padded
-                else:
-                    aggregated_tokens_list = aggregated_tokens_list + event_tokens
+                if (
+                    aggregated_tokens_list.shape[2] - patch_start_idx == event_tokens.shape[2]
+                    and aggregated_tokens_list.shape[-1] == event_tokens.shape[-1]
+                ):
+                    fused = aggregated_tokens_list.clone()
+                    fused[:, :, patch_start_idx:, :] = fused[:, :, patch_start_idx:, :] + event_tokens
+                    aggregated_tokens_list = fused
 
         # 下面的预测逻辑 (camera_head, depth_head等) 保持不变！
-        global_fusion = self.global_fusion(aggregated_tokens_list, patch_start_idx, event_features)
+        global_fusion = self.global_fusion(aggregated_tokens_list, patch_start_idx, event_tokens_for_global)
         aggregated_tokens_list = global_fusion["tokens"]
 
         predictions = {}
@@ -169,14 +196,20 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
 
             if self.depth_head is not None:
                 depth, depth_conf = self.depth_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                    aggregated_tokens_list,
+                    images=images,
+                    patch_start_idx=patch_start_idx,
+                    frames_chunk_size=self.head_frames_chunk_size,
                 )
                 predictions["depth"] = depth
                 predictions["depth_conf"] = depth_conf
 
             if self.point_head is not None:
                 pts3d, pts3d_conf = self.point_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                    aggregated_tokens_list,
+                    images=images,
+                    patch_start_idx=patch_start_idx,
+                    frames_chunk_size=self.head_frames_chunk_size,
                 )
                 predictions["world_points"] = pts3d
                 predictions["world_points_conf"] = pts3d_conf
@@ -263,14 +296,20 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
 
                 if self.depth_head is not None:
                     depth, depth_conf = self.depth_head(
-                        aggregated_tokens, images=images, patch_start_idx=patch_start_idx
+                        aggregated_tokens,
+                        images=images,
+                        patch_start_idx=patch_start_idx,
+                        frames_chunk_size=self.head_frames_chunk_size,
                     )
                     depth = depth[:, 0] 
                     depth_conf = depth_conf[:, 0]
                 
                 if self.point_head is not None:
                     pts3d, pts3d_conf = self.point_head(
-                        aggregated_tokens, images=images, patch_start_idx=patch_start_idx
+                        aggregated_tokens,
+                        images=images,
+                        patch_start_idx=patch_start_idx,
+                        frames_chunk_size=self.head_frames_chunk_size,
                     )
                     pts3d = pts3d[:, 0] 
                     pts3d_conf = pts3d_conf[:, 0]
