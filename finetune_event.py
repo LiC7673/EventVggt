@@ -794,7 +794,7 @@ def evaluate_on_test_set(
         metric_logger.update(**loss_details)
         
         # Accumulate for visualization (limit to first few samples)
-        if batch_idx < 2:  # Save visualization for first 2 batches
+        if accelerator.is_main_process and batch_idx < 2:  # Save visualization for first 2 batches
             batch_size = aux["depth_pred"].shape[0]
             num_views = aux["depth_pred"].shape[1]
             num_views_to_save = min(10, num_views)
@@ -1117,8 +1117,12 @@ def train(cfg):
     )
     loss_scaler = NativeScaler(accelerator=accelerator)
 
-    model, optimizer, data_loader_train = accelerator.prepare(model, optimizer, data_loader_train)
-    # Note: test loader is not prepared for evaluation flexibility
+    model, optimizer, data_loader_train, data_loader_test = accelerator.prepare(
+        model,
+        optimizer,
+        data_loader_train,
+        data_loader_test,
+    )
     criterion = criterion.to(accelerator.device)
 
     log_writer = SummaryWriter(log_dir=cfg.logdir) if accelerator.is_main_process else None
@@ -1175,14 +1179,14 @@ def train(cfg):
                     save_training_visuals(cfg, views, aux, global_step)
 
                 # Periodic test evaluation
-                if (accelerator.is_main_process and 
-                    test_samples_count > 0 and 
+                if (test_samples_count > 0 and 
                     eval_every_steps > 0 and 
                     global_step % eval_every_steps == 0 and 
                     global_step > 0):
-                    printer.info("Running test evaluation at step %d", global_step)
+                    if accelerator.is_main_process:
+                        printer.info("Running test evaluation at step %d", global_step)
                     test_stats, _ = evaluate_on_test_set(
-                        accelerator.unwrap_model(model),
+                        model,
                         data_loader_test,
                         criterion,
                         accelerator,
@@ -1190,8 +1194,9 @@ def train(cfg):
                         global_step,
                         log_writer=log_writer,
                     )
-                    save_test_summary(cfg, epoch, global_step, test_stats)
-                    save_metrics_json(cfg, epoch, global_step, {}, test_stats)
+                    if accelerator.is_main_process:
+                        save_test_summary(cfg, epoch, global_step, test_stats)
+                        save_metrics_json(cfg, epoch, global_step, {}, test_stats)
                     model.train()  # Switch back to train mode
 
                 if accelerator.is_main_process and global_step % cfg.save_every_steps == 0 and global_step > 0:
@@ -1217,20 +1222,22 @@ def train(cfg):
     printer.info("Training finished in %.2f minutes", total_time / 60.0)
 
     # Final test evaluation and plots
-    if accelerator.is_main_process:
-        if test_samples_count > 0:
+    if test_samples_count > 0:
+        if accelerator.is_main_process:
             printer.info("Running final test evaluation")
-            test_stats, _ = evaluate_on_test_set(
-                accelerator.unwrap_model(model),
-                data_loader_test,
-                criterion,
-                accelerator,
-                cfg,
-                global_step,
-                log_writer=log_writer,
-            )
+        test_stats, _ = evaluate_on_test_set(
+            model,
+            data_loader_test,
+            criterion,
+            accelerator,
+            cfg,
+            global_step,
+            log_writer=log_writer,
+        )
+        if accelerator.is_main_process:
             save_test_summary(cfg, epoch, global_step, test_stats)
             save_metrics_json(cfg, epoch, global_step, {}, test_stats)  # Save final test stats
+    if accelerator.is_main_process:
         generate_loss_plots(cfg)
 
     if log_writer is not None:

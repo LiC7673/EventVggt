@@ -197,6 +197,7 @@ def train(cfg):
         patch_size=cfg.model.patch_size,
         embed_dim=cfg.model.embed_dim,
         event_hidden_dim=cfg.model.event_hidden_dim,
+        head_frames_chunk_size=int(getattr(cfg.model, "head_frames_chunk_size", 2)),
     )
 
     if cfg.pretrained:
@@ -230,7 +231,12 @@ def train(cfg):
     )
     loss_scaler = NativeScaler(accelerator=accelerator)
 
-    model, optimizer, data_loader_train = accelerator.prepare(model, optimizer, data_loader_train)
+    model, optimizer, data_loader_train, data_loader_test = accelerator.prepare(
+        model,
+        optimizer,
+        data_loader_train,
+        data_loader_test,
+    )
     criterion = criterion.to(accelerator.device)
 
     log_writer = SummaryWriter(log_dir=cfg.logdir) if accelerator.is_main_process else None
@@ -284,15 +290,15 @@ def train(cfg):
                     fe.save_training_visuals(cfg, views, aux, global_step)
 
                 if (
-                    accelerator.is_main_process
-                    and test_samples_count > 0
+                    test_samples_count > 0
                     and eval_every_steps > 0
                     and global_step % eval_every_steps == 0
                     and global_step > 0
                 ):
-                    printer.info("Running test evaluation at step %d", global_step)
+                    if accelerator.is_main_process:
+                        printer.info("Running test evaluation at step %d", global_step)
                     test_stats, _ = fe.evaluate_on_test_set(
-                        accelerator.unwrap_model(model),
+                        model,
                         data_loader_test,
                         criterion,
                         accelerator,
@@ -300,8 +306,9 @@ def train(cfg):
                         global_step,
                         log_writer=log_writer,
                     )
-                    fe.save_test_summary(cfg, epoch, global_step, test_stats)
-                    fe.save_metrics_json(cfg, epoch, global_step, {}, test_stats)
+                    if accelerator.is_main_process:
+                        fe.save_test_summary(cfg, epoch, global_step, test_stats)
+                        fe.save_metrics_json(cfg, epoch, global_step, {}, test_stats)
                     model.train()
 
                 if accelerator.is_main_process and global_step % cfg.save_every_steps == 0 and global_step > 0:
@@ -324,20 +331,22 @@ def train(cfg):
     total_time = time.time() - start_time
     printer.info("Training finished in %.2f minutes", total_time / 60.0)
 
-    if accelerator.is_main_process:
-        if test_samples_count > 0:
+    if test_samples_count > 0:
+        if accelerator.is_main_process:
             printer.info("Running final test evaluation")
-            test_stats, _ = fe.evaluate_on_test_set(
-                accelerator.unwrap_model(model),
-                data_loader_test,
-                criterion,
-                accelerator,
-                cfg,
-                global_step,
-                log_writer=log_writer,
-            )
+        test_stats, _ = fe.evaluate_on_test_set(
+            model,
+            data_loader_test,
+            criterion,
+            accelerator,
+            cfg,
+            global_step,
+            log_writer=log_writer,
+        )
+        if accelerator.is_main_process:
             fe.save_test_summary(cfg, epoch, global_step, test_stats)
             fe.save_metrics_json(cfg, epoch, global_step, {}, test_stats)
+    if accelerator.is_main_process:
         fe.generate_loss_plots(cfg)
 
     if log_writer is not None:
