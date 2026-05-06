@@ -22,10 +22,23 @@ def stack_loaded_normals(
         return None, None
 
     normals = normals.to(device=device, dtype=dtype)
-    if normals.ndim == 5 and normals.shape[2] == 3:
+    if normals.ndim != 5:
+        fe.printer.warning(
+            "Skip loaded normals with unexpected ndim: expected 5D [B,S,H,W,3] or [B,S,3,H,W], got %s",
+            tuple(normals.shape),
+        )
+        return None, None
+
+    if normals.shape[2] == 3:
         normals = normals.permute(0, 1, 3, 4, 2)
-    if normals.ndim != 5 or normals.shape[-1] != 3:
-        raise ValueError(f"Expected loaded normals with shape [B,S,H,W,3] or [B,S,3,H,W], got {normals.shape}")
+    elif normals.shape[-1] == 3:
+        pass
+    else:
+        fe.printer.warning(
+            "Skip loaded normals with unexpected shape: expected [B,S,H,W,3] or [B,S,3,H,W], got %s",
+            tuple(normals.shape),
+        )
+        return None, None
 
     raw_valid = torch.isfinite(normals).all(dim=-1) & (normals.abs().sum(dim=-1) > 1e-6)
 

@@ -298,9 +298,13 @@ class MyEventDataset(BaseEventMultiViewDataset):
         image = self._load_rgb(scene_meta["image_paths"][frame_idx])
         src_width, src_height = image.size
         mask = self._load_optional(scene_meta["mask_paths"], frame_idx, self.load_mask)
-        normal = self._load_optional(
-            scene_meta["normal_paths"], frame_idx, lambda path: self.load_normal_map(path, None)
-        )
+        try:
+            normal = self._load_optional(
+                scene_meta["normal_paths"], frame_idx, lambda path: self.load_normal_map(path, None)
+            )
+        except ValueError as exc:
+            print(f"Warning: skip malformed normal map for frame {frame_idx}: {exc}")
+            normal = None
 
         depth_shape = image.size[1], image.size[0]
       
@@ -318,7 +322,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             image = Image.fromarray(img_np)
 
         if mask is not None and normal is not None:
-            normal = normal.astype(np.float32)
+            normal = self.ensure_hwc3(normal, name=f"normal frame {frame_idx}")
             normal[~mask] = 0.0
         if mask is not None and depthmap is not None:
             depthmap[~mask] = 0.0
@@ -356,6 +360,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             "dst_resolution": np.array([image.size[0], image.size[1]], dtype=np.int32),
         }
         if normal is not None:
+            normal = self.ensure_hwc3(normal, name=f"normal frame {frame_idx}")
             resized["normal"] = self.resize_hw_map(normal, resolution, mode="bilinear")
         if mask is not None:
             resized["mask"] = self.resize_hw_map(mask, resolution,)

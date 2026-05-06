@@ -54,7 +54,7 @@ vis:
 
 data:
   root: /data1/lzh/dataset/reflective_raw
-  num_views: 10
+  num_views: 4
   resolution: [518, 392]
   fps: 120
   ldr_event_id: 5

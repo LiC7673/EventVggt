@@ -374,10 +374,33 @@ class BaseEventMultiViewDataset(EasyDataset):
         return (mask > 254).astype(bool)
 
     @staticmethod
+    def ensure_hwc3(array, name="normal"):
+        array = np.asarray(array)
+        if array.ndim == 2:
+            array = np.repeat(array[..., None], 3, axis=-1)
+        elif array.ndim == 3:
+            if array.shape[-1] in (3, 4):
+                array = array[..., :3]
+            elif array.shape[-1] == 1:
+                array = np.repeat(array, 3, axis=-1)
+            elif array.shape[0] in (3, 4):
+                array = np.moveaxis(array[:3], 0, -1)
+            elif array.shape[0] == 1:
+                array = np.repeat(np.moveaxis(array, 0, -1), 3, axis=-1)
+            else:
+                raise ValueError(
+                    f"Expected {name} map with shape [H,W,3] or [3,H,W], got {array.shape}"
+                )
+        else:
+            raise ValueError(
+                f"Expected {name} map with shape [H,W,3] or [3,H,W], got {array.shape}"
+            )
+        return array.astype(np.float32, copy=False)
+
+    @staticmethod
     def load_normal_map(path, mask_path=None):
         normal = np.array(PIL.Image.open(path)).astype(np.float32)
-        if normal.ndim == 2:
-            normal = np.repeat(normal[..., None], 3, axis=-1)
+        normal = BaseEventMultiViewDataset.ensure_hwc3(normal, name=f"normal map {path}")
  
         # if mask_path is not None and osp.isfile(mask_path):
         #     mask = BaseEventMultiViewDataset.load_mask(mask_path)
@@ -527,6 +550,7 @@ class BaseEventMultiViewDataset(EasyDataset):
             "camera_intrinsics": intrinsics.astype(np.float32),
         }
         if normal is not None:
+            normal = self.ensure_hwc3(normal, name="normal")
             resized["normal"] = self.resize_hw_map(normal, resolution,)
         if mask is not None:
             resized["mask"] = self.resize_hw_map(mask, resolution, mode="nearest")
