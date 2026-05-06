@@ -22,7 +22,7 @@ save_every_steps: 500
 eval_every_steps: 500
 
 save_dir: ./checkpoints
-exp_name: event_finetune_global_token
+exp_name: event_finetune_global_local
 logdir: ${save_dir}/${exp_name}/logs
 output_dir: ${save_dir}/${exp_name}
 
@@ -31,16 +31,28 @@ model:
   patch_size: 14
   embed_dim: 1024
   event_hidden_dim: 32
-  head_frames_chunk_size: 1
+  head_frames_chunk_size: 2
+  branch_mode: global_local
+  num_global_tokens: 16
+  event_downsample: 4
+  global_num_heads: 8
+  global_inject_layers: [23]
+  detail_hidden_dim: 128
+  residual_scale: 0.1
 
 train:
   unfreeze_heads: false
   unfreeze_aggregator_blocks: false
+  unfreeze_aggregator_last_blocks: 0
+  vggt_last_blocks_lr: 1e-5
 
 loss:
   pose_weight: 1.0
   depth_weight: 1.0
   points_weight: 1.0
+  normal_weight: 0.05
+  event_edge_weight: 0.1
+  detail_weight: 0.1
   points_loss_type: "l1"
   align_depth_scale: false
   depth_min: 1.0e-6

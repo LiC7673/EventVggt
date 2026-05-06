@@ -29,8 +29,9 @@ class GlobalTokenFusion(nn.Module):
     appended to the token sequence.
     """
 
-    def __init__(self, token_dim: int, event_channels: int = 256):
+    def __init__(self, token_dim: int, event_channels: int = 256, inject_layer_indices=(4, 11, 17, 23)):
         super().__init__()
+        self.inject_layer_indices = set(inject_layer_indices)
         self.global_token = nn.Parameter(torch.zeros(1, token_dim))
         self.rgb_norm = nn.LayerNorm(token_dim)
         self.rgb_mlp = nn.Sequential(
@@ -58,6 +59,15 @@ class GlobalTokenFusion(nn.Module):
         )
 
         nn.init.normal_(self.global_token, std=1e-6)
+        self._init_identity_injection()
+
+    def _init_identity_injection(self):
+        # Keep the pretrained VGGT path unchanged at step 0. The new global-token
+        # branch learns by moving these zero-initialized output projections.
+        nn.init.zeros_(self.inject[-1].weight)
+        nn.init.zeros_(self.inject[-1].bias)
+        nn.init.zeros_(self.special_token_bias[-1].weight)
+        nn.init.zeros_(self.special_token_bias[-1].bias)
 
     def forward(
         self,
@@ -84,7 +94,13 @@ class GlobalTokenFusion(nn.Module):
         special_bias = 0.1 * torch.tanh(self.special_token_bias(refined_global_token)).unsqueeze(1).unsqueeze(1)
 
         fused_tokens = []
-        for tokens in aggregated_tokens_list:
+        target_indices = set(self.inject_layer_indices)
+        target_indices.add(len(aggregated_tokens_list) - 1)
+
+        for layer_idx, tokens in enumerate(aggregated_tokens_list):
+            if layer_idx not in target_indices:
+                fused_tokens.append(tokens)
+                continue
             fused = tokens * (1.0 + scale) + shift
             fused = fused.clone()
             fused[:, :, :patch_start_idx, :] = fused[:, :, :patch_start_idx, :] + special_bias
@@ -140,7 +156,13 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             history_info = {"token": None}
 
         # 2. RGB 走原本的 Aggregator，完美保留预训练权重
-        aggregated_tokens_list, patch_start_idx = self.aggregator(images)
+        aggregator_trainable = any(param.requires_grad for param in self.aggregator.parameters())
+        if aggregator_trainable:
+            aggregated_tokens_list, patch_start_idx = self.aggregator(images)
+        else:
+            with torch.no_grad():
+                aggregated_tokens_list, patch_start_idx = self.aggregator(images)
+            aggregated_tokens_list = [tokens.detach() for tokens in aggregated_tokens_list]
 
         # 3. 事件流走专属的 PatchEmbed，并与 RGB Tokens 融合
         event_tokens_for_global = None
@@ -160,7 +182,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             event_tokens = event_tokens.view(B, S, event_tokens.shape[1], event_tokens.shape[-1])
             event_tokens_for_global = event_tokens
             # 将事件特征加到多层/多尺度的 aggregated_tokens 中
-            if isinstance(aggregated_tokens_list, list):
+            if False and isinstance(aggregated_tokens_list, list):
                 fused_tokens_list = []
                 for tokens in aggregated_tokens_list:
                     # 检查维度是否对齐 (有些层可能不带 CLS 或者分辨率不同)
@@ -174,7 +196,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
                     else:
                         fused_tokens_list.append(tokens)
                 aggregated_tokens_list = fused_tokens_list
-            else:
+            elif False:
                 if (
                     aggregated_tokens_list.shape[2] - patch_start_idx == event_tokens.shape[2]
                     and aggregated_tokens_list.shape[-1] == event_tokens.shape[-1]

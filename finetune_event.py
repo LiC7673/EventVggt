@@ -192,6 +192,10 @@ def log_trainable_params(model: nn.Module) -> None:
         )
 
 
+def build_optimizer_params(model: nn.Module, cfg):
+    return [p for p in model.parameters() if p.requires_grad]
+
+
 def save_checkpoint(accelerator, model, optimizer, loss_scaler, cfg, epoch, global_step, best_loss):
     ckpt = {
         "model": accelerator.unwrap_model(model).state_dict(),
@@ -526,7 +530,7 @@ class EventSupervisedLoss(nn.Module):
             self.pose_weight * pose_loss
             + self.depth_weight * depth_loss
             + self.points_weight * points_loss
-            # + self.normal_weight * normal_loss
+            + self.normal_weight * normal_loss
         )
 
         details = {
@@ -1011,9 +1015,34 @@ def save_training_visuals(
             make_labeled_panel("rgb", tensor_rgb_to_uint8(rgb, valid_mask)),
             make_labeled_panel("gt_depth", depth_to_uint8(depth_gt, valid_mask)),
             make_labeled_panel("pred_depth", depth_to_uint8(depth_pred, valid_mask)),
-            make_labeled_panel("pred_normal", normal_to_uint8(pred_normals, valid_mask)),
-            make_labeled_panel("gt_normal", normal_to_uint8(gt_normals, valid_mask)),
         ]
+        if "depth_coarse" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "depth_coarse",
+                    depth_to_uint8(aux["depth_coarse"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        if "depth_residual" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "delta_depth",
+                    depth_to_uint8(aux["depth_residual"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        if "event_motion_density" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "event_motion",
+                    depth_to_uint8(aux["event_motion_density"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        panels.extend(
+            [
+                make_labeled_panel("pred_normal", normal_to_uint8(pred_normals, valid_mask)),
+                make_labeled_panel("gt_normal", normal_to_uint8(gt_normals, valid_mask)),
+            ]
+        )
 
         total_width = sum(panel.width for panel in panels)
         max_height = max(panel.height for panel in panels)
@@ -1108,9 +1137,10 @@ def train(cfg):
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     if not trainable_params:
         raise RuntimeError("No trainable parameters were enabled. Check configure_trainable_params().")
+    optimizer_params = build_optimizer_params(model, cfg)
 
     optimizer = torch.optim.AdamW(
-        trainable_params,
+        optimizer_params,
         lr=cfg.lr,
         betas=(0.9, 0.95),
         weight_decay=cfg.weight_decay,
