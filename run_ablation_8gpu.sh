@@ -56,8 +56,9 @@ run_worker() {
     script="${SCRIPTS[$script_idx]}"
     name="${script%.py}"
     log_file="${LOG_DIR}/${script_idx}_${name}_gpu${gpu}.log"
-
+    
     echo "[GPU ${gpu}] start ${script} -> ${log_file}"
+    mkdir -p "$(dirname "$log_file")"
     if (
       cd "$ROOT_DIR"
       CUDA_VISIBLE_DEVICES="$gpu" HYDRA_FULL_ERROR=1 "$PYTHON_BIN" "$script" "$@"
