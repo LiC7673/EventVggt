@@ -2,11 +2,15 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import hydra
+import logging
 import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 import finetune_event as fe
+
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_homogeneous_pose(pose: torch.Tensor) -> torch.Tensor:
@@ -243,7 +247,7 @@ def _configure_mapping_loss_from_cfg(cfg) -> None:
 def run(cfg: OmegaConf):
     OmegaConf.resolve(cfg)
     _configure_mapping_loss_from_cfg(cfg)
-    fe.printer.info(
+    logger.info(
         "Pixel projection mapping loss: weight=%.4f, pairs=%d, detach_target=%s",
         MultiViewMappingEventSupervisedLoss.mapping_weight_default,
         MultiViewMappingEventSupervisedLoss.mapping_num_pairs_default,

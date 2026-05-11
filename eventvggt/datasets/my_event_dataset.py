@@ -112,7 +112,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         scene_dir = osp.join(self.ROOT, scene_name)
         ldr_dir = self._resolve_ldr_dir(scene_dir)
         image_paths = _list_files(ldr_dir, {".png", ".jpg", ".jpeg"})
-        event_path = osp.join(scene_dir, "event", "v2e-dvs-events.h5")
+        event_path = osp.join(scene_dir, "cur_event", "v2e-dvs-events.h5")
         pose_json = osp.join(scene_dir, "transforms.json")
 
         if not image_paths or not osp.isfile(event_path) or not osp.isfile(pose_json):
