@@ -1,0 +1,13 @@
+defaults:
+  - finetune_event
+  - _self_
+
+exp_name: event_finetune_mul_loss
+logdir: ${save_dir}/${exp_name}/logs
+output_dir: ${save_dir}/${exp_name}
+
+loss:
+  mapping_weight: 0.2
+  nums_views: ${data.num_views}
+  mapping_num_pairs: ${loss.nums_views}
+  mapping_detach_target: false

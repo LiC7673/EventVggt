@@ -32,8 +32,8 @@ from eventvggt.datasets.my_event_dataset import (
     event_multiview_collate,
     get_combined_dataset,
 )
-from streamvggt.models.streamvggt import StreamVGGT as RGBStreamVGGT
-from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
+from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
+from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -41,29 +41,6 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 
 printer = get_logger(__name__, log_level="INFO")
-
-
-EVENT_VIEW_KEYS = {
-    "events",
-    "event_xy",
-    "event_t",
-    "event_p",
-    "event_time_range",
-    "event_resolution",
-    "has_event",
-}
-
-
-def drop_event_fields(views: List[Dict[str, torch.Tensor]]) -> List[Dict[str, torch.Tensor]]:
-    """Remove event-stream fields so the no-event finetune path is strictly RGB-only."""
-    for view in views:
-        for key in EVENT_VIEW_KEYS:
-            view.pop(key, None)
-    return views
-
-
-def rgb_multiview_collate(batch):
-    return drop_event_fields(event_multiview_collate(batch))
 
 
 def save_current_code(outdir: str):
@@ -121,7 +98,7 @@ def unwrap_state_dict(ckpt):
     return ckpt
 
 
-def build_rgb_loader(cfg, split="train"):
+def build_event_loader(cfg, split="train"):
     dataset = get_combined_dataset(
         root=cfg.data.root,
         num_views=cfg.data.num_views,
@@ -158,10 +135,10 @@ def build_rgb_loader(cfg, split="train"):
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_mem,
         drop_last=True,
-        collate_fn=rgb_multiview_collate,
+        collate_fn=event_multiview_collate,
     )
     printer.info(
-        "RGB/no-event dataset loaded from %s with %d active scenes and %d samples",
+        "Event dataset loaded from %s with %d active scenes and %d samples",
         cfg.data.root,
         len(dataset.get_active_scenes()),
         len(dataset),
@@ -169,9 +146,15 @@ def build_rgb_loader(cfg, split="train"):
     return data_loader
 
 
-def configure_trainable_params(model: RGBStreamVGGT, cfg) -> None:
+def configure_trainable_params(model: EventStreamVGGT, cfg) -> None:
     for _, param in model.named_parameters():
         param.requires_grad = False
+
+    # Only train event_encoder (these modules actually exist)
+    enabled_prefixes = ["event_encoder"]
+    for name, param in model.named_parameters():
+        if any(token in name for token in enabled_prefixes):
+            param.requires_grad = True
 
     if cfg.train.unfreeze_heads:
         for module in (model.camera_head, model.depth_head, model.point_head, model.track_head):
@@ -209,19 +192,8 @@ def log_trainable_params(model: nn.Module) -> None:
         )
 
 
-def assert_no_event_stream_parameters(model: nn.Module) -> None:
-    event_param_names = [
-        name
-        for name, _ in model.named_parameters()
-        if name.startswith("event_") or ".event_" in name or "event_encoder" in name
-    ]
-    if event_param_names:
-        raise RuntimeError(
-            "finetune_no_event.py must use a pure RGB model, but event-stream parameters were found: "
-            + ", ".join(event_param_names[:16])
-            + ("..." if len(event_param_names) > 16 else "")
-        )
-    printer.info("RGB-only model check passed: no event-stream parameters are present.")
+def build_optimizer_params(model: nn.Module, cfg):
+    return [p for p in model.parameters() if p.requires_grad]
 
 
 def save_checkpoint(accelerator, model, optimizer, loss_scaler, cfg, epoch, global_step, best_loss):
@@ -311,60 +283,6 @@ def camera_pose_to_pose_encoding(
         intrinsics,
         image_size_hw=image_size_hw,
     )
-
-
-def ensure_homogeneous_pose(pose: torch.Tensor) -> torch.Tensor:
-    if pose.shape[-2:] == (3, 4):
-        bottom_row = torch.tensor([0, 0, 0, 1], device=pose.device, dtype=pose.dtype)
-        bottom_row = bottom_row.view(1, 1, 1, 4).expand(*pose.shape[:-2], 1, 4)
-        pose = torch.cat([pose, bottom_row], dim=-2)
-    if pose.shape[-2:] != (4, 4):
-        raise ValueError(f"Expected pose shape [...,4,4] or [...,3,4], got {pose.shape}")
-    return pose
-
-
-def pose_encoding_to_c2w(
-    pose_encoding: torch.Tensor,
-    image_size_hw: Tuple[int, int],
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    w2c, intrinsics = pose_encoding_to_extri_intri(
-        pose_encoding,
-        image_size_hw=image_size_hw,
-    )
-    batch, seq = w2c.shape[:2]
-    bottom_row = torch.tensor([0, 0, 0, 1], device=w2c.device, dtype=w2c.dtype)
-    bottom_row = bottom_row.view(1, 1, 1, 4).expand(batch, seq, 1, 4)
-    w2c_full = torch.cat([w2c, bottom_row], dim=-2)
-    c2w = torch.linalg.inv(w2c_full)
-    return c2w, intrinsics
-
-
-def c2w_to_pose_encoding(
-    c2w: torch.Tensor,
-    intrinsics: torch.Tensor,
-    image_size_hw: Tuple[int, int],
-) -> torch.Tensor:
-    c2w = ensure_homogeneous_pose(c2w)
-    w2c = torch.linalg.inv(c2w)
-    return extri_intri_to_pose_encoding(
-        w2c[..., :3, :],
-        intrinsics,
-        image_size_hw=image_size_hw,
-    )
-
-
-def align_c2w_by_first_frame(pred_c2w: torch.Tensor, gt_c2w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    pred_c2w = ensure_homogeneous_pose(pred_c2w)
-    gt_c2w = ensure_homogeneous_pose(gt_c2w)
-    alignment = torch.matmul(gt_c2w[:, 0], torch.linalg.inv(pred_c2w[:, 0]))
-    aligned_c2w = torch.matmul(alignment[:, None], pred_c2w)
-    return aligned_c2w, alignment
-
-
-def transform_world_points(points: torch.Tensor, transform: torch.Tensor) -> torch.Tensor:
-    rot = transform[:, :3, :3]
-    trans = transform[:, :3, 3]
-    return torch.einsum("bij,bshwj->bshwi", rot, points) + trans[:, None, None, None, :]
 
 
 def depth_to_camera_points(depth: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tensor:
@@ -491,7 +409,7 @@ def masked_chamfer_distance(pred_pts: torch.Tensor, gt_pts: torch.Tensor, mask: 
         
     return total_loss / valid_batches
 
-class RGBSupervisedLoss(nn.Module):
+class EventSupervisedLoss(nn.Module):
     def __init__(
         self,
         pose_weight: float = 1.0,
@@ -578,54 +496,41 @@ class RGBSupervisedLoss(nn.Module):
         ).to(device=pose_pred.device, dtype=pose_pred.dtype)
         
         # 计算第一帧的pose对齐矩阵 (used to align other frames)
-        pred_c2w, pred_intrinsics = pose_encoding_to_c2w(pose_pred, image_size_hw=(height, width))
-        pred_c2w_aligned, first_frame_alignment = align_c2w_by_first_frame(pred_c2w, pose_matrix_gt)
-        pose_pred_aligned = c2w_to_pose_encoding(
-            pred_c2w_aligned,
-            pred_intrinsics,
-            image_size_hw=(height, width),
-        ).to(device=pose_pred.device, dtype=pose_pred.dtype)
-        points_pred_aligned = transform_world_points(points_pred, first_frame_alignment)
+        pose_first_pred = pose_pred[:, 0:1, :]  # [B, 1, D]
+        pose_first_gt = pose_gt[:, 0:1, :]      # [B, 1, D]
+        pose_alignment = pose_first_gt - pose_first_pred  # [B, 1, D]
 
         # ============ Pose Loss 计算 ============
         # 将对齐矩阵应用到其他帧的预测 pose (frame 1 onwards)
         
         # Pose loss 只计算第一帧以外的帧 (skip first frame for pose supervision)
-
-        if self.align_depth_scale_enabled:
-            pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
+        pose_pred_aligned = pose_pred.clone()
+        pose_pred_aligned[:, 1:, :] = pose_pred[:, 1:, :] + pose_alignment  # 骞挎挱搴旂敤瀵归綈
 
         if pose_pred_aligned.shape[1] > 1:
             pose_loss = F.smooth_l1_loss(pose_pred_aligned[:, 1:, :], pose_gt[:, 1:, :])
         else:
+            # 如果只有一帧，则pose loss为0
             pose_loss = pose_pred.new_tensor(0.0, requires_grad=True)
+
+        if self.align_depth_scale_enabled:
+            pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
         
         # depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         
         # points_loss 根据 points_loss_type 选择 L1 或 Chamfer Distance
-        if points_pred_aligned.shape[1] > 1:
-            points_pred_for_loss = points_pred_aligned[:, 1:]
-            points_gt_for_loss = points_gt[:, 1:]
-            points_mask_for_loss = points_mask[:, 1:]
-            valid_mask_for_loss = valid_mask[:, 1:]
-        else:
-            points_pred_for_loss = points_pred_aligned
-            points_gt_for_loss = points_gt
-            points_mask_for_loss = points_mask
-            valid_mask_for_loss = valid_mask
-
         if self.points_loss_type == "l1":
-            points_loss = masked_l1(points_pred_for_loss, points_gt_for_loss, points_mask_for_loss)
+            points_loss = masked_l1(points_pred, points_gt, points_mask)
         else:  # "cd"
-            points_loss = masked_chamfer_distance(points_pred_for_loss, points_gt_for_loss, valid_mask_for_loss)
+            points_loss = masked_chamfer_distance(points_pred, points_gt, valid_mask)
 
         total_loss = (
             # self.depth_weight * depth_loss
             self.pose_weight * pose_loss
             + self.depth_weight * depth_loss
             + self.points_weight * points_loss
-            # + self.normal_weight * normal_loss
+            + self.normal_weight * normal_loss
         )
 
         details = {
@@ -639,12 +544,11 @@ class RGBSupervisedLoss(nn.Module):
             "depth_pred": depth_pred.detach(),
             "depth_gt": depth_gt.detach(),
             "depth_gt_aligned": depth_gt_aligned.detach(),
-            "points_pred": points_pred_aligned.detach(),
+            "points_pred": points_pred.detach(),
             "points_gt": points_gt.detach(),
             "valid_mask": valid_mask.detach(),
             "pose_pred": pose_pred_aligned.detach(),
             "pose_gt": pose_gt.detach(),
-            "first_frame_alignment": first_frame_alignment.detach(),
         }
         return total_loss, details, aux
 
@@ -877,7 +781,6 @@ def evaluate_on_test_set(
     
     for batch_idx, views in enumerate(metric_logger.log_every(data_loader, cfg.print_freq, accelerator, "Test Batch")):
         views = maybe_denormalize_views(views)
-        views = drop_event_fields(views)
         
         # Move views to device and convert to model's dtype
         device = next(model.parameters()).device
@@ -895,7 +798,7 @@ def evaluate_on_test_set(
         metric_logger.update(**loss_details)
         
         # Accumulate for visualization (limit to first few samples)
-        if batch_idx < 2:  # Save visualization for first 2 batches
+        if accelerator.is_main_process and batch_idx < 2:  # Save visualization for first 2 batches
             batch_size = aux["depth_pred"].shape[0]
             num_views = aux["depth_pred"].shape[1]
             num_views_to_save = min(10, num_views)
@@ -1112,9 +1015,34 @@ def save_training_visuals(
             make_labeled_panel("rgb", tensor_rgb_to_uint8(rgb, valid_mask)),
             make_labeled_panel("gt_depth", depth_to_uint8(depth_gt, valid_mask)),
             make_labeled_panel("pred_depth", depth_to_uint8(depth_pred, valid_mask)),
-            make_labeled_panel("pred_normal", normal_to_uint8(pred_normals, valid_mask)),
-            make_labeled_panel("gt_normal", normal_to_uint8(gt_normals, valid_mask)),
         ]
+        if "depth_coarse" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "depth_coarse",
+                    depth_to_uint8(aux["depth_coarse"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        if "depth_residual" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "delta_depth",
+                    depth_to_uint8(aux["depth_residual"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        if "event_motion_density" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "event_motion",
+                    depth_to_uint8(aux["event_motion_density"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        panels.extend(
+            [
+                make_labeled_panel("pred_normal", normal_to_uint8(pred_normals, valid_mask)),
+                make_labeled_panel("gt_normal", normal_to_uint8(gt_normals, valid_mask)),
+            ]
+        )
 
         total_width = sum(panel.width for panel in panels)
         max_height = max(panel.height for panel in panels)
@@ -1167,20 +1095,21 @@ def train(cfg):
     cudnn.benchmark = cfg.benchmark
 
     # Build train and test dataloaders
-    data_loader_train = build_rgb_loader(cfg, split="train")
-    data_loader_test = build_rgb_loader(cfg, split="test")
+    data_loader_train = build_event_loader(cfg, split="train")
+    data_loader_test = build_event_loader(cfg, split="test")
     
     test_samples_count = len(data_loader_test) if data_loader_test else 0
     train_samples_count = len(data_loader_train)
     
     printer.info("Train dataset: %d samples, Test dataset: %d samples", train_samples_count, test_samples_count)
 
-    model = RGBStreamVGGT(
+    model = EventStreamVGGT(
         img_size=cfg.model.img_size,
         patch_size=cfg.model.patch_size,
         embed_dim=cfg.model.embed_dim,
+        event_hidden_dim=cfg.model.event_hidden_dim,
+        head_frames_chunk_size=int(getattr(cfg.model, "head_frames_chunk_size", 2)),
     )
-    assert_no_event_stream_parameters(model)
 
     if cfg.pretrained:
         printer.info("Loading model init weights from %s", cfg.pretrained)
@@ -1191,7 +1120,7 @@ def train(cfg):
     configure_trainable_params(model, cfg)
     log_trainable_params(model)
 
-    criterion = RGBSupervisedLoss(
+    criterion = EventSupervisedLoss(
         pose_weight=cfg.loss.pose_weight,
         depth_weight=cfg.loss.depth_weight,
         points_weight=cfg.loss.points_weight,
@@ -1208,17 +1137,22 @@ def train(cfg):
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     if not trainable_params:
         raise RuntimeError("No trainable parameters were enabled. Check configure_trainable_params().")
+    optimizer_params = build_optimizer_params(model, cfg)
 
     optimizer = torch.optim.AdamW(
-        trainable_params,
+        optimizer_params,
         lr=cfg.lr,
         betas=(0.9, 0.95),
         weight_decay=cfg.weight_decay,
     )
     loss_scaler = NativeScaler(accelerator=accelerator)
 
-    model, optimizer, data_loader_train = accelerator.prepare(model, optimizer, data_loader_train)
-    # Note: test loader is not prepared for evaluation flexibility
+    model, optimizer, data_loader_train, data_loader_test = accelerator.prepare(
+        model,
+        optimizer,
+        data_loader_train,
+        data_loader_test,
+    )
     criterion = criterion.to(accelerator.device)
 
     log_writer = SummaryWriter(log_dir=cfg.logdir) if accelerator.is_main_process else None
@@ -1241,7 +1175,6 @@ def train(cfg):
 
                 optimizer.zero_grad(set_to_none=True)
                 views = maybe_denormalize_views(views)
-                views = drop_event_fields(views)
              
                 if global_step % cfg.accum_iter == 0:
                     epoch_f = epoch + data_iter_step / max(len(data_loader_train), 1)
@@ -1276,14 +1209,14 @@ def train(cfg):
                     save_training_visuals(cfg, views, aux, global_step)
 
                 # Periodic test evaluation
-                if (accelerator.is_main_process and 
-                    test_samples_count > 0 and 
+                if (test_samples_count > 0 and 
                     eval_every_steps > 0 and 
                     global_step % eval_every_steps == 0 and 
                     global_step > 0):
-                    printer.info("Running test evaluation at step %d", global_step)
+                    if accelerator.is_main_process:
+                        printer.info("Running test evaluation at step %d", global_step)
                     test_stats, _ = evaluate_on_test_set(
-                        accelerator.unwrap_model(model),
+                        model,
                         data_loader_test,
                         criterion,
                         accelerator,
@@ -1291,8 +1224,9 @@ def train(cfg):
                         global_step,
                         log_writer=log_writer,
                     )
-                    save_test_summary(cfg, epoch, global_step, test_stats)
-                    save_metrics_json(cfg, epoch, global_step, {}, test_stats)
+                    if accelerator.is_main_process:
+                        save_test_summary(cfg, epoch, global_step, test_stats)
+                        save_metrics_json(cfg, epoch, global_step, {}, test_stats)
                     model.train()  # Switch back to train mode
 
                 if accelerator.is_main_process and global_step % cfg.save_every_steps == 0 and global_step > 0:
@@ -1318,20 +1252,22 @@ def train(cfg):
     printer.info("Training finished in %.2f minutes", total_time / 60.0)
 
     # Final test evaluation and plots
-    if accelerator.is_main_process:
-        if test_samples_count > 0:
+    if test_samples_count > 0:
+        if accelerator.is_main_process:
             printer.info("Running final test evaluation")
-            test_stats, _ = evaluate_on_test_set(
-                accelerator.unwrap_model(model),
-                data_loader_test,
-                criterion,
-                accelerator,
-                cfg,
-                global_step,
-                log_writer=log_writer,
-            )
+        test_stats, _ = evaluate_on_test_set(
+            model,
+            data_loader_test,
+            criterion,
+            accelerator,
+            cfg,
+            global_step,
+            log_writer=log_writer,
+        )
+        if accelerator.is_main_process:
             save_test_summary(cfg, epoch, global_step, test_stats)
             save_metrics_json(cfg, epoch, global_step, {}, test_stats)  # Save final test stats
+    if accelerator.is_main_process:
         generate_loss_plots(cfg)
 
     if log_writer is not None:
@@ -1341,7 +1277,7 @@ def train(cfg):
 @hydra.main(
     version_base=None,
     config_path=str(Path(__file__).resolve().parent/ "config"),
-    config_name="finetune_no_event.yaml",
+    config_name="finetune_event.yaml",
 )
 def run(cfg: OmegaConf):
     OmegaConf.resolve(cfg)

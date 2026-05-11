@@ -5,3 +5,4 @@ debug_*/*
 *.ply
 *.pt
 res/*
+vis_event/*
