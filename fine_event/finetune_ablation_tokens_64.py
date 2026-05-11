@@ -3,7 +3,7 @@ from pathlib import Path
 import hydra
 from omegaconf import OmegaConf
 
-from finetune_event_global_local import launch
+from fine_event.finetune_event_global_local import launch
 
 
 @hydra.main(
