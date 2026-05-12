@@ -2,14 +2,14 @@ defaults:
   - finetune_event
   - _self_
 
-exp_name: event_two_stage_current_event
+exp_name: event_two_stage_global_rgb_current_event
 logdir: ${save_dir}/${exp_name}/logs
 output_dir: ${save_dir}/${exp_name}
 
 model:
   head_frames_chunk_size: 2
-  residual_input_mode: current_event
-  event_feature_dim: 64
+  residual_input_mode: global_rgb_current_event
+  event_num_bins: 8
   event_encode_downsample: 4
   residual_hidden_dim: 64
   event_downsample: 4

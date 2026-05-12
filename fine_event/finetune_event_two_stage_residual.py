@@ -169,7 +169,7 @@ def launch(
             super().__init__(
                 *args,
                 event_hidden_dim=int(getattr(cfg.model, "event_hidden_dim", 32)),
-                event_feature_dim=int(getattr(cfg.model, "event_feature_dim", 64)),
+                event_num_bins=int(getattr(cfg.model, "event_num_bins", 8)),
                 event_encode_downsample=int(getattr(cfg.model, "event_encode_downsample", getattr(cfg.model, "event_downsample", 4))),
                 head_frames_chunk_size=int(getattr(cfg.model, "head_frames_chunk_size", 8)),
                 residual_hidden_dim=int(getattr(cfg.model, "residual_hidden_dim", 96)),

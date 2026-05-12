@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from huggingface_hub import PyTorchModelHubMixin
 from transformers.file_utils import ModelOutput
 
-from eventvggt.models.event_encoder import SimpleEventEncoder
 from streamvggt.heads.camera_head import CameraHead
 from streamvggt.heads.dpt_head import DPTHead
 from streamvggt.heads.track_head import TrackHead
@@ -24,6 +23,102 @@ class StreamVGGTOutput(ModelOutput):
     residual_input_mode: Optional[str] = None
 
 
+class BinnedEventEncoder(nn.Module):
+    """Encode each inter-frame event packet as polarity-separated temporal bins."""
+
+    def __init__(self, num_bins: int = 8) -> None:
+        super().__init__()
+        self.num_bins = max(1, int(num_bins))
+        self.out_channels = 2 * self.num_bins
+
+    def forward(
+        self,
+        event_xy: List[List[torch.Tensor]],
+        event_t: List[List[torch.Tensor]],
+        event_p: List[List[torch.Tensor]],
+        event_time_range: Optional[torch.Tensor],
+        height: int,
+        width: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        batch_size = len(event_xy)
+        seq_len = len(event_xy[0]) if batch_size > 0 else 0
+        encoded_frames = []
+
+        for batch_idx in range(batch_size):
+            frame_maps = []
+            for frame_idx in range(seq_len):
+                time_range = (
+                    event_time_range[batch_idx, frame_idx]
+                    if event_time_range is not None
+                    else None
+                )
+                frame_maps.append(
+                    self._encode_single_frame(
+                        event_xy=event_xy[batch_idx][frame_idx],
+                        event_t=event_t[batch_idx][frame_idx],
+                        event_p=event_p[batch_idx][frame_idx],
+                        event_time_range=time_range,
+                        height=height,
+                        width=width,
+                        device=device,
+                        dtype=dtype,
+                    )
+                )
+            encoded_frames.append(torch.stack(frame_maps, dim=0))
+
+        return torch.stack(encoded_frames, dim=0)
+
+    def _encode_single_frame(
+        self,
+        event_xy: torch.Tensor,
+        event_t: torch.Tensor,
+        event_p: torch.Tensor,
+        event_time_range: Optional[torch.Tensor],
+        height: int,
+        width: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        rep = torch.zeros(self.out_channels, height, width, device=device, dtype=dtype)
+        if event_xy.numel() == 0 or event_t.numel() == 0 or event_p.numel() == 0:
+            return rep
+
+        event_xy = event_xy.to(device=device)
+        event_t = event_t.to(device=device, dtype=dtype)
+        event_p = event_p.to(device=device)
+
+        x = event_xy[:, 0].long().clamp_(0, width - 1)
+        y = event_xy[:, 1].long().clamp_(0, height - 1)
+        pixel_idx = y * width + x
+
+        if event_time_range is not None:
+            event_time_range = event_time_range.to(device=device, dtype=dtype)
+            start_t = event_time_range[0]
+            end_t = event_time_range[1]
+        else:
+            start_t = event_t.min()
+            end_t = event_t.max()
+
+        duration = (end_t - start_t).clamp_min(1.0)
+        norm_t = ((event_t - start_t) / duration).clamp_(0.0, 1.0 - 1e-6)
+        bin_idx = torch.floor(norm_t * self.num_bins).long().clamp_(0, self.num_bins - 1)
+        polarity_offset = torch.where(
+            event_p.to(device=device).float() > 0,
+            torch.zeros_like(bin_idx),
+            torch.full_like(bin_idx, self.num_bins),
+        )
+        channel_idx = polarity_offset + bin_idx
+        flat_idx = channel_idx * (height * width) + pixel_idx
+
+        flat = rep.reshape(-1)
+        flat.index_add_(0, flat_idx, torch.ones_like(flat_idx, dtype=dtype))
+        rep = torch.log1p(rep)
+        rep = rep / rep.flatten(1).amax(dim=1).clamp_min(1.0).view(-1, 1, 1)
+        return rep
+
+
 class TwoStageEventResidualRefiner(nn.Module):
     """Second-stage event/RGB branch that predicts a residual over RGB StreamVGGT depth."""
 
@@ -38,6 +133,7 @@ class TwoStageEventResidualRefiner(nn.Module):
     def __init__(
         self,
         event_channels: int = 256,
+        rgb_token_dim: int = 2048,
         hidden_dim: int = 96,
         event_downsample: int = 4,
         residual_scale: float = 0.1,
@@ -51,12 +147,10 @@ class TwoStageEventResidualRefiner(nn.Module):
             raise ValueError(f"Unknown residual input mode {input_mode}. Expected one of {sorted(self.VALID_MODES)}")
 
         self.event_branch = self._make_branch(event_channels, hidden_dim)
-        self.rgb_branch = self._make_branch(3, hidden_dim)
-        self.global_rgb_branch = self._make_branch(3, hidden_dim)
         self.coarse_depth_branch = self._make_branch(1, hidden_dim)
-        self.global_rgb_gate = nn.Sequential(
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=1),
-            nn.Sigmoid(),
+        self.rgb_token_modulator = nn.Sequential(
+            nn.LayerNorm(rgb_token_dim),
+            nn.Linear(rgb_token_dim, 2 * hidden_dim),
         )
         self.motion_gate = nn.Sequential(
             nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1),
@@ -94,7 +188,8 @@ class TwoStageEventResidualRefiner(nn.Module):
     def forward(
         self,
         event_features: torch.Tensor,
-        images: torch.Tensor,
+        global_rgb_token: torch.Tensor,
+        frame_rgb_token: Optional[torch.Tensor],
         depth_coarse: torch.Tensor,
     ) -> dict:
         batch_size, seq_len, event_channels, event_h, event_w = event_features.shape
@@ -113,18 +208,15 @@ class TwoStageEventResidualRefiner(nn.Module):
         depth_detail = F.interpolate(depth_flat, size=detail_size, mode="bilinear", align_corners=False)
         fused = fused + self.coarse_depth_branch(depth_detail)
 
-        image_flat = images.reshape(batch_size * seq_len, 3, images.shape[-2], images.shape[-1]).to(dtype=dtype)
-        image_detail = F.interpolate(image_flat, size=detail_size, mode="bilinear", align_corners=False)
-        if self.input_mode in {"event_current_rgb", "event_global_rgb_current_rgb", "single_frame_event"}:
-            fused = fused + self.rgb_branch(image_detail)
-
-        if self.input_mode in {"event_global_rgb_current_rgb", "global_rgb_current_event"}:
-            global_rgb = images.mean(dim=1, keepdim=True).expand(-1, seq_len, -1, -1, -1)
-            global_rgb = global_rgb.reshape(batch_size * seq_len, 3, images.shape[-2], images.shape[-1]).to(dtype=dtype)
-            global_detail = F.interpolate(global_rgb, size=detail_size, mode="bilinear", align_corners=False)
-            global_feat = self.global_rgb_branch(global_detail)
-            fused = fused + global_feat
-            fused = fused * (1.0 + self.global_rgb_gate(global_feat))
+        condition_token = self._select_condition_token(global_rgb_token, frame_rgb_token)
+        if condition_token is not None:
+            if condition_token.ndim == 2:
+                condition_token = condition_token[:, None, :].expand(-1, seq_len, -1)
+            token_flat = condition_token.reshape(batch_size * seq_len, -1).to(dtype=dtype)
+            scale, shift = self.rgb_token_modulator(token_flat).chunk(2, dim=-1)
+            scale = 0.1 * torch.tanh(scale).view(batch_size * seq_len, -1, 1, 1)
+            shift = 0.1 * torch.tanh(shift).view(batch_size * seq_len, -1, 1, 1)
+            fused = fused * (1.0 + scale) + shift
 
         residual = self.refine(fused) * self.residual_scale
         if detail_size != (target_h, target_w):
@@ -138,6 +230,25 @@ class TwoStageEventResidualRefiner(nn.Module):
             "motion_density": motion_density,
         }
 
+    def _select_condition_token(
+        self,
+        global_rgb_token: Optional[torch.Tensor],
+        frame_rgb_token: Optional[torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        if self.input_mode == "current_event":
+            return None
+        if self.input_mode in {"event_current_rgb", "single_frame_event"}:
+            return frame_rgb_token
+        if self.input_mode == "global_rgb_current_event":
+            return global_rgb_token
+        if self.input_mode == "event_global_rgb_current_rgb":
+            if global_rgb_token is None:
+                return frame_rgb_token
+            if frame_rgb_token is None:
+                return global_rgb_token
+            return global_rgb_token + frame_rgb_token
+        return global_rgb_token
+
 
 class StreamVGGT(nn.Module, PyTorchModelHubMixin):
     def __init__(
@@ -146,7 +257,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         patch_size: int = 14,
         embed_dim: int = 1024,
         event_hidden_dim: int = 32,
-        event_feature_dim: int = 64,
+        event_num_bins: int = 8,
         event_encode_downsample: Optional[int] = None,
         head_frames_chunk_size: int = 8,
         residual_hidden_dim: int = 96,
@@ -163,9 +274,10 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             int(event_downsample if event_encode_downsample is None else event_encode_downsample),
         )
 
-        self.event_encoder = SimpleEventEncoder(hidden_dim=event_hidden_dim, out_chans=event_feature_dim)
+        self.event_encoder = BinnedEventEncoder(num_bins=event_num_bins)
         self.event_residual_refiner = TwoStageEventResidualRefiner(
-            event_channels=event_feature_dim,
+            event_channels=self.event_encoder.out_channels,
+            rgb_token_dim=2 * embed_dim,
             hidden_dim=residual_hidden_dim,
             event_downsample=event_downsample,
             residual_scale=residual_scale,
@@ -203,7 +315,8 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         if event_features is not None:
             residuals = self.event_residual_refiner(
                 event_features=event_features,
-                images=images,
+                global_rgb_token=predictions.get("global_rgb_token"),
+                frame_rgb_token=predictions.get("frame_rgb_token"),
                 depth_coarse=depth_coarse,
             )
             depth_residual = residuals["delta_depth"]
@@ -296,6 +409,11 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
                 predictions["vis"] = vis
                 predictions["conf"] = conf
             predictions["images"] = images
+            patch_tokens = aggregated_tokens_list[-1][:, :, patch_start_idx:, :]
+            frame_tokens = patch_tokens.mean(dim=2)
+            global_token = frame_tokens.mean(dim=1, keepdim=True).expand(-1, images.shape[1], -1)
+            predictions["frame_rgb_token"] = frame_tokens
+            predictions["global_rgb_token"] = global_token
         return predictions
 
     @staticmethod
@@ -305,7 +423,18 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         for key in keys:
             if key == "images":
                 out[key] = torch.cat([item[key] for item in per_frame_outputs], dim=1)
-            elif key in {"pose_enc", "depth", "depth_conf", "world_points", "world_points_conf", "track", "vis", "conf"}:
+            elif key in {
+                "pose_enc",
+                "depth",
+                "depth_conf",
+                "world_points",
+                "world_points_conf",
+                "track",
+                "vis",
+                "conf",
+                "frame_rgb_token",
+                "global_rgb_token",
+            }:
                 out[key] = torch.cat([item[key] for item in per_frame_outputs], dim=1)
         return out
 
