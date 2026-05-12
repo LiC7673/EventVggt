@@ -19,6 +19,11 @@ SCRIPTS=(
   "${SCRIPTS_DIR}/finetune_ablation_event_h8.py"
   "${SCRIPTS_DIR}/finetune_ablation_event_h4.py"
   "${SCRIPTS_DIR}/finetune_ablation_event_h2.py"
+  "${SCRIPTS_DIR}/finetune_event_two_stage_residual.py"
+  "${SCRIPTS_DIR}/finetune_ablation_twostage_event_current_rgb.py"
+  "${SCRIPTS_DIR}/finetune_ablation_twostage_event_global_rgb_current_rgb.py"
+  "${SCRIPTS_DIR}/finetune_ablation_twostage_global_rgb_current_event.py"
+  "${SCRIPTS_DIR}/finetune_ablation_twostage_single_frame_event.py"
 )
 
 if [[ "${#GPUS[@]}" -eq 0 ]]; then

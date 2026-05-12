@@ -1,0 +1,27 @@
+defaults:
+  - finetune_event
+  - _self_
+
+exp_name: event_two_stage_current_event
+logdir: ${save_dir}/${exp_name}/logs
+output_dir: ${save_dir}/${exp_name}
+
+model:
+  head_frames_chunk_size: 2
+  residual_input_mode: current_event
+  residual_hidden_dim: 96
+  event_downsample: 4
+  residual_scale: 0.1
+
+train:
+  unfreeze_heads: false
+  unfreeze_aggregator_blocks: false
+  unfreeze_aggregator_last_blocks: 0
+  vggt_last_blocks_lr: 1.0e-5
+
+loss:
+  residual_depth_weight: 1.0
+  coarse_depth_weight: 0.0
+  normal_weight: 0.0
+  points_loss_type: "l1"
+
