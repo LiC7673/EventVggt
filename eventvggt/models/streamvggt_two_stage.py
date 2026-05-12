@@ -264,10 +264,12 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         event_downsample: int = 4,
         residual_scale: float = 0.1,
         residual_input_mode: str = "current_event",
+        disable_second_stage: bool = False,
     ) -> None:
         super().__init__()
         self.head_frames_chunk_size = head_frames_chunk_size
         self.residual_input_mode = str(residual_input_mode)
+        self.disable_second_stage = bool(disable_second_stage)
         self.single_frame_rgb = self.residual_input_mode == "single_frame_event"
         self.event_encode_downsample = max(
             1,
@@ -312,7 +314,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         depth_residual = torch.zeros_like(depth_coarse)
         event_motion_density = None
 
-        if event_features is not None:
+        if event_features is not None and not self.disable_second_stage:
             residuals = self.event_residual_refiner(
                 event_features=event_features,
                 global_rgb_token=predictions.get("global_rgb_token"),

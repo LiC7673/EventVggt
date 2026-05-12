@@ -14,14 +14,18 @@ model:
   residual_hidden_dim: 64
   event_downsample: 4
   residual_scale: 0.1
+  disable_second_stage: false
 
 train:
+  two_stage_train_mode: stage2
   unfreeze_heads: false
   unfreeze_aggregator_blocks: false
   unfreeze_aggregator_last_blocks: 0
   vggt_last_blocks_lr: 1.0e-5
 
 loss:
+  pose_weight: 0.0
+  points_weight: 0.0
   residual_depth_weight: 1.0
   coarse_depth_weight: 0.0
   normal_weight: 0.0

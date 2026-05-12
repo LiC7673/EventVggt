@@ -33,7 +33,7 @@ from eventvggt.datasets.my_event_dataset import (
     get_combined_dataset,
 )
 from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
-from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding
+from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -131,10 +131,10 @@ def build_event_loader(cfg, split="train"):
     data_loader = DataLoader(
         dataset,
         batch_size=cfg.batch_size,
-        shuffle=True,
+        shuffle=(split == "train"),
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_mem,
-        drop_last=True,
+        drop_last=(split == "train"),
         collate_fn=event_multiview_collate,
     )
     printer.info(
@@ -283,6 +283,65 @@ def camera_pose_to_pose_encoding(
         intrinsics,
         image_size_hw=image_size_hw,
     )
+
+
+def ensure_homogeneous(c2w: torch.Tensor) -> torch.Tensor:
+    if c2w.shape[-2:] == (3, 4):
+        bottom_row = torch.tensor([0, 0, 0, 1], device=c2w.device, dtype=c2w.dtype)
+        bottom_row = bottom_row.view(1, 1, 1, 4).expand(*c2w.shape[:-2], 1, 4)
+        c2w = torch.cat([c2w, bottom_row], dim=-2)
+    if c2w.shape[-2:] != (4, 4):
+        raise ValueError(f"Expected pose shape [...,4,4] or [...,3,4], got {c2w.shape}")
+    return c2w
+
+
+def pose_encoding_to_c2w(
+    pose_encoding: torch.Tensor,
+    image_size_hw: Tuple[int, int],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    w2c_pred, intrinsics_pred = pose_encoding_to_extri_intri(
+        pose_encoding,
+        image_size_hw=image_size_hw,
+    )
+    batch_size, seq_len = w2c_pred.shape[:2]
+    bottom_row = torch.tensor([0, 0, 0, 1], device=w2c_pred.device, dtype=w2c_pred.dtype)
+    bottom_row = bottom_row.view(1, 1, 1, 4).expand(batch_size, seq_len, 1, 4)
+    w2c_full = torch.cat([w2c_pred, bottom_row], dim=-2)
+    return torch.linalg.inv(w2c_full), intrinsics_pred
+
+
+def c2w_to_pose_encoding(
+    c2w: torch.Tensor,
+    intrinsics: torch.Tensor,
+    image_size_hw: Tuple[int, int],
+) -> torch.Tensor:
+    c2w = ensure_homogeneous(c2w)
+    w2c = torch.linalg.inv(c2w)
+    return extri_intri_to_pose_encoding(
+        w2c[..., :3, :],
+        intrinsics,
+        image_size_hw=image_size_hw,
+    )
+
+
+def align_c2w_by_first_frame(
+    pred_c2w: torch.Tensor,
+    gt_c2w: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    pred_c2w = ensure_homogeneous(pred_c2w)
+    gt_c2w = ensure_homogeneous(gt_c2w)
+    first_pred = pred_c2w[:, 0]
+    first_gt = gt_c2w[:, 0]
+    alignment = torch.matmul(first_gt, torch.linalg.inv(first_pred)).unsqueeze(1)
+    return torch.matmul(alignment, pred_c2w), alignment
+
+
+def transform_world_points(points: torch.Tensor, transform: torch.Tensor) -> torch.Tensor:
+    if transform.ndim == 3:
+        transform = transform[:, None]
+    rot = transform[..., :3, :3]
+    trans = transform[..., :3, 3]
+    return torch.einsum("bsij,bshwj->bshwi", rot, points) + trans.unsqueeze(-2).unsqueeze(-2)
 
 
 def depth_to_camera_points(depth: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tensor:
@@ -496,16 +555,21 @@ class EventSupervisedLoss(nn.Module):
         ).to(device=pose_pred.device, dtype=pose_pred.dtype)
         
         # 计算第一帧的pose对齐矩阵 (used to align other frames)
-        pose_first_pred = pose_pred[:, 0:1, :]  # [B, 1, D]
-        pose_first_gt = pose_gt[:, 0:1, :]      # [B, 1, D]
-        pose_alignment = pose_first_gt - pose_first_pred  # [B, 1, D]
+        pred_c2w, pred_intrinsics = pose_encoding_to_c2w(pose_pred, image_size_hw=(height, width))
+        pred_c2w_aligned, first_frame_alignment = align_c2w_by_first_frame(pred_c2w, pose_matrix_gt)
+        pose_pred_aligned = c2w_to_pose_encoding(
+            pred_c2w_aligned,
+            pred_intrinsics,
+            image_size_hw=(height, width),
+        ).to(device=pose_pred.device, dtype=pose_pred.dtype)
+        points_pred_aligned = transform_world_points(points_pred, first_frame_alignment)
 
         # ============ Pose Loss 计算 ============
         # 将对齐矩阵应用到其他帧的预测 pose (frame 1 onwards)
         
         # Pose loss 只计算第一帧以外的帧 (skip first frame for pose supervision)
-        pose_pred_aligned = pose_pred.clone()
-        pose_pred_aligned[:, 1:, :] = pose_pred[:, 1:, :] + pose_alignment  # 骞挎挱搴旂敤瀵归綈
+        if self.align_depth_scale_enabled:
+            pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
 
         if pose_pred_aligned.shape[1] > 1:
             pose_loss = F.smooth_l1_loss(pose_pred_aligned[:, 1:, :], pose_gt[:, 1:, :])
@@ -513,17 +577,14 @@ class EventSupervisedLoss(nn.Module):
             # 如果只有一帧，则pose loss为0
             pose_loss = pose_pred.new_tensor(0.0, requires_grad=True)
 
-        if self.align_depth_scale_enabled:
-            pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
-        
         # depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         
         # points_loss 根据 points_loss_type 选择 L1 或 Chamfer Distance
         if self.points_loss_type == "l1":
-            points_loss = masked_l1(points_pred, points_gt, points_mask)
+            points_loss = masked_l1(points_pred_aligned, points_gt, points_mask)
         else:  # "cd"
-            points_loss = masked_chamfer_distance(points_pred, points_gt, valid_mask)
+            points_loss = masked_chamfer_distance(points_pred_aligned, points_gt, valid_mask)
 
         total_loss = (
             # self.depth_weight * depth_loss
@@ -544,7 +605,7 @@ class EventSupervisedLoss(nn.Module):
             "depth_pred": depth_pred.detach(),
             "depth_gt": depth_gt.detach(),
             "depth_gt_aligned": depth_gt_aligned.detach(),
-            "points_pred": points_pred.detach(),
+            "points_pred": points_pred_aligned.detach(),
             "points_gt": points_gt.detach(),
             "valid_mask": valid_mask.detach(),
             "pose_pred": pose_pred_aligned.detach(),

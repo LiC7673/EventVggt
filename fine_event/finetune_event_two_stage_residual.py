@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -37,54 +38,142 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
         *args,
         residual_depth_weight: float = 1.0,
         coarse_depth_weight: float = 0.0,
+        train_mode: str = "stage2",
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.residual_depth_weight = float(residual_depth_weight)
         self.coarse_depth_weight = float(coarse_depth_weight)
+        self.train_mode = str(train_mode).lower()
+
+    def _forward_stage1(
+        self,
+        model_output,
+        views: List[Dict[str, torch.Tensor]],
+    ) -> Tuple[torch.Tensor, Dict[str, float], Dict[str, torch.Tensor]]:
+        coarse_ress = []
+        for res in model_output.ress:
+            coarse_res = dict(res)
+            if "depth_coarse" in res:
+                coarse_res["depth"] = res["depth_coarse"]
+            coarse_ress.append(coarse_res)
+
+        total_loss, details, aux = super().forward(SimpleNamespace(ress=coarse_ress), views)
+
+        depth_coarse = _stack_res_field(model_output, "depth_coarse")
+        depth_residual = _stack_res_field(model_output, "depth_residual")
+        if depth_coarse is not None:
+            aux["depth_coarse"] = depth_coarse.detach()
+        if depth_residual is not None:
+            aux["depth_residual"] = depth_residual.detach()
+
+        event_motion_density = getattr(model_output, "event_motion_density", None)
+        if event_motion_density is not None:
+            aux["event_motion_density"] = event_motion_density.detach()
+
+        details["coarse_depth_loss"] = details.get("depth_loss", 0.0)
+        details["residual_depth_loss"] = 0.0
+        details["depth_residual_abs"] = 0.0
+        return total_loss, details, aux
 
     def forward(
         self,
         model_output,
         views: List[Dict[str, torch.Tensor]],
     ) -> Tuple[torch.Tensor, Dict[str, float], Dict[str, torch.Tensor]]:
-        total_loss, details, aux = super().forward(model_output, views)
+        if self.train_mode == "stage1":
+            return self._forward_stage1(model_output, views)
 
-        depth_pred = torch.stack([res["depth"] for res in model_output.ress], dim=1).squeeze(-1)
-        valid_mask = aux["valid_mask"].to(device=depth_pred.device)
-        depth_gt_aligned = aux["depth_gt_aligned"].to(device=depth_pred.device, dtype=depth_pred.dtype)
+        pred = model_output.ress
+        depth_pred = torch.stack([res["depth"] for res in pred], dim=1).squeeze(-1)
+        pose_pred = torch.stack([res["camera_pose"] for res in pred], dim=1)
+
+        depth_gt = fe.stack_view_field(views, "depthmap").to(device=depth_pred.device, dtype=depth_pred.dtype)
+        intrinsics_gt = fe.stack_view_field(views, "camera_intrinsics").to(
+            device=depth_pred.device,
+            dtype=depth_pred.dtype,
+        )
+        pose_matrix_gt = fe.stack_view_field(views, "camera_pose").to(
+            device=depth_pred.device,
+            dtype=depth_pred.dtype,
+        )
+        valid_mask = fe.build_valid_mask(
+            views,
+            depth_gt,
+            depth_min=self.depth_min,
+            depth_max=self.depth_max,
+        ).to(device=depth_pred.device)
+
+        if self.align_depth_scale_enabled:
+            depth_gt_aligned, depth_scales = fe.align_depth_scale(depth_pred.detach(), depth_gt, valid_mask)
+        else:
+            depth_gt_aligned = depth_gt
+            depth_scales = depth_gt.new_ones(depth_gt.shape[:2])
+
+        depth_loss = fe.masked_l1(depth_pred, depth_gt_aligned, valid_mask)
 
         depth_coarse = _stack_res_field(model_output, "depth_coarse")
         depth_residual = _stack_res_field(model_output, "depth_residual")
 
         if depth_coarse is None or depth_residual is None:
             zero = depth_pred.new_tensor(0.0)
-            details["coarse_depth_loss"] = 0.0
-            details["residual_depth_loss"] = 0.0
-            details["depth_residual_abs"] = 0.0
-            return total_loss + zero, details, aux
-
-        depth_coarse = depth_coarse.to(device=depth_pred.device, dtype=depth_pred.dtype)
-        depth_residual = depth_residual.to(device=depth_pred.device, dtype=depth_pred.dtype)
-        residual_target = depth_gt_aligned - depth_coarse.detach()
-
-        coarse_depth_loss = fe.masked_l1(depth_coarse, depth_gt_aligned, valid_mask)
-        residual_depth_loss = fe.masked_l1(depth_residual, residual_target, valid_mask)
-        residual_abs = fe.masked_l1(depth_residual, torch.zeros_like(depth_residual), valid_mask)
+            coarse_depth_loss = zero
+            residual_depth_loss = zero
+            residual_abs = zero
+            residual_target = None
+        else:
+            depth_coarse = depth_coarse.to(device=depth_pred.device, dtype=depth_pred.dtype)
+            depth_residual = depth_residual.to(device=depth_pred.device, dtype=depth_pred.dtype)
+            residual_target = depth_gt_aligned - depth_coarse.detach()
+            coarse_depth_loss = fe.masked_l1(depth_coarse, depth_gt_aligned, valid_mask)
+            residual_depth_loss = fe.masked_l1(depth_residual, residual_target, valid_mask)
+            residual_abs = fe.masked_l1(depth_residual, torch.zeros_like(depth_residual), valid_mask)
 
         total_loss = (
-            total_loss
+            self.depth_weight * depth_loss
             + self.coarse_depth_weight * coarse_depth_loss
             + self.residual_depth_weight * residual_depth_loss
         )
 
-        details["coarse_depth_loss"] = float(coarse_depth_loss.detach())
-        details["residual_depth_loss"] = float(residual_depth_loss.detach())
-        details["depth_residual_abs"] = float(residual_abs.detach())
+        height, width = depth_gt.shape[-2:]
+        with torch.no_grad():
+            points_pred = fe.depth_to_world_points(depth_pred.detach(), intrinsics_gt, pose_matrix_gt)
+            points_gt = fe.depth_to_world_points(depth_gt_aligned.detach(), intrinsics_gt, pose_matrix_gt)
+            pose_gt = fe.camera_pose_to_pose_encoding(
+                pose_matrix_gt,
+                intrinsics_gt,
+                image_size_hw=(height, width),
+            ).to(device=pose_pred.device, dtype=pose_pred.dtype)
+            if self.align_depth_scale_enabled:
+                pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
 
-        aux["depth_coarse"] = depth_coarse.detach()
-        aux["depth_residual"] = depth_residual.detach()
-        aux["depth_residual_target"] = residual_target.detach()
+        details = {
+            "pose_loss": 0.0,
+            "depth_loss": float(depth_loss.detach()),
+            "points_loss": 0.0,
+            "normal_loss": 0.0,
+            "depth_scale": float(depth_scales.mean().detach()),
+            "coarse_depth_loss": float(coarse_depth_loss.detach()),
+            "residual_depth_loss": float(residual_depth_loss.detach()),
+            "depth_residual_abs": float(residual_abs.detach()),
+        }
+
+        aux = {
+            "depth_pred": depth_pred.detach(),
+            "depth_gt": depth_gt.detach(),
+            "depth_gt_aligned": depth_gt_aligned.detach(),
+            "points_pred": points_pred.detach(),
+            "points_gt": points_gt.detach(),
+            "valid_mask": valid_mask.detach(),
+            "pose_pred": pose_pred.detach(),
+            "pose_gt": pose_gt.detach(),
+        }
+
+        if depth_coarse is not None and depth_residual is not None:
+            aux["depth_coarse"] = depth_coarse.detach()
+            aux["depth_residual"] = depth_residual.detach()
+        if residual_target is not None:
+            aux["depth_residual_target"] = residual_target.detach()
 
         event_motion_density = getattr(model_output, "event_motion_density", None)
         if event_motion_density is not None:
@@ -97,30 +186,35 @@ def configure_two_stage_trainable_params(model, cfg) -> None:
     for _, param in model.named_parameters():
         param.requires_grad = False
 
-    enabled_prefixes = ["event_encoder", "event_residual_refiner"]
+    train_mode = str(getattr(cfg.train, "two_stage_train_mode", "stage2")).lower()
+    if train_mode == "stage1":
+        if cfg.train.unfreeze_heads:
+            for module in (model.camera_head, model.depth_head, model.point_head, model.track_head):
+                for param in module.parameters():
+                    param.requires_grad = True
+
+        if cfg.train.unfreeze_aggregator_blocks:
+            for param in model.aggregator.frame_blocks.parameters():
+                param.requires_grad = True
+            for param in model.aggregator.global_blocks.parameters():
+                param.requires_grad = True
+
+        last_blocks = int(getattr(cfg.train, "unfreeze_aggregator_last_blocks", 0))
+        if last_blocks > 0:
+            for block in model.aggregator.frame_blocks[-last_blocks:]:
+                for param in block.parameters():
+                    param.requires_grad = True
+            for block in model.aggregator.global_blocks[-last_blocks:]:
+                for param in block.parameters():
+                    param.requires_grad = True
+        return
+
+    if train_mode != "stage2":
+        raise ValueError(f"Unknown two_stage_train_mode={train_mode!r}; expected 'stage1' or 'stage2'")
+
     for name, param in model.named_parameters():
-        if any(name.startswith(prefix) for prefix in enabled_prefixes):
+        if name.startswith(("event_encoder", "event_residual_refiner")):
             param.requires_grad = True
-
-    if cfg.train.unfreeze_heads:
-        for module in (model.camera_head, model.depth_head, model.point_head, model.track_head):
-            for param in module.parameters():
-                param.requires_grad = True
-
-    if cfg.train.unfreeze_aggregator_blocks:
-        for param in model.aggregator.frame_blocks.parameters():
-            param.requires_grad = True
-        for param in model.aggregator.global_blocks.parameters():
-            param.requires_grad = True
-
-    last_blocks = int(getattr(cfg.train, "unfreeze_aggregator_last_blocks", 0))
-    if last_blocks > 0:
-        for block in model.aggregator.frame_blocks[-last_blocks:]:
-            for param in block.parameters():
-                param.requires_grad = True
-        for block in model.aggregator.global_blocks[-last_blocks:]:
-            for param in block.parameters():
-                param.requires_grad = True
 
 
 def build_two_stage_optimizer_params(model, cfg):
@@ -154,9 +248,12 @@ def launch(
     *,
     exp_name: Optional[str] = None,
     residual_input_mode: Optional[str] = None,
+    train_mode: Optional[str] = None,
 ) -> None:
     if residual_input_mode is not None:
         cfg.model.residual_input_mode = residual_input_mode
+    if train_mode is not None:
+        cfg.train.two_stage_train_mode = train_mode
     if exp_name is not None:
         _set_exp_paths(cfg, exp_name)
 
@@ -176,6 +273,7 @@ def launch(
                 event_downsample=int(getattr(cfg.model, "event_downsample", 4)),
                 residual_scale=float(getattr(cfg.model, "residual_scale", 0.1)),
                 residual_input_mode=str(getattr(cfg.model, "residual_input_mode", "current_event")),
+                disable_second_stage=bool(getattr(cfg.model, "disable_second_stage", False)),
                 **kwargs,
             )
 
@@ -185,6 +283,7 @@ def launch(
                 *args,
                 residual_depth_weight=float(getattr(cfg.loss, "residual_depth_weight", 1.0)),
                 coarse_depth_weight=float(getattr(cfg.loss, "coarse_depth_weight", 0.0)),
+                train_mode=str(getattr(cfg.train, "two_stage_train_mode", "stage2")),
                 **kwargs,
             )
 
