@@ -9,7 +9,9 @@ output_dir: ${save_dir}/${exp_name}
 model:
   head_frames_chunk_size: 2
   residual_input_mode: current_event
-  residual_hidden_dim: 96
+  event_feature_dim: 64
+  event_encode_downsample: 4
+  residual_hidden_dim: 64
   event_downsample: 4
   residual_scale: 0.1
 
@@ -25,3 +27,5 @@ loss:
   normal_weight: 0.0
   points_loss_type: "l1"
 
+data:
+  num_views: 4

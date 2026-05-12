@@ -100,7 +100,7 @@ class TwoStageEventResidualRefiner(nn.Module):
         batch_size, seq_len, event_channels, event_h, event_w = event_features.shape
         target_h, target_w = depth_coarse.shape[2:4]
         detail_size = self._detail_size(target_h, target_w)
-        dtype = depth_coarse.dtype
+        dtype = event_features.dtype
 
         event_flat = event_features.reshape(batch_size * seq_len, event_channels, event_h, event_w).to(dtype=dtype)
         event_flat = F.interpolate(event_flat, size=detail_size, mode="bilinear", align_corners=False)
@@ -109,6 +109,7 @@ class TwoStageEventResidualRefiner(nn.Module):
         fused = event_feat * motion_density
 
         depth_flat = depth_coarse.permute(0, 1, 4, 2, 3).reshape(batch_size * seq_len, 1, target_h, target_w)
+        depth_flat = depth_flat.to(dtype=dtype)
         depth_detail = F.interpolate(depth_flat, size=detail_size, mode="bilinear", align_corners=False)
         fused = fused + self.coarse_depth_branch(depth_detail)
 
@@ -145,6 +146,8 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         patch_size: int = 14,
         embed_dim: int = 1024,
         event_hidden_dim: int = 32,
+        event_feature_dim: int = 64,
+        event_encode_downsample: Optional[int] = None,
         head_frames_chunk_size: int = 8,
         residual_hidden_dim: int = 96,
         event_downsample: int = 4,
@@ -155,10 +158,14 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         self.head_frames_chunk_size = head_frames_chunk_size
         self.residual_input_mode = str(residual_input_mode)
         self.single_frame_rgb = self.residual_input_mode == "single_frame_event"
+        self.event_encode_downsample = max(
+            1,
+            int(event_downsample if event_encode_downsample is None else event_encode_downsample),
+        )
 
-        self.event_encoder = SimpleEventEncoder(hidden_dim=event_hidden_dim)
+        self.event_encoder = SimpleEventEncoder(hidden_dim=event_hidden_dim, out_chans=event_feature_dim)
         self.event_residual_refiner = TwoStageEventResidualRefiner(
-            event_channels=256,
+            event_channels=event_feature_dim,
             hidden_dim=residual_hidden_dim,
             event_downsample=event_downsample,
             residual_scale=residual_scale,
@@ -263,6 +270,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
                     aggregated_tokens_list,
                     images=images,
                     patch_start_idx=patch_start_idx,
+                    frames_chunk_size=self.head_frames_chunk_size,
                 )
                 predictions["depth"] = depth
                 predictions["depth_conf"] = depth_conf
@@ -272,6 +280,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
                     aggregated_tokens_list,
                     images=images,
                     patch_start_idx=patch_start_idx,
+                    frames_chunk_size=self.head_frames_chunk_size,
                 )
                 predictions["world_points"] = pts3d
                 predictions["world_points_conf"] = pts3d_conf
@@ -350,14 +359,35 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             device = reference_img.device
             dtype = reference_img.dtype
 
+        encode_h = max(1, height // self.event_encode_downsample)
+        encode_w = max(1, width // self.event_encode_downsample)
+        if encode_h != height or encode_w != width:
+            scale_x = float(encode_w) / max(float(width), 1.0)
+            scale_y = float(encode_h) / max(float(height), 1.0)
+
+            def scale_event_xy(xy: torch.Tensor) -> torch.Tensor:
+                if xy.numel() == 0:
+                    return xy
+                scaled = xy.clone()
+                scaled_x = torch.floor(scaled[:, 0].float() * scale_x).clamp_(0, encode_w - 1)
+                scaled_y = torch.floor(scaled[:, 1].float() * scale_y).clamp_(0, encode_h - 1)
+                scaled[:, 0] = scaled_x.to(dtype=scaled.dtype)
+                scaled[:, 1] = scaled_y.to(dtype=scaled.dtype)
+                return scaled
+
+            batched_event_xy = [
+                [scale_event_xy(batched_event_xy[b][s]) for s in range(seq_len)]
+                for b in range(batch_size)
+            ]
+
         time_range = torch.stack(event_time_range, dim=1).to(device=device, dtype=dtype)
         return self.event_encoder(
             event_xy=batched_event_xy,
             event_t=batched_event_t,
             event_p=batched_event_p,
             event_time_range=time_range,
-            height=height,
-            width=width,
+            height=encode_h,
+            width=encode_w,
             device=device,
             dtype=dtype,
         )
