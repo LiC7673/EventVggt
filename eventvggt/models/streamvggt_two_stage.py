@@ -135,7 +135,7 @@ class TwoStageEventResidualRefiner(nn.Module):
         event_channels: int = 256,
         rgb_token_dim: int = 2048,
         hidden_dim: int = 96,
-        event_downsample: int = 4,
+        event_downsample: int = 1,
         residual_scale: float = 0.1,
         input_mode: str = "current_event",
     ) -> None:
@@ -198,14 +198,17 @@ class TwoStageEventResidualRefiner(nn.Module):
         dtype = event_features.dtype
 
         event_flat = event_features.reshape(batch_size * seq_len, event_channels, event_h, event_w).to(dtype=dtype)
-        event_flat = F.interpolate(event_flat, size=detail_size, mode="bilinear", align_corners=False)
+        if (event_h, event_w) != detail_size:
+            event_flat = F.interpolate(event_flat, size=detail_size, mode="bilinear", align_corners=False)
         event_feat = self.event_branch(event_flat)
         motion_density = self.motion_gate(event_feat)
         fused = event_feat * motion_density
 
         depth_flat = depth_coarse.permute(0, 1, 4, 2, 3).reshape(batch_size * seq_len, 1, target_h, target_w)
         depth_flat = depth_flat.to(dtype=dtype)
-        depth_detail = F.interpolate(depth_flat, size=detail_size, mode="bilinear", align_corners=False)
+        depth_detail = depth_flat
+        if (target_h, target_w) != detail_size:
+            depth_detail = F.interpolate(depth_flat, size=detail_size, mode="bilinear", align_corners=False)
         fused = fused + self.coarse_depth_branch(depth_detail)
 
         condition_token = self._select_condition_token(global_rgb_token, frame_rgb_token)
@@ -261,7 +264,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         event_encode_downsample: Optional[int] = None,
         head_frames_chunk_size: int = 8,
         residual_hidden_dim: int = 96,
-        event_downsample: int = 4,
+        event_downsample: int = 1,
         residual_scale: float = 0.1,
         residual_input_mode: str = "current_event",
         disable_second_stage: bool = False,

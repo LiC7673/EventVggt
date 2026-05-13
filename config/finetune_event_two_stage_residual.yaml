@@ -10,9 +10,9 @@ model:
   head_frames_chunk_size: 2
   residual_input_mode: global_rgb_current_event
   event_num_bins: 8
-  event_encode_downsample: 4
+  event_encode_downsample: 1
   residual_hidden_dim: 64
-  event_downsample: 4
+  event_downsample: 1
   residual_scale: 0.1
   disable_second_stage: false
 
