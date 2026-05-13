@@ -6,6 +6,9 @@ ACCELERATE_BIN="${ACCELERATE_BIN:-accelerate}"
 GPU_LIST="${GPU_LIST:-0,1,2,3,4,5,6,7}"
 GPUS_PER_JOB="${GPUS_PER_JOB:-2}"
 BASE_PORT="${BASE_PORT:-29500}"
+NUM_WORKERS="${NUM_WORKERS:-0}"
+PIN_MEM="${PIN_MEM:-false}"
+OMP_THREADS="${OMP_THREADS:-1}"
 IFS=',' read -r -a GPUS <<< "$GPU_LIST"
 
 SCRIPTS_DIR="fine_event"
@@ -63,6 +66,8 @@ echo "Root: ${ROOT_DIR}"
 echo "GPU list: ${GPU_LIST}"
 echo "GPUs per job: ${GPUS_PER_JOB}"
 echo "GPU groups: ${GPU_GROUPS[*]}"
+echo "DataLoader workers per process: ${NUM_WORKERS}"
+echo "Pin memory: ${PIN_MEM}"
 echo "Logs: ${LOG_DIR}"
 echo "Extra Hydra args: $*"
 echo
@@ -86,12 +91,20 @@ run_worker() {
     mkdir -p "$(dirname "$log_file")"
     if (
       cd "$ROOT_DIR"
-      CUDA_VISIBLE_DEVICES="$gpu_group" HYDRA_FULL_ERROR=1 "$ACCELERATE_BIN" launch \
+      CUDA_VISIBLE_DEVICES="$gpu_group" \
+      HYDRA_FULL_ERROR=1 \
+      TORCH_DISTRIBUTED_DEBUG=DETAIL \
+      OMP_NUM_THREADS="$OMP_THREADS" \
+      MKL_NUM_THREADS="$OMP_THREADS" \
+      "$ACCELERATE_BIN" launch \
         --multi_gpu \
         --num_processes "$GPUS_PER_JOB" \
         --num_machines 1 \
         --main_process_port "$port" \
-        "$script" "$@"
+        "$script" \
+        num_workers="$NUM_WORKERS" \
+        pin_mem="$PIN_MEM" \
+        "$@"
     ) >"$log_file" 2>&1; then
       echo "[GPUs ${gpu_group}] done  ${script}"
     else

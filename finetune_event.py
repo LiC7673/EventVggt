@@ -16,6 +16,7 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.multiprocessing as torch_mp
 from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -36,6 +37,10 @@ from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
 from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
 torch.backends.cuda.matmul.allow_tf32 = True
+try:
+    torch_mp.set_sharing_strategy("file_system")
+except RuntimeError:
+    pass
 
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
