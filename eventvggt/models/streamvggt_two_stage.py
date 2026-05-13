@@ -26,9 +26,10 @@ class StreamVGGTOutput(ModelOutput):
 class BinnedEventEncoder(nn.Module):
     """Encode each inter-frame event packet as polarity-separated temporal bins."""
 
-    def __init__(self, num_bins: int = 8) -> None:
+    def __init__(self, num_bins: int = 8, count_cmax: float = 3.0) -> None:
         super().__init__()
         self.num_bins = max(1, int(num_bins))
+        self.count_cmax = max(1.0, float(count_cmax))
         self.out_channels = 2 * self.num_bins
 
     def forward(
@@ -114,8 +115,8 @@ class BinnedEventEncoder(nn.Module):
 
         flat = rep.reshape(-1)
         flat.index_add_(0, flat_idx, torch.ones_like(flat_idx, dtype=dtype))
-        rep = torch.log1p(rep)
-        rep = rep / rep.flatten(1).amax(dim=1).clamp_min(1.0).view(-1, 1, 1)
+        rep = torch.clamp(rep, max=self.count_cmax)
+        rep = torch.log1p(rep) / torch.log1p(rep.new_tensor(self.count_cmax))
         return rep
 
 
@@ -261,6 +262,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         embed_dim: int = 1024,
         event_hidden_dim: int = 32,
         event_num_bins: int = 8,
+        event_count_cmax: float = 3.0,
         event_encode_downsample: Optional[int] = None,
         head_frames_chunk_size: int = 8,
         residual_hidden_dim: int = 96,
@@ -279,7 +281,7 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             int(event_downsample if event_encode_downsample is None else event_encode_downsample),
         )
 
-        self.event_encoder = BinnedEventEncoder(num_bins=event_num_bins)
+        self.event_encoder = BinnedEventEncoder(num_bins=event_num_bins, count_cmax=event_count_cmax)
         self.event_residual_refiner = TwoStageEventResidualRefiner(
             event_channels=self.event_encoder.out_channels,
             rgb_token_dim=2 * embed_dim,

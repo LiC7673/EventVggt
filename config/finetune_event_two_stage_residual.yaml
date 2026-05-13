@@ -10,10 +10,11 @@ model:
   head_frames_chunk_size: 2
   residual_input_mode: global_rgb_current_event
   event_num_bins: 8
+  event_count_cmax: 3.0
   event_encode_downsample: 1
   residual_hidden_dim: 64
   event_downsample: 1
-  residual_scale: 0.1
+  residual_scale: 0.05
   disable_second_stage: false
 
 train:
@@ -27,6 +28,8 @@ loss:
   pose_weight: 0.0
   points_weight: 0.0
   residual_depth_weight: 1.0
+  residual_smooth_weight: 0.05
+  residual_smooth_alpha: 10.0
   coarse_depth_weight: 0.0
   normal_weight: 0.0
   points_loss_type: "l1"
