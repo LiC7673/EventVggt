@@ -167,7 +167,7 @@ class NormalConsistencyEventSupervisedLoss(fe.EventSupervisedLoss):
 
 @hydra.main(
     version_base=None,
-    config_path=str(Path(__file__).resolve().parent / "config"),
+    config_path=str(Path(__file__).resolve().parents[1] / "config"),
     config_name="finetune_event_normal_consistency.yaml",
 )
 def run(cfg: OmegaConf):
