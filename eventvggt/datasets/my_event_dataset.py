@@ -37,6 +37,10 @@ def _format_ldr_event_dir(ldr_event_id):
     return value if value.startswith("ev_") else f"ev_{value}"
 
 
+def _is_random_ldr_event_id(ldr_event_id):
+    return str(ldr_event_id).lower() in {"random", "any", "all", "multi", "*"}
+
+
 def _numeric_ev_key(name):
     if name.startswith("ev_") and name[3:].isdigit():
         return (0, int(name[3:]))
@@ -63,6 +67,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.active_scene_count = active_scene_count
         self.test_frame_count = test_frame_count
         self.ldr_event_id = ldr_event_id
+        self.random_ldr_event = _is_random_ldr_event_id(ldr_event_id)
         self.start_img_ids = []
         self.is_metric = False
         self.video = True
@@ -89,6 +94,18 @@ class MyEventDataset(BaseEventMultiViewDataset):
         intrinsics = np.repeat(intrinsics[None], len(poses), axis=0).astype(np.float32)
         return intrinsics, poses
 
+    def _list_ldr_event_dirs(self, scene_dir):
+        ldr_root = osp.join(scene_dir, "LDR")
+        if not osp.isdir(ldr_root):
+            return {}
+
+        candidates = {
+            name: osp.join(ldr_root, name)
+            for name in os.listdir(ldr_root)
+            if osp.isdir(osp.join(ldr_root, name)) and name.startswith("ev_")
+        }
+        return dict(sorted(candidates.items(), key=lambda item: _numeric_ev_key(item[0])))
+
     def _resolve_ldr_dir(self, scene_dir):
         ldr_root = osp.join(scene_dir, "LDR")
         requested = _format_ldr_event_dir(self.ldr_event_id)
@@ -108,25 +125,61 @@ class MyEventDataset(BaseEventMultiViewDataset):
 
         return osp.join(ldr_root, sorted(candidates, key=_numeric_ev_key)[-1])
 
+    def _resolve_ldr_dirs(self, scene_dir):
+        ldr_dirs = self._list_ldr_event_dirs(scene_dir)
+        if self.random_ldr_event:
+            return ldr_dirs
+
+        requested = _format_ldr_event_dir(self.ldr_event_id)
+        if requested is not None:
+            return {requested: osp.join(scene_dir, "LDR", requested)}
+
+        if not ldr_dirs:
+            return {"ev_auto_missing": osp.join(scene_dir, "LDR", "ev_auto_missing")}
+
+        default_name = sorted(ldr_dirs, key=_numeric_ev_key)[-1]
+        return {default_name: ldr_dirs[default_name]}
+
     def _probe_scene(self, scene_name):
         scene_dir = osp.join(self.ROOT, scene_name)
-        ldr_dir = self._resolve_ldr_dir(scene_dir)
-        image_paths = _list_files(ldr_dir, {".png", ".jpg", ".jpeg"})
+        ldr_dirs = self._resolve_ldr_dirs(scene_dir)
         event_path = osp.join(scene_dir, "cur_event", "events.h5")
         pose_json = osp.join(scene_dir, "transforms.json")
 
-        if not image_paths or not osp.isfile(event_path) or not osp.isfile(pose_json):
+        if not ldr_dirs or not osp.isfile(event_path) or not osp.isfile(pose_json):
             return None
 
         intrinsics, poses = self._load_camera_matrices(pose_json)
-        frame_count = min(len(image_paths), len(intrinsics), len(poses))
+        image_paths_by_ldr = {}
+        frame_count_by_ldr = {}
+        for ldr_event_name, ldr_dir in ldr_dirs.items():
+            image_paths = _list_files(ldr_dir, {".png", ".jpg", ".jpeg"})
+            frame_count = min(len(image_paths), len(intrinsics), len(poses))
+            if frame_count >= self.num_views:
+                image_paths_by_ldr[ldr_event_name] = image_paths
+                frame_count_by_ldr[ldr_event_name] = frame_count
+
+        if not image_paths_by_ldr:
+            return None
+
+        frame_count = min(frame_count_by_ldr.values())
         if frame_count < self.num_views:
             return None
+        available_ldr_events = sorted(image_paths_by_ldr, key=_numeric_ev_key)
+        default_ldr_event = available_ldr_events[-1]
 
         return {
             "scene": scene_name,
             "scene_dir": scene_dir,
-            "ldr_dir": ldr_dir,
+            "ldr_dirs": {name: ldr_dirs[name] for name in available_ldr_events},
+            "image_paths_by_ldr": {
+                name: image_paths_by_ldr[name] for name in available_ldr_events
+            },
+            "frame_count_by_ldr": {
+                name: frame_count_by_ldr[name] for name in available_ldr_events
+            },
+            "available_ldr_events": available_ldr_events,
+            "default_ldr_event": default_ldr_event,
             "frame_count": frame_count,
             "event_h5": event_path,
             "pose_json": pose_json,
@@ -170,7 +223,12 @@ class MyEventDataset(BaseEventMultiViewDataset):
         record = self.scene_records[scene_name]
         scene_dir = record["scene_dir"]
         # image_paths = _list_files(osp.join(scene_dir, "HDR"), {".png", ".jpg", ".jpeg"})
-        image_paths = _list_files(record["ldr_dir"], {".png", ".jpg", ".jpeg"})
+        available_ldr_events = list(record["available_ldr_events"])
+        frame_count = record["frame_count"]
+        image_paths_by_ldr = {
+            ldr_event_name: record["image_paths_by_ldr"][ldr_event_name][:frame_count]
+            for ldr_event_name in available_ldr_events
+        }
         normal_paths = _list_files(osp.join(scene_dir, "Normal"), {".png", ".jpg", ".jpeg"})
         mask_paths = _list_files(osp.join(scene_dir, "Mask"), {".png", ".jpg", ".jpeg"})
         # depth_paths = _list_files(
@@ -184,8 +242,11 @@ class MyEventDataset(BaseEventMultiViewDataset):
         # )
         # print(depth_paths)
         intrinsics, poses = self._load_camera_matrices(record["pose_json"])
-        frame_count = min(record["frame_count"], len(image_paths), len(intrinsics), len(poses))
-        image_paths = image_paths[:frame_count]
+        frame_count = min(frame_count, len(intrinsics), len(poses))
+        image_paths_by_ldr = {
+            ldr_event_name: image_paths[:frame_count]
+            for ldr_event_name, image_paths in image_paths_by_ldr.items()
+        }
         normal_paths = normal_paths[:frame_count] if normal_paths else []
         mask_paths = mask_paths[:frame_count] if mask_paths else []
         depth_paths = depth_paths[:frame_count] if depth_paths else []
@@ -214,7 +275,9 @@ class MyEventDataset(BaseEventMultiViewDataset):
         return {
             "scene": scene_name,
             "scene_dir": scene_dir,
-            "image_paths": image_paths,
+            "image_paths_by_ldr": image_paths_by_ldr,
+            "available_ldr_events": available_ldr_events,
+            "default_ldr_event": record["default_ldr_event"],
             "normal_paths": normal_paths,
             "mask_paths": mask_paths,
             "depth_paths": depth_paths,
@@ -270,6 +333,42 @@ class MyEventDataset(BaseEventMultiViewDataset):
     def get_active_scenes(self):
         return list(self.active_scenes)
 
+    def get_active_ldr_events(self, common=True):
+        event_sets = [
+            set(scene_meta["available_ldr_events"])
+            for scene_meta in self.active_scene_data.values()
+        ]
+        if not event_sets:
+            return []
+        if common:
+            ldr_events = set.intersection(*event_sets)
+        else:
+            ldr_events = set.union(*event_sets)
+        return sorted(ldr_events, key=_numeric_ev_key)
+
+    @staticmethod
+    def _coerce_ldr_event_name(ldr_event_id):
+        if ldr_event_id is None:
+            return None
+        if isinstance(ldr_event_id, bytes):
+            ldr_event_id = ldr_event_id.decode("utf-8")
+        return _format_ldr_event_dir(ldr_event_id)
+
+    def _select_ldr_event(self, scene_meta, rng, requested_ldr_event=None):
+        available = scene_meta["available_ldr_events"]
+        requested = self._coerce_ldr_event_name(requested_ldr_event)
+        if requested is not None:
+            if requested not in scene_meta["image_paths_by_ldr"]:
+                raise ValueError(
+                    f"LDR event {requested} is not available for scene {scene_meta['scene']}. "
+                    f"Available events: {available}"
+                )
+            return requested
+
+        if self.random_ldr_event:
+            return str(rng.choice(available))
+        return scene_meta["default_ldr_event"]
+
     def change_current_scene(self, scene_idx):
         count = self.active_scene_count
         indices = [(scene_idx + offset) % len(self.scenes) for offset in range(count)]
@@ -294,8 +393,11 @@ class MyEventDataset(BaseEventMultiViewDataset):
             return None
         return loader(paths[frame_idx])
 
-    def _load_view_data(self, scene_meta, frame_idx, resolution,normalize=True):
-        image = self._load_rgb(scene_meta["image_paths"][frame_idx])
+    def _load_view_data(self, scene_meta, frame_idx, resolution, ldr_event_id=None, normalize=True):
+        if ldr_event_id is None:
+            ldr_event_id = scene_meta["default_ldr_event"]
+        image_paths = scene_meta["image_paths_by_ldr"][ldr_event_id]
+        image = self._load_rgb(image_paths[frame_idx])
         src_width, src_height = image.size
         mask = self._load_optional(scene_meta["mask_paths"], frame_idx, self.load_mask)
         try:
@@ -419,11 +521,14 @@ class MyEventDataset(BaseEventMultiViewDataset):
     def _get_views(self, idx, resolution, rng, num_views):
         scene_name, start_id = self.start_img_ids[idx]
         scene_meta = self.active_scene_data[scene_name]
+        extra_index = getattr(self, "_sample_extra_index", ())
+        requested_ldr_event = extra_index[0] if extra_index else None
+        ldr_event_id = self._select_ldr_event(scene_meta, rng, requested_ldr_event)
 
         frame_ids = list(range(start_id, start_id + num_views))
         views = []
         for frame_idx in frame_ids:
-            resized = self._load_view_data(scene_meta, frame_idx, resolution)
+            resized = self._load_view_data(scene_meta, frame_idx, resolution, ldr_event_id=ldr_event_id)
             width, height = resized["img"].size
             event_start, event_end = scene_meta["frame_event_index"][frame_idx]
             event_data = self.load_event_slice(scene_meta["event_h5"], event_start, event_end)
@@ -449,7 +554,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
                     [(frame_idx - 1) * self.dt_us, frame_idx * self.dt_us], dtype=np.float32
                 )
 
-            basename = osp.splitext(osp.basename(scene_meta["image_paths"][frame_idx]))[0]
+            image_path = scene_meta["image_paths_by_ldr"][ldr_event_id][frame_idx]
+            basename = osp.splitext(osp.basename(image_path))[0]
             view = dict(
                 img=resized["img"],
                 depthmap=resized["depthmap"].astype(np.float32),
@@ -473,8 +579,9 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 event_resolution=np.array([width, height], dtype=np.int32),
                 has_event=np.array(frame_idx > 0, dtype=bool),
                 dataset="my_event_dataset",
-                label=f"{scene_name}_{basename}",
+                label=f"{scene_name}_{ldr_event_id}_{basename}",
                 instance=f"{scene_name}_{frame_idx}",
+                ldr_event_id=ldr_event_id,
                 is_metric=self.is_metric,
                 is_video=True,
                 img_mask=np.array(True, dtype=bool),

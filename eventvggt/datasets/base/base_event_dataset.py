@@ -80,14 +80,19 @@ class BaseEventMultiViewDataset(EasyDataset):
         raise NotImplementedError()
 
     def __getitem__(self, idx):
+        extra_index = ()
         if isinstance(idx, (tuple, list, np.ndarray)):
-            idx, ar_idx, nview = idx
+            if len(idx) < 3:
+                raise ValueError(f"Expected at least (idx, ar_idx, nview), got {idx}")
+            idx, ar_idx, nview = idx[:3]
+            extra_index = tuple(idx[3:])
         else:
             assert len(self._resolutions) == 1
             ar_idx = 0
             nview = self.num_views
 
         assert 1 <= nview <= self.num_views
+        self._sample_extra_index = extra_index
 
         if self.seed is not None:
             self._rng = np.random.default_rng(seed=self.seed + idx)

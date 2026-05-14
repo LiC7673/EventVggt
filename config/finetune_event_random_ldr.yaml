@@ -1,0 +1,12 @@
+defaults:
+  - finetune_event
+  - _self_
+
+exp_name: event_finetune_random_ldr
+logdir: ${save_dir}/${exp_name}/logs
+output_dir: ${save_dir}/${exp_name}
+
+data:
+  ldr_event_id: random
+  eval_ldr_event_id: auto
+  random_train_ldr: true

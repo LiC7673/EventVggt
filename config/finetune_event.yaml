@@ -59,7 +59,7 @@ data:
   ldr_event_id: 5  # auto picks the largest LDR/ev_xx folder; set 2, 5, 10, or ev_10 to choose explicitly
   scene_names: null
   initial_scene_idx: 0
-  active_scene_count: 5  # Increase to train on multiple scenes
+  active_scene_count: 3  # Increase to train on multiple scenes
   test_frame_count: 10  # Last N frames used for test set, rest for train
 
 hydra:

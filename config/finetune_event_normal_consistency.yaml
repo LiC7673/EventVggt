@@ -60,7 +60,7 @@ data:
   ldr_event_id: 5
   scene_names: null
   initial_scene_idx: 0
-  active_scene_count: 5
+  active_scene_count: 3
   test_frame_count: 10
 
 hydra:

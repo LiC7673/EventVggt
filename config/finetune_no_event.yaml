@@ -57,7 +57,7 @@ data:
   ldr_event_id: auto  # auto picks largest LDR/ev_xx; set 10 or ev_10 for a fixed high exposure folder
   scene_names: null
   initial_scene_idx: 0
-  active_scene_count: 5  # Increase to train on multiple scenes
+  active_scene_count: 3  # Increase to train on multiple scenes
   test_frame_count: 10  # Last N frames used for test set, rest for train
 
 hydra:
