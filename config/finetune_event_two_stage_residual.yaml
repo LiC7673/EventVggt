@@ -28,8 +28,8 @@ train:
 
 loss:
   depth_weight: 1.0
-  pose_weight: 0.0
-  points_weight: 0.0
+  pose_weight: 1.0
+  points_weight: 1.0
   residual_depth_weight: 0.0
   residual_smooth_weight: 0.25
   residual_second_order_weight: 0.15

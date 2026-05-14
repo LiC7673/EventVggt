@@ -9,10 +9,13 @@ if str(ROOT_DIR) not in sys.path:
 
 import hydra
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 import finetune_event as fe
 from eventvggt.models.streamvggt_two_stage import StreamVGGT as TwoStageStreamVGGT
+
+_BASE_SAVE_TRAINING_VISUALS = fe.save_training_visuals
 
 
 def _set_exp_paths(cfg, exp_name: str) -> None:
@@ -168,6 +171,7 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
         pred = model_output.ress
         depth_pred = torch.stack([res["depth"] for res in pred], dim=1).squeeze(-1)
         pose_pred = torch.stack([res["camera_pose"] for res in pred], dim=1)
+        points_pred_head = torch.stack([res["pts3d_in_other_view"] for res in pred], dim=1)
 
         depth_gt = fe.stack_view_field(views, "depthmap").to(device=depth_pred.device, dtype=depth_pred.dtype)
         intrinsics_gt = fe.stack_view_field(views, "camera_intrinsics").to(
@@ -192,6 +196,35 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
             depth_scales = depth_gt.new_ones(depth_gt.shape[:2])
 
         depth_loss = fe.masked_l1(depth_pred, depth_gt_aligned, valid_mask)
+        points_gt = fe.depth_to_world_points(depth_gt_aligned, intrinsics_gt, pose_matrix_gt)
+        points_pred_from_depth = fe.depth_to_world_points(depth_pred, intrinsics_gt, pose_matrix_gt)
+        points_mask = valid_mask.unsqueeze(-1).expand_as(points_gt)
+        if self.points_loss_type == "l1":
+            points_loss = fe.masked_l1(points_pred_from_depth, points_gt, points_mask)
+        else:
+            points_loss = fe.masked_chamfer_distance(points_pred_from_depth, points_gt, valid_mask)
+
+        height, width = depth_gt.shape[-2:]
+        pose_gt = fe.camera_pose_to_pose_encoding(
+            pose_matrix_gt,
+            intrinsics_gt,
+            image_size_hw=(height, width),
+        ).to(device=pose_pred.device, dtype=pose_pred.dtype)
+        if self.align_depth_scale_enabled:
+            pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
+
+        pred_c2w, pred_intrinsics = fe.pose_encoding_to_c2w(pose_pred, image_size_hw=(height, width))
+        pred_c2w_aligned, first_frame_alignment = fe.align_c2w_by_first_frame(pred_c2w, pose_matrix_gt)
+        pose_pred_aligned = fe.c2w_to_pose_encoding(
+            pred_c2w_aligned,
+            pred_intrinsics,
+            image_size_hw=(height, width),
+        ).to(device=pose_pred.device, dtype=pose_pred.dtype)
+        if pose_pred_aligned.shape[1] > 1:
+            pose_loss = F.smooth_l1_loss(pose_pred_aligned[:, 1:, :], pose_gt[:, 1:, :])
+        else:
+            pose_loss = pose_pred.new_tensor(0.0)
+        points_pred_head_aligned = fe.transform_world_points(points_pred_head, first_frame_alignment)
 
         depth_coarse = _stack_res_field(model_output, "depth_coarse")
         depth_residual = _stack_res_field(model_output, "depth_residual")
@@ -226,6 +259,8 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
 
         total_loss = (
             self.depth_weight * depth_loss
+            + self.pose_weight * pose_loss
+            + self.points_weight * points_loss
             + self.coarse_depth_weight * coarse_depth_loss
             + self.residual_depth_weight * residual_depth_loss
             + self.residual_smooth_weight * residual_smooth_loss
@@ -234,22 +269,10 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
             + self.normal_weight * normal_loss
         )
 
-        height, width = depth_gt.shape[-2:]
-        with torch.no_grad():
-            points_pred = fe.depth_to_world_points(depth_pred.detach(), intrinsics_gt, pose_matrix_gt)
-            points_gt = fe.depth_to_world_points(depth_gt_aligned.detach(), intrinsics_gt, pose_matrix_gt)
-            pose_gt = fe.camera_pose_to_pose_encoding(
-                pose_matrix_gt,
-                intrinsics_gt,
-                image_size_hw=(height, width),
-            ).to(device=pose_pred.device, dtype=pose_pred.dtype)
-            if self.align_depth_scale_enabled:
-                pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
-
         details = {
-            "pose_loss": 0.0,
+            "pose_loss": float(pose_loss.detach()),
             "depth_loss": float(depth_loss.detach()),
-            "points_loss": 0.0,
+            "points_loss": float(points_loss.detach()),
             "normal_loss": float(normal_loss.detach()),
             "depth_scale": float(depth_scales.mean().detach()),
             "coarse_depth_loss": float(coarse_depth_loss.detach()),
@@ -263,10 +286,11 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
             "depth_pred": depth_pred.detach(),
             "depth_gt": depth_gt.detach(),
             "depth_gt_aligned": depth_gt_aligned.detach(),
-            "points_pred": points_pred.detach(),
+            "points_pred": points_pred_from_depth.detach(),
+            "points_pred_head": points_pred_head_aligned.detach(),
             "points_gt": points_gt.detach(),
             "valid_mask": valid_mask.detach(),
-            "pose_pred": pose_pred.detach(),
+            "pose_pred": pose_pred_aligned.detach(),
             "pose_gt": pose_gt.detach(),
         }
 
@@ -281,6 +305,169 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
             aux["event_motion_density"] = event_motion_density.detach()
 
         return total_loss, details, aux
+
+
+def _signed_residual_to_uint8(value: torch.Tensor, mask: torch.Tensor) -> "fe.np.ndarray":
+    value = value.detach().float().cpu()
+    if value.ndim == 3 and value.shape[-1] == 1:
+        value = value.squeeze(-1)
+    mask = mask.detach().bool().cpu()
+    valid = mask & torch.isfinite(value)
+    image = torch.zeros(*value.shape[-2:], 3, dtype=torch.float32)
+    if not valid.any():
+        return image.numpy().astype("uint8")
+
+    abs_values = value[valid].abs()
+    if abs_values.numel() > 16:
+        limit = torch.quantile(abs_values, 0.995)
+    else:
+        limit = abs_values.max()
+    limit = limit.clamp_min(1e-6)
+    normalized = (value / limit).clamp(-1.0, 1.0)
+    positive = normalized.clamp_min(0.0)
+    negative = (-normalized).clamp_min(0.0)
+
+    image[..., 0] = positive
+    image[..., 1] = 0.65 * (positive + negative).clamp_max(1.0)
+    image[..., 2] = negative
+    image[~mask] = 0.0
+    return (image.clamp(0.0, 1.0).numpy() * 255.0).round().astype("uint8")
+
+
+def _event_stream_to_uint8(view: Dict[str, torch.Tensor], sample_idx: int, height: int, width: int) -> "fe.np.ndarray":
+    image = torch.zeros(height, width, 3, dtype=torch.float32)
+    event_xy = view.get("event_xy")
+    event_p = view.get("event_p")
+    if not isinstance(event_xy, (list, tuple)) or not isinstance(event_p, (list, tuple)):
+        return image.numpy().astype("uint8")
+    if sample_idx >= len(event_xy) or sample_idx >= len(event_p):
+        return image.numpy().astype("uint8")
+
+    xy = event_xy[sample_idx]
+    polarity = event_p[sample_idx]
+    if xy is None or polarity is None or xy.numel() == 0:
+        return image.numpy().astype("uint8")
+
+    xy = xy.detach().long().cpu()
+    polarity = polarity.detach().float().cpu()
+    x = xy[:, 0]
+    y = xy[:, 1]
+    valid = (x >= 0) & (x < width) & (y >= 0) & (y < height)
+    if not valid.any():
+        return image.numpy().astype("uint8")
+
+    x = x[valid]
+    y = y[valid]
+    polarity = polarity[valid]
+    flat_idx = y * width + x
+    pos = torch.zeros(height * width, dtype=torch.float32)
+    neg = torch.zeros(height * width, dtype=torch.float32)
+    pos_mask = polarity > 0
+    neg_mask = ~pos_mask
+    if pos_mask.any():
+        pos.index_add_(0, flat_idx[pos_mask], torch.ones_like(flat_idx[pos_mask], dtype=torch.float32))
+    if neg_mask.any():
+        neg.index_add_(0, flat_idx[neg_mask], torch.ones_like(flat_idx[neg_mask], dtype=torch.float32))
+
+    pos = pos.view(height, width)
+    neg = neg.view(height, width)
+    max_count = torch.stack([pos.max(), neg.max()]).max().clamp_min(1.0)
+    denom = torch.log1p(max_count)
+    pos = torch.log1p(pos) / denom
+    neg = torch.log1p(neg) / denom
+    image[..., 0] = pos
+    image[..., 1] = 0.35 * (pos + neg).clamp_max(1.0)
+    image[..., 2] = neg
+    return (image.clamp(0.0, 1.0).numpy() * 255.0).round().astype("uint8")
+
+
+def _concat_horizontal(images):
+    width = sum(image.width for image in images)
+    height = max(image.height for image in images)
+    canvas = fe.Image.new("RGB", (width, height), color=(0, 0, 0))
+    x_offset = 0
+    for image in images:
+        canvas.paste(image, (x_offset, 0))
+        x_offset += image.width
+    return canvas
+
+
+def _concat_vertical(images):
+    width = max(image.width for image in images)
+    height = sum(image.height for image in images)
+    canvas = fe.Image.new("RGB", (width, height), color=(0, 0, 0))
+    y_offset = 0
+    for image in images:
+        canvas.paste(image, (0, y_offset))
+        y_offset += image.height
+    return canvas
+
+
+def save_two_stage_training_visuals(
+    cfg,
+    views: List[Dict[str, torch.Tensor]],
+    aux: Dict[str, torch.Tensor],
+    global_step: int,
+    frame_idx: Optional[int] = None,
+    sample_idx: Optional[int] = None,
+) -> None:
+    _BASE_SAVE_TRAINING_VISUALS(cfg, views, aux, global_step, frame_idx, sample_idx)
+
+    vis_cfg = getattr(cfg, "vis", None)
+    save_every = getattr(vis_cfg, "save_every_steps", 200)
+    if save_every <= 0 or global_step % save_every != 0:
+        return
+    if "depth_residual" not in aux or "depth_residual_target" not in aux:
+        return
+
+    if sample_idx is None:
+        sample_idx = int(getattr(vis_cfg, "sample_index", 0))
+    if sample_idx >= aux["depth_residual"].shape[0]:
+        return
+
+    if frame_idx is not None:
+        frames_to_save = [int(frame_idx)]
+    else:
+        max_views = int(getattr(vis_cfg, "residual_num_views", len(views)))
+        frames_to_save = list(range(min(len(views), max_views)))
+
+    valid_mask = aux["valid_mask"]
+    pred_residual = aux["depth_residual"]
+    target_residual = aux["depth_residual_target"]
+    rows = [[], [], []]
+
+    for frame_id in frames_to_save:
+        mask = valid_mask[sample_idx, frame_id]
+        height, width = mask.shape[-2:]
+        rows[0].append(
+            fe.make_labeled_panel(
+                f"pred_residual_f{frame_id:02d}",
+                _signed_residual_to_uint8(pred_residual[sample_idx, frame_id], mask),
+            )
+        )
+        rows[1].append(
+            fe.make_labeled_panel(
+                f"events_f{frame_id:02d}",
+                _event_stream_to_uint8(views[frame_id], sample_idx, height, width),
+            )
+        )
+        rows[2].append(
+            fe.make_labeled_panel(
+                f"gt_residual_f{frame_id:02d}",
+                _signed_residual_to_uint8(target_residual[sample_idx, frame_id], mask),
+            )
+        )
+
+    if not rows[0]:
+        return
+
+    grid = _concat_vertical([_concat_horizontal(row) for row in rows])
+    vis_dir = Path(cfg.output_dir) / "train_vis_residual"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = fe.datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = f"_frame_{frame_idx:02d}" if frame_idx is not None else ""
+    image_name = f"{timestamp}_step_{global_step:07d}_sample_{sample_idx}{suffix}_residual.png"
+    grid.save(vis_dir / image_name)
 
 
 def configure_two_stage_trainable_params(model, cfg) -> None:
@@ -399,6 +586,7 @@ def launch(
     fe.EventSupervisedLoss = ConfiguredTwoStageLoss
     fe.configure_trainable_params = configure_two_stage_trainable_params
     fe.build_optimizer_params = build_two_stage_optimizer_params
+    fe.save_training_visuals = save_two_stage_training_visuals
     fe.train(cfg)
 
 
