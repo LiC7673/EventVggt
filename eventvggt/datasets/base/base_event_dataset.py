@@ -82,10 +82,11 @@ class BaseEventMultiViewDataset(EasyDataset):
     def __getitem__(self, idx):
         extra_index = ()
         if isinstance(idx, (tuple, list, np.ndarray)):
-            if len(idx) < 3:
-                raise ValueError(f"Expected at least (idx, ar_idx, nview), got {idx}")
-            idx, ar_idx, nview = idx[:3]
-            extra_index = tuple(idx[3:])
+            raw_idx = idx
+            if len(raw_idx) < 3:
+                raise ValueError(f"Expected at least (idx, ar_idx, nview), got {raw_idx}")
+            idx, ar_idx, nview = raw_idx[:3]
+            extra_index = tuple(raw_idx[3:])
         else:
             assert len(self._resolutions) == 1
             ar_idx = 0
