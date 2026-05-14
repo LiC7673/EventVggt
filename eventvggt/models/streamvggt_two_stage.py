@@ -120,6 +120,136 @@ class BinnedEventEncoder(nn.Module):
         return rep
 
 
+def _group_count(channels: int, max_groups: int = 8) -> int:
+    for groups in (8, 4, 2):
+        if groups <= max_groups and channels % groups == 0:
+            return groups
+    return 1
+
+
+class ConvGNAct(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        dilation: int = 1,
+    ) -> None:
+        super().__init__()
+        padding = dilation * (kernel_size // 2)
+        self.block = nn.Sequential(
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=kernel_size,
+                stride=stride,
+                padding=padding,
+                dilation=dilation,
+                bias=False,
+            ),
+            nn.GroupNorm(_group_count(out_channels), out_channels),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+class ResidualConvBlock(nn.Module):
+    def __init__(self, channels: int, dilation: int = 1) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            ConvGNAct(channels, channels, dilation=dilation),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=dilation, dilation=dilation, bias=False),
+            nn.GroupNorm(_group_count(channels), channels),
+        )
+        self.act = nn.GELU()
+        self.res_scale = nn.Parameter(torch.full((1, channels, 1, 1), 0.1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(x + self.res_scale * self.net(x))
+
+
+class DeepEventCNNBackbone(nn.Module):
+    def __init__(self, in_channels: int, hidden_dim: int) -> None:
+        super().__init__()
+        blocks = [
+            ConvGNAct(in_channels, hidden_dim),
+            ResidualConvBlock(hidden_dim, dilation=1),
+            ResidualConvBlock(hidden_dim, dilation=1),
+            ResidualConvBlock(hidden_dim, dilation=2),
+            ResidualConvBlock(hidden_dim, dilation=2),
+            ResidualConvBlock(hidden_dim, dilation=4),
+            ResidualConvBlock(hidden_dim, dilation=1),
+        ]
+        self.net = nn.Sequential(*blocks)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class EventUNetBackbone(nn.Module):
+    """U-Net style feature extractor for dense event tensors."""
+
+    def __init__(self, in_channels: int, hidden_dim: int) -> None:
+        super().__init__()
+        c1 = hidden_dim
+        c2 = hidden_dim * 2
+        c3 = hidden_dim * 3
+
+        self.enc0 = nn.Sequential(
+            ConvGNAct(in_channels, c1),
+            ResidualConvBlock(c1),
+            ResidualConvBlock(c1, dilation=2),
+        )
+        self.enc1 = nn.Sequential(
+            nn.AvgPool2d(kernel_size=2, stride=2),
+            ConvGNAct(c1, c2),
+            ResidualConvBlock(c2),
+            ResidualConvBlock(c2, dilation=2),
+        )
+        self.enc2 = nn.Sequential(
+            nn.AvgPool2d(kernel_size=2, stride=2),
+            ConvGNAct(c2, c3),
+            ResidualConvBlock(c3),
+            ResidualConvBlock(c3, dilation=2),
+        )
+        self.context = nn.Sequential(
+            ResidualConvBlock(c3, dilation=2),
+            ResidualConvBlock(c3, dilation=4),
+            ResidualConvBlock(c3, dilation=1),
+        )
+        self.dec1 = nn.Sequential(
+            ConvGNAct(c3 + c2, c2),
+            ResidualConvBlock(c2),
+            ResidualConvBlock(c2),
+        )
+        self.dec0 = nn.Sequential(
+            ConvGNAct(c2 + c1, c1),
+            ResidualConvBlock(c1),
+            ResidualConvBlock(c1),
+        )
+        self.out = nn.Conv2d(c1, hidden_dim, kernel_size=1)
+
+    @staticmethod
+    def _upsample_to(x: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        if x.shape[-2:] == ref.shape[-2:]:
+            return x
+        return F.interpolate(x, size=ref.shape[-2:], mode="bilinear", align_corners=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        skip0 = self.enc0(x)
+        skip1 = self.enc1(skip0)
+        bottleneck = self.context(self.enc2(skip1))
+
+        up1 = self._upsample_to(bottleneck, skip1)
+        up1 = self.dec1(torch.cat([up1, skip1], dim=1))
+        up0 = self._upsample_to(up1, skip0)
+        up0 = self.dec0(torch.cat([up0, skip0], dim=1))
+        return self.out(up0)
+
+
 class TwoStageEventResidualRefiner(nn.Module):
     """Second-stage event/RGB branch that predicts a residual over RGB StreamVGGT depth."""
 
@@ -138,16 +268,29 @@ class TwoStageEventResidualRefiner(nn.Module):
         hidden_dim: int = 96,
         event_downsample: int = 1,
         residual_scale: float = 0.1,
+        residual_activation: str = "tanh",
+        event_backbone: str = "unet",
         input_mode: str = "current_event",
     ) -> None:
         super().__init__()
         self.event_downsample = max(1, int(event_downsample))
         self.residual_scale = float(residual_scale)
+        self.residual_activation = str(residual_activation).lower()
+        self.event_backbone = str(event_backbone).lower()
         self.input_mode = str(input_mode)
         if self.input_mode not in self.VALID_MODES:
             raise ValueError(f"Unknown residual input mode {input_mode}. Expected one of {sorted(self.VALID_MODES)}")
+        if self.residual_activation not in {"tanh", "linear"}:
+            raise ValueError("residual_activation must be 'tanh' or 'linear'")
+        if self.event_backbone not in {"shallow", "cnn", "unet"}:
+            raise ValueError("event_backbone must be 'shallow', 'cnn', or 'unet'")
 
-        self.event_branch = self._make_branch(event_channels, hidden_dim)
+        if self.event_backbone == "unet":
+            self.event_branch = EventUNetBackbone(event_channels, hidden_dim)
+        elif self.event_backbone == "cnn":
+            self.event_branch = DeepEventCNNBackbone(event_channels, hidden_dim)
+        else:
+            self.event_branch = self._make_branch(event_channels, hidden_dim)
         self.coarse_depth_branch = self._make_branch(1, hidden_dim)
         self.rgb_token_modulator = nn.Sequential(
             nn.LayerNorm(rgb_token_dim),
@@ -222,7 +365,10 @@ class TwoStageEventResidualRefiner(nn.Module):
             shift = 0.1 * torch.tanh(shift).view(batch_size * seq_len, -1, 1, 1)
             fused = fused * (1.0 + scale) + shift
 
-        residual = self.refine(fused) * self.residual_scale
+        residual = self.refine(fused)
+        if self.residual_activation == "tanh":
+            residual = torch.tanh(residual)
+        residual = residual * self.residual_scale
         if detail_size != (target_h, target_w):
             residual = F.interpolate(residual, size=(target_h, target_w), mode="bilinear", align_corners=False)
             motion_density = F.interpolate(motion_density, size=(target_h, target_w), mode="bilinear", align_corners=False)
@@ -268,6 +414,8 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         residual_hidden_dim: int = 96,
         event_downsample: int = 1,
         residual_scale: float = 0.1,
+        residual_activation: str = "tanh",
+        event_backbone: str = "unet",
         residual_input_mode: str = "current_event",
         disable_second_stage: bool = False,
     ) -> None:
@@ -288,6 +436,8 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             hidden_dim=residual_hidden_dim,
             event_downsample=event_downsample,
             residual_scale=residual_scale,
+            residual_activation=residual_activation,
+            event_backbone=event_backbone,
             input_mode=self.residual_input_mode,
         )
         self.aggregator = Aggregator(img_size=img_size, patch_size=patch_size, embed_dim=embed_dim)

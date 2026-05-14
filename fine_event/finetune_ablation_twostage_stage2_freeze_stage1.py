@@ -26,9 +26,12 @@ def run(cfg: OmegaConf):
 
     cfg.loss.pose_weight = 0.0
     cfg.loss.points_weight = 0.0
-    cfg.loss.normal_weight = 0.0
-    cfg.loss.residual_depth_weight = 1.0
+    cfg.loss.normal_weight = 0.05
+    cfg.loss.residual_depth_weight = 0.0
     cfg.loss.coarse_depth_weight = 0.0
+    cfg.loss.residual_smooth_weight = 0.25
+    cfg.loss.residual_second_order_weight = 0.15
+    cfg.loss.residual_abs_weight = 0.01
 
     launch(
         cfg,

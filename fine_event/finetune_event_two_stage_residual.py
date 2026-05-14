@@ -67,13 +67,51 @@ def _edge_aware_residual_smoothness(
     return loss_x + loss_y
 
 
+def _residual_second_order_smoothness(
+    residual: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> torch.Tensor:
+    if residual.ndim == 5 and residual.shape[-1] == 1:
+        residual = residual.squeeze(-1)
+
+    mask = valid_mask.to(device=residual.device).bool()
+    dxx = (residual[..., :, 2:] - 2.0 * residual[..., :, 1:-1] + residual[..., :, :-2]).abs()
+    dyy = (residual[..., 2:, :] - 2.0 * residual[..., 1:-1, :] + residual[..., :-2, :]).abs()
+    mask_x = mask[..., :, 2:] & mask[..., :, 1:-1] & mask[..., :, :-2]
+    mask_y = mask[..., 2:, :] & mask[..., 1:-1, :] & mask[..., :-2, :]
+
+    mask_x = mask_x.to(dtype=residual.dtype)
+    mask_y = mask_y.to(dtype=residual.dtype)
+    loss_x = (dxx * mask_x).sum() / mask_x.sum().clamp_min(1.0)
+    loss_y = (dyy * mask_y).sum() / mask_y.sum().clamp_min(1.0)
+    return loss_x + loss_y
+
+
+def _depth_normal_loss(
+    depth_pred: torch.Tensor,
+    depth_gt: torch.Tensor,
+    intrinsics: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> torch.Tensor:
+    normal_mask = valid_mask.clone().to(device=depth_pred.device).bool()
+    normal_mask[..., 0, :] = False
+    normal_mask[..., -1, :] = False
+    normal_mask[..., :, 0] = False
+    normal_mask[..., :, -1] = False
+    pred_normals = fe.depth_to_normals(depth_pred, intrinsics)
+    gt_normals = fe.depth_to_normals(depth_gt, intrinsics)
+    return fe.masked_cosine_loss(pred_normals, gt_normals, normal_mask)
+
+
 class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
     def __init__(
         self,
         *args,
-        residual_depth_weight: float = 1.0,
+        residual_depth_weight: float = 0.0,
         coarse_depth_weight: float = 0.0,
         residual_smooth_weight: float = 0.0,
+        residual_second_order_weight: float = 0.0,
+        residual_abs_weight: float = 0.0,
         residual_smooth_alpha: float = 10.0,
         train_mode: str = "stage2",
         **kwargs,
@@ -82,6 +120,8 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
         self.residual_depth_weight = float(residual_depth_weight)
         self.coarse_depth_weight = float(coarse_depth_weight)
         self.residual_smooth_weight = float(residual_smooth_weight)
+        self.residual_second_order_weight = float(residual_second_order_weight)
+        self.residual_abs_weight = float(residual_abs_weight)
         self.residual_smooth_alpha = float(residual_smooth_alpha)
         self.train_mode = str(train_mode).lower()
 
@@ -113,6 +153,7 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
         details["coarse_depth_loss"] = details.get("depth_loss", 0.0)
         details["residual_depth_loss"] = 0.0
         details["residual_smooth_loss"] = 0.0
+        details["residual_second_order_loss"] = 0.0
         details["depth_residual_abs"] = 0.0
         return total_loss, details, aux
 
@@ -160,6 +201,7 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
             coarse_depth_loss = zero
             residual_depth_loss = zero
             residual_smooth_loss = zero
+            residual_second_order_loss = zero
             residual_abs = zero
             residual_target = None
         else:
@@ -174,13 +216,22 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
                 valid_mask,
                 edge_alpha=self.residual_smooth_alpha,
             )
+            residual_second_order_loss = _residual_second_order_smoothness(depth_residual, valid_mask)
             residual_abs = fe.masked_l1(depth_residual, torch.zeros_like(depth_residual), valid_mask)
+
+        if self.normal_weight > 0:
+            normal_loss = _depth_normal_loss(depth_pred, depth_gt_aligned, intrinsics_gt, valid_mask)
+        else:
+            normal_loss = depth_pred.new_tensor(0.0)
 
         total_loss = (
             self.depth_weight * depth_loss
             + self.coarse_depth_weight * coarse_depth_loss
             + self.residual_depth_weight * residual_depth_loss
             + self.residual_smooth_weight * residual_smooth_loss
+            + self.residual_second_order_weight * residual_second_order_loss
+            + self.residual_abs_weight * residual_abs
+            + self.normal_weight * normal_loss
         )
 
         height, width = depth_gt.shape[-2:]
@@ -199,11 +250,12 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
             "pose_loss": 0.0,
             "depth_loss": float(depth_loss.detach()),
             "points_loss": 0.0,
-            "normal_loss": 0.0,
+            "normal_loss": float(normal_loss.detach()),
             "depth_scale": float(depth_scales.mean().detach()),
             "coarse_depth_loss": float(coarse_depth_loss.detach()),
             "residual_depth_loss": float(residual_depth_loss.detach()),
             "residual_smooth_loss": float(residual_smooth_loss.detach()),
+            "residual_second_order_loss": float(residual_second_order_loss.detach()),
             "depth_residual_abs": float(residual_abs.detach()),
         }
 
@@ -322,6 +374,8 @@ def launch(
                 residual_hidden_dim=int(getattr(cfg.model, "residual_hidden_dim", 96)),
                 event_downsample=int(getattr(cfg.model, "event_downsample", 1)),
                 residual_scale=float(getattr(cfg.model, "residual_scale", 0.1)),
+                residual_activation=str(getattr(cfg.model, "residual_activation", "tanh")),
+                event_backbone=str(getattr(cfg.model, "event_backbone", "unet")),
                 residual_input_mode=str(getattr(cfg.model, "residual_input_mode", "current_event")),
                 disable_second_stage=bool(getattr(cfg.model, "disable_second_stage", False)),
                 **kwargs,
@@ -331,9 +385,11 @@ def launch(
         def __init__(self, *args, **kwargs):
             super().__init__(
                 *args,
-                residual_depth_weight=float(getattr(cfg.loss, "residual_depth_weight", 1.0)),
+                residual_depth_weight=float(getattr(cfg.loss, "residual_depth_weight", 0.0)),
                 coarse_depth_weight=float(getattr(cfg.loss, "coarse_depth_weight", 0.0)),
                 residual_smooth_weight=float(getattr(cfg.loss, "residual_smooth_weight", 0.0)),
+                residual_second_order_weight=float(getattr(cfg.loss, "residual_second_order_weight", 0.0)),
+                residual_abs_weight=float(getattr(cfg.loss, "residual_abs_weight", 0.0)),
                 residual_smooth_alpha=float(getattr(cfg.loss, "residual_smooth_alpha", 10.0)),
                 train_mode=str(getattr(cfg.train, "two_stage_train_mode", "stage2")),
                 **kwargs,

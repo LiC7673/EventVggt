@@ -13,8 +13,10 @@ model:
   event_count_cmax: 3.0
   event_encode_downsample: 1
   residual_hidden_dim: 64
+  event_backbone: unet
   event_downsample: 1
   residual_scale: 0.05
+  residual_activation: tanh
   disable_second_stage: false
 
 train:
@@ -25,13 +27,16 @@ train:
   vggt_last_blocks_lr: 1.0e-5
 
 loss:
+  depth_weight: 1.0
   pose_weight: 0.0
   points_weight: 0.0
-  residual_depth_weight: 1.0
-  residual_smooth_weight: 0.05
+  residual_depth_weight: 0.0
+  residual_smooth_weight: 0.25
+  residual_second_order_weight: 0.15
+  residual_abs_weight: 0.01
   residual_smooth_alpha: 10.0
   coarse_depth_weight: 0.0
-  normal_weight: 0.0
+  normal_weight: 0.05
   points_loss_type: "l1"
 
 data:
