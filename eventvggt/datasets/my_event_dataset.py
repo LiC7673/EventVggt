@@ -61,6 +61,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         ldr_event_id="auto",
         event_y_flip="auto",
         event_spatial_transform="auto",
+        event_vis_out=None,
+        event_vis_bins=10,
         **kwargs,
     ):
         self.ROOT = ROOT
@@ -72,6 +74,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.random_ldr_event = _is_random_ldr_event_id(ldr_event_id)
         self.event_y_flip = event_y_flip
         self.event_spatial_transform = event_spatial_transform
+        self.event_vis_out = event_vis_out
+        self.event_vis_bins = event_vis_bins
         self.start_img_ids = []
         self.is_metric = False
         self.video = True
@@ -616,6 +620,51 @@ class MyEventDataset(BaseEventMultiViewDataset):
             ).astype(np.float32, copy=False),
         }
 
+    def _visualize_processed_event_data(
+        self,
+        *,
+        scene_name,
+        ldr_event_id,
+        frame_idx,
+        event_start,
+        event_end,
+        event_data,
+        resolution,
+        event_spatial_transform,
+    ):
+        if not self.event_vis_out:
+            return
+
+        event_xy = event_data["event_xy"]
+        if event_xy.size == 0:
+            event_x = np.zeros((0,), dtype=np.int32)
+            event_y = np.zeros((0,), dtype=np.int32)
+        else:
+            event_x = event_xy[:, 0].astype(np.int32, copy=False)
+            event_y = event_xy[:, 1].astype(np.int32, copy=False)
+
+        safe_scene = str(scene_name).replace("/", "_").replace("\\", "_").replace(":", "_")
+        safe_ldr = str(ldr_event_id).replace("/", "_").replace("\\", "_").replace(":", "_")
+        safe_transform = str(event_spatial_transform).replace("/", "_").replace("\\", "_").replace(":", "_")
+        vis_prefix = (
+            f"{safe_scene}_{safe_ldr}_frame{int(frame_idx):04d}"
+            f"_{safe_transform}_{int(event_start):010d}_{int(event_end):010d}"
+        )
+        self._visualize_event_slice_bins(
+            path="processed_event_data",
+            start_idx=event_start,
+            end_idx=event_end,
+            event_x=event_x,
+            event_y=event_y,
+            event_t=event_data["event_t"],
+            event_p=event_data["event_p"],
+            attrs={"width": int(resolution[0]), "height": int(resolution[1])},
+            vis_out=self.event_vis_out,
+            vis_bins=self.event_vis_bins,
+            vis_resolution=resolution,
+            vis_prefix=vis_prefix,
+        )
+
     def _get_views(self, idx, resolution, rng, num_views):
         scene_name, start_id = self.start_img_ids[idx]
         scene_meta = self.active_scene_data[scene_name]
@@ -656,6 +705,17 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 event_data["event_t"] = event_data["event_t"][valid_events]
                 event_data["event_p"] = event_data["event_p"][valid_events]
                 event_data["events"] = event_data["events"][valid_events]
+
+            self._visualize_processed_event_data(
+                scene_name=scene_name,
+                ldr_event_id=ldr_event_id,
+                frame_idx=frame_idx,
+                event_start=event_start,
+                event_end=event_end,
+                event_data=event_data,
+                resolution=resized["dst_resolution"],
+                event_spatial_transform=event_spatial_transform,
+            )
 
             if frame_idx == 0:
                 time_range = np.array([0.0, 0.0], dtype=np.float32)
@@ -726,6 +786,8 @@ def get_combined_dataset(
     ldr_event_id="auto",
     event_y_flip="auto",
     event_spatial_transform="auto",
+    event_vis_out=None,
+    event_vis_bins=10,
 ):
     return MyEventDataset(
         ROOT=root,
@@ -742,6 +804,8 @@ def get_combined_dataset(
         ldr_event_id=ldr_event_id,
         event_y_flip=event_y_flip,
         event_spatial_transform=event_spatial_transform,
+        event_vis_out=event_vis_out,
+        event_vis_bins=event_vis_bins,
         # normalize=True
     )
 

@@ -1,3 +1,4 @@
+import os
 import os.path as osp
 import random
 import itertools
@@ -848,13 +849,148 @@ class BaseEventMultiViewDataset(EasyDataset):
         return image, depthmap, intrinsics
 
     @staticmethod
-    def load_event_slice(path, start_idx, end_idx, *, event_columns=None, time_origin=0.0):
+    def _visualize_event_slice_bins(
+        *,
+        path,
+        start_idx,
+        end_idx,
+        event_x,
+        event_y,
+        event_t,
+        event_p,
+        attrs=None,
+        vis_out="vis_out",
+        vis_bins=10,
+        vis_resolution=None,
+        vis_prefix=None,
+    ):
+        if not vis_out:
+            return
+        if vis_out is True:
+            vis_out = "vis_out"
+
+        attrs = attrs or {}
+        vis_bins = max(int(vis_bins), 1)
+        if vis_resolution is not None:
+            width, height = int(vis_resolution[0]), int(vis_resolution[1])
+        else:
+            width = attrs.get("width", attrs.get("event_width", None))
+            height = attrs.get("height", attrs.get("event_height", None))
+            if width is None and event_x.size > 0:
+                width = int(event_x.max()) + 1
+            if height is None and event_y.size > 0:
+                height = int(event_y.max()) + 1
+            width = int(width) if width is not None else 1
+            height = int(height) if height is not None else 1
+        width = max(width, 1)
+        height = max(height, 1)
+
+        os.makedirs(vis_out, exist_ok=True)
+        call_id = getattr(BaseEventMultiViewDataset, "_event_slice_vis_counter", 0)
+        BaseEventMultiViewDataset._event_slice_vis_counter = call_id + 1
+        if vis_prefix is None:
+            h5_name = osp.splitext(osp.basename(path))[0]
+            vis_prefix = (
+                f"{h5_name}_{int(start_idx):010d}_{int(end_idx):010d}"
+                f"_pid{os.getpid()}_{call_id:06d}"
+            )
+
+        if event_t.size > 0:
+            t0 = float(np.nanmin(event_t))
+            t1 = float(np.nanmax(event_t))
+        else:
+            t0 = 0.0
+            t1 = 0.0
+        if not np.isfinite(t0):
+            t0 = 0.0
+        if not np.isfinite(t1):
+            t1 = t0
+        if t1 <= t0:
+            bin_ids = np.zeros(event_t.shape, dtype=np.int64)
+        else:
+            edges = np.linspace(t0, t1, vis_bins + 1, dtype=np.float64)
+            bin_ids = np.searchsorted(edges, event_t.astype(np.float64), side="right") - 1
+            bin_ids = np.clip(bin_ids, 0, vis_bins - 1)
+
+        valid_xy = (
+            (event_x >= 0)
+            & (event_x < width)
+            & (event_y >= 0)
+            & (event_y < height)
+        )
+        panels = []
+        for bin_idx in range(vis_bins):
+            bin_mask = valid_xy & (bin_ids == bin_idx)
+            flat = event_y[bin_mask].astype(np.int64) * width + event_x[bin_mask].astype(np.int64)
+            p = event_p[bin_mask]
+
+            pos = np.zeros(height * width, dtype=np.float32)
+            neg = np.zeros(height * width, dtype=np.float32)
+            pos_mask = p > 0
+            if flat.size > 0:
+                np.add.at(pos, flat[pos_mask], 1.0)
+                np.add.at(neg, flat[~pos_mask], 1.0)
+
+            pos = np.log1p(pos.reshape(height, width))
+            neg = np.log1p(neg.reshape(height, width))
+            scale = max(float(pos.max()), float(neg.max()), 1e-6)
+            panel = np.zeros((height, width, 3), dtype=np.float32)
+            panel[..., 0] = pos / scale
+            panel[..., 1] = 0.25 * np.clip((pos + neg) / scale, 0.0, 1.0)
+            panel[..., 2] = neg / scale
+            panel = (np.clip(panel, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+
+            label = f"bin {bin_idx:02d}  n={int(bin_mask.sum())}"
+            cv2.putText(panel, label, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            panels.append(panel)
+
+        cols = min(5, vis_bins)
+        rows = int(np.ceil(vis_bins / cols))
+        sheet = np.zeros((rows * height, cols * width, 3), dtype=np.uint8)
+        for bin_idx, panel in enumerate(panels):
+            row = bin_idx // cols
+            col = bin_idx % cols
+            sheet[row * height : (row + 1) * height, col * width : (col + 1) * width] = panel
+
+        out_path = osp.join(vis_out, f"{vis_prefix}_bins{vis_bins}.png")
+        PIL.Image.fromarray(sheet).save(out_path)
+
+    @staticmethod
+    def load_event_slice(
+        path,
+        start_idx,
+        end_idx,
+        *,
+        event_columns=None,
+        time_origin=0.0,
+        vis_out=None,
+        vis_bins=10,
+        vis_resolution=None,
+        vis_prefix=None,
+    ):
         with h5py.File(path, "r") as h5_file:
             if "events" not in h5_file:
                 raise ValueError(f"Unsupported event format: {path}")
-            events = h5_file["events"][start_idx:end_idx]
+            events_ds = h5_file["events"]
+            events = events_ds[start_idx:end_idx]
+            attrs = {key: BaseEventMultiViewDataset._decode_h5_attr(value) for key, value in h5_file.attrs.items()}
+            attrs.update({key: BaseEventMultiViewDataset._decode_h5_attr(value) for key, value in events_ds.attrs.items()})
 
         if len(events) == 0:
+            BaseEventMultiViewDataset._visualize_event_slice_bins(
+                path=path,
+                start_idx=start_idx,
+                end_idx=end_idx,
+                event_x=np.zeros((0,), dtype=np.int32),
+                event_y=np.zeros((0,), dtype=np.int32),
+                event_t=np.zeros((0,), dtype=np.float32),
+                event_p=np.zeros((0,), dtype=np.float32),
+                attrs=attrs,
+                vis_out=vis_out,
+                vis_bins=vis_bins,
+                vis_resolution=vis_resolution,
+                vis_prefix=vis_prefix,
+            )
             return {
                 "event_xy": np.zeros((0, 2), dtype=np.int32),
                 "event_t": np.zeros((0,), dtype=np.float32),
@@ -870,6 +1006,20 @@ class BaseEventMultiViewDataset(EasyDataset):
         event_y = events[:, event_columns["y"]].astype(np.int32)
         event_p = events[:, event_columns["p"]].astype(np.float32)
         event_p[event_p == 0] = -1.0
+        BaseEventMultiViewDataset._visualize_event_slice_bins(
+            path=path,
+            start_idx=start_idx,
+            end_idx=end_idx,
+            event_x=event_x,
+            event_y=event_y,
+            event_t=event_t,
+            event_p=event_p,
+            attrs=attrs,
+            vis_out=vis_out,
+            vis_bins=vis_bins,
+            vis_resolution=vis_resolution,
+            vis_prefix=vis_prefix,
+        )
         return {
             "event_xy": np.stack([event_x, event_y], axis=-1).astype(np.int32),
             "event_t": event_t,

@@ -118,6 +118,8 @@ def build_event_loader(cfg, split="train"):
         ldr_event_id=getattr(cfg.data, "ldr_event_id", "auto"),
         event_y_flip=getattr(cfg.data, "event_y_flip", "auto"),
         event_spatial_transform=getattr(cfg.data, "event_spatial_transform", "auto"),
+        event_vis_out=getattr(cfg.data, "event_vis_out", None),
+        event_vis_bins=getattr(cfg.data, "event_vis_bins", 10),
     )
     if len(dataset) <= 0:
         scene_stats = []
