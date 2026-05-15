@@ -141,12 +141,13 @@ def analyze_frame(dataset, sample_idx: int, local_frame_idx: int, out_dir: Path,
     event_src_resolution = scene_meta.get("event_resolution", resized["src_resolution"])
     if np.asarray(event_src_resolution).reshape(-1).size < 2 or np.any(np.asarray(event_src_resolution) <= 0):
         event_src_resolution = resized["src_resolution"]
-    event_y_flip = dataset._should_flip_event_y(scene_meta)
+    event_spatial_transform = dataset._resolve_event_spatial_transform(scene_meta)
+    event_y_flip = event_spatial_transform == "vflip"
     resized_event = dataset._resize_event_data(
         raw_event,
         src_resolution=event_src_resolution,
         dst_resolution=resized["dst_resolution"],
-        flip_y=event_y_flip,
+        spatial_transform=event_spatial_transform,
     )
     masked_event = {key: value.copy() if isinstance(value, np.ndarray) else value for key, value in resized_event.items()}
     mask_true_ratio = None
@@ -175,6 +176,7 @@ def analyze_frame(dataset, sample_idx: int, local_frame_idx: int, out_dir: Path,
         "event_index_count": int(event_end - event_start),
         "image_src_resolution": [int(x) for x in resized["src_resolution"]],
         "event_src_resolution": [int(x) for x in event_src_resolution],
+        "event_spatial_transform": event_spatial_transform,
         "event_y_flip": bool(event_y_flip),
         "dst_resolution": [int(x) for x in resized["dst_resolution"]],
         "mask_true_ratio": mask_true_ratio,
@@ -211,6 +213,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resolution", type=int, nargs=2, default=[518, 392], metavar=("W", "H"))
     parser.add_argument("--fps", type=int, default=120)
     parser.add_argument("--ldr-event-id", default="5")
+    parser.add_argument("--event-spatial-transform", default="auto", choices=["auto", "none", "hflip", "vflip", "rot180", "hflip_rot180"])
     parser.add_argument("--scene-names", nargs="*", default=None)
     parser.add_argument("--initial-scene-idx", type=int, default=0)
     parser.add_argument("--active-scene-count", type=int, default=3)
@@ -235,6 +238,7 @@ def main() -> None:
         split=args.split,
         test_frame_count=args.test_frame_count,
         ldr_event_id=args.ldr_event_id,
+        event_spatial_transform=args.event_spatial_transform,
     )
     records = []
     h5_seen = {}

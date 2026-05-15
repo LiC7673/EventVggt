@@ -60,6 +60,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         test_frame_count=10,
         ldr_event_id="auto",
         event_y_flip="auto",
+        event_spatial_transform="auto",
         **kwargs,
     ):
         self.ROOT = ROOT
@@ -70,6 +71,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.ldr_event_id = ldr_event_id
         self.random_ldr_event = _is_random_ldr_event_id(ldr_event_id)
         self.event_y_flip = event_y_flip
+        self.event_spatial_transform = event_spatial_transform
         self.start_img_ids = []
         self.is_metric = False
         self.video = True
@@ -390,6 +392,38 @@ class MyEventDataset(BaseEventMultiViewDataset):
             return scene_meta.get("event_dir") in {"cur_event", "cur_best_event", "esim_event"}
         return bool(value)
 
+    def _resolve_event_spatial_transform(self, scene_meta):
+        value = self.event_spatial_transform
+        if isinstance(value, str):
+            lowered = value.lower().replace("-", "_").replace("+", "_")
+            aliases = {
+                "": "auto",
+                "auto": "auto",
+                "none": "none",
+                "identity": "none",
+                "no": "none",
+                "false": "none",
+                "hflip": "hflip",
+                "horizontal_flip": "hflip",
+                "vflip": "vflip",
+                "vertical_flip": "vflip",
+                "yflip": "vflip",
+                "flip_y": "vflip",
+                "rot180": "rot180",
+                "rotate180": "rot180",
+                "rotate_180": "rot180",
+                "hflip_rot180": "vflip",
+                "horizontal_flip_rot180": "vflip",
+                "hflip_rotate180": "vflip",
+            }
+            transform = aliases.get(lowered)
+            if transform is None:
+                raise ValueError(f"Unsupported event_spatial_transform={value}")
+            if transform != "auto":
+                return transform
+
+        return "vflip" if self._should_flip_event_y(scene_meta) else "none"
+
     @staticmethod
     def _coerce_ldr_event_name(ldr_event_id):
         if ldr_event_id is None:
@@ -513,7 +547,14 @@ class MyEventDataset(BaseEventMultiViewDataset):
         return resized
 
     @staticmethod
-    def _resize_event_data(event_data, src_resolution, dst_resolution, *, flip_y=False):
+    def _resize_event_data(
+        event_data,
+        src_resolution,
+        dst_resolution,
+        *,
+        flip_y=False,
+        spatial_transform="none",
+    ):
         src_width, src_height = int(src_resolution[0]), int(src_resolution[1])
         dst_width, dst_height = int(dst_resolution[0]), int(dst_resolution[1])
 
@@ -533,8 +574,19 @@ class MyEventDataset(BaseEventMultiViewDataset):
         sy = dst_height / max(src_height, 1)
 
         resized_xy = event_xy.astype(np.float32, copy=True)
-        if flip_y:
+        if flip_y and spatial_transform == "none":
+            spatial_transform = "vflip"
+
+        if spatial_transform == "hflip":
+            resized_xy[:, 0] = (src_width - 1) - resized_xy[:, 0]
+        elif spatial_transform == "vflip":
             resized_xy[:, 1] = (src_height - 1) - resized_xy[:, 1]
+        elif spatial_transform == "rot180":
+            resized_xy[:, 0] = (src_width - 1) - resized_xy[:, 0]
+            resized_xy[:, 1] = (src_height - 1) - resized_xy[:, 1]
+        elif spatial_transform not in ("none", None):
+            raise ValueError(f"Unsupported event spatial transform: {spatial_transform}")
+
         resized_xy[:, 0] = np.floor(resized_xy[:, 0] * sx)
         resized_xy[:, 1] = np.floor(resized_xy[:, 1] * sy)
         resized_xy = resized_xy.astype(np.int32)
@@ -587,12 +639,13 @@ class MyEventDataset(BaseEventMultiViewDataset):
             event_src_resolution = scene_meta.get("event_resolution", resized["src_resolution"])
             if np.asarray(event_src_resolution).reshape(-1).size < 2 or np.any(np.asarray(event_src_resolution) <= 0):
                 event_src_resolution = resized["src_resolution"]
-            event_y_flip = self._should_flip_event_y(scene_meta)
+            event_spatial_transform = self._resolve_event_spatial_transform(scene_meta)
+            event_y_flip = event_spatial_transform == "vflip"
             event_data = self._resize_event_data(
                 event_data,
                 src_resolution=event_src_resolution,
                 dst_resolution=resized["dst_resolution"],
-                flip_y=event_y_flip,
+                spatial_transform=event_spatial_transform,
             )
 
             # Apply mask to events if mask is available
@@ -641,6 +694,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 event_time_range=time_range,
                 event_resolution=np.array([width, height], dtype=np.int32),
                 event_source_resolution=np.asarray(event_src_resolution, dtype=np.int32),
+                event_spatial_transform=event_spatial_transform,
                 event_y_flip=np.array(event_y_flip, dtype=bool),
                 has_event=np.array(frame_idx > 0, dtype=bool),
                 dataset="my_event_dataset",
@@ -671,6 +725,7 @@ def get_combined_dataset(
     test_frame_count=10,
     ldr_event_id="auto",
     event_y_flip="auto",
+    event_spatial_transform="auto",
 ):
     return MyEventDataset(
         ROOT=root,
@@ -686,6 +741,7 @@ def get_combined_dataset(
         test_frame_count=test_frame_count,
         ldr_event_id=ldr_event_id,
         event_y_flip=event_y_flip,
+        event_spatial_transform=event_spatial_transform,
         # normalize=True
     )
 

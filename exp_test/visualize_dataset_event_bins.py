@@ -291,6 +291,7 @@ def visualize_view(view: Dict, out_dir: Path, sample_idx: int, frame_idx: int, a
         "resolution": [width, height],
         "event_time_range": to_numpy(view.get("event_time_range", np.array([0.0, 0.0]))).astype(float).tolist(),
         "event_source_resolution": to_numpy(view.get("event_source_resolution", np.array([0, 0]))).astype(int).tolist(),
+        "event_spatial_transform": scalar_to_text(view.get("event_spatial_transform", "")),
         "event_y_flip": bool(np.asarray(to_numpy(view.get("event_y_flip", False))).reshape(-1)[0]),
         "has_event": bool(np.asarray(to_numpy(view.get("has_event", False))).reshape(-1)[0]),
         "total_events": all_stats["events"],
@@ -349,6 +350,7 @@ def build_loader_cfg(args) -> SimpleNamespace:
             active_scene_count=args.active_scene_count,
             test_frame_count=args.test_frame_count,
             ldr_event_id=args.ldr_event_id,
+            event_spatial_transform=args.event_spatial_transform,
         ),
     )
 
@@ -368,6 +370,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resolution", type=int, nargs=2, default=[518, 392], metavar=("W", "H"))
     parser.add_argument("--fps", type=int, default=120)
     parser.add_argument("--ldr-event-id", default="5")
+    parser.add_argument("--event-spatial-transform", default="auto", choices=["auto", "none", "hflip", "vflip", "rot180", "hflip_rot180"])
     parser.add_argument("--scene-names", nargs="*", default=None)
     parser.add_argument("--initial-scene-idx", type=int, default=0)
     parser.add_argument("--active-scene-count", type=int, default=1)

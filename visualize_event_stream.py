@@ -64,7 +64,7 @@ def visualize_event_bin(events, bin_idx, num_bins, output_dir, width, height):
     t_min = events[:, 0].min()
     t_max = events[:, 0].max()
     t_range = t_max - t_min
-    
+    print(f"Visualizing bin {bin_idx + 1}/{num_bins} (time range: {t_min:.6f} to {t_max:.6f})...")
     # Calculate bin boundaries
     bin_start_time = t_min + (bin_idx / num_bins) * t_range
     bin_end_time = t_min + ((bin_idx + 1) / num_bins) * t_range
@@ -148,7 +148,7 @@ def main():
     parser.add_argument(
         "event_h5_path",
         type=str,
-        help="Path to event.h5 file (e.g., F:\\TreeOBJ\\reflective_raw\\Actaeon_Anodized_Red\\esmi_event\\event.h5)"
+        help="Path to event.h5 file (e.g., F:\\TreeOBJ\\reflective_raw\\200720_Triton 2_Anodized_Red\\esmi_event\\event.h5)"
     )
     parser.add_argument(
         "--num-frames",
