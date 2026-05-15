@@ -1338,6 +1338,12 @@ if __name__ == "__main__":
     obj_map = get_obj_map(OBJ_DIR)
 
     if not os.path.exists(OUTPUT_DIR):
+        print(f"Error: output directory does not exist: {OUTPUT_DIR}. Run HDR/LDR generation first.")
+        raise SystemExit(1)
+
+    '''
+
+    if not os.path.exists(OUTPUT_DIR):
         print(f"错误: 输出目录 {OUTPUT_DIR} 不存在。请先运行 HDR/LDR 生成脚本。")
         raise SystemExit(1)
 
