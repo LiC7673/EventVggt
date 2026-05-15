@@ -290,6 +290,8 @@ def visualize_view(view: Dict, out_dir: Path, sample_idx: int, frame_idx: int, a
         "ldr_event_id": scalar_to_text(view.get("ldr_event_id", "")),
         "resolution": [width, height],
         "event_time_range": to_numpy(view.get("event_time_range", np.array([0.0, 0.0]))).astype(float).tolist(),
+        "event_source_resolution": to_numpy(view.get("event_source_resolution", np.array([0, 0]))).astype(int).tolist(),
+        "event_y_flip": bool(np.asarray(to_numpy(view.get("event_y_flip", False))).reshape(-1)[0]),
         "has_event": bool(np.asarray(to_numpy(view.get("has_event", False))).reshape(-1)[0]),
         "total_events": all_stats["events"],
         "positive_events": all_stats["positive"],
@@ -419,6 +421,10 @@ def main() -> None:
     summary = {
         "root": args.root,
         "active_scenes": dataset.get_active_scenes(),
+        "event_time_info_by_scene": {
+            scene_name: scene_meta.get("event_time_info", {})
+            for scene_name, scene_meta in getattr(dataset, "active_scene_data", {}).items()
+        },
         "loader_path": "finetune_event.build_event_loader -> DataLoader -> event_multiview_collate",
         "ldr_event_id": args.ldr_event_id,
         "split": args.split,

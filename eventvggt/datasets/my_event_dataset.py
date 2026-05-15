@@ -59,6 +59,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         active_scene_count=1,
         test_frame_count=10,
         ldr_event_id="auto",
+        event_y_flip="auto",
         **kwargs,
     ):
         self.ROOT = ROOT
@@ -68,6 +69,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.test_frame_count = test_frame_count
         self.ldr_event_id = ldr_event_id
         self.random_ldr_event = _is_random_ldr_event_id(ldr_event_id)
+        self.event_y_flip = event_y_flip
         self.start_img_ids = []
         self.is_metric = False
         self.video = True
@@ -143,7 +145,12 @@ class MyEventDataset(BaseEventMultiViewDataset):
     def _probe_scene(self, scene_name):
         scene_dir = osp.join(self.ROOT, scene_name)
         ldr_dirs = self._resolve_ldr_dirs(scene_dir)
-        event_path = osp.join(scene_dir, "cur_event", "events.h5")
+        event_candidates = [
+            osp.join(scene_dir, "cur_event", "events.h5"),
+            osp.join(scene_dir, "cur_best_event", "events.h5"),
+            osp.join(scene_dir, "esim_event", "events.h5"),
+        ]
+        event_path = next((path for path in event_candidates if osp.isfile(path)), event_candidates[0])
         pose_json = osp.join(scene_dir, "transforms.json")
 
         if not ldr_dirs or not osp.isfile(event_path) or not osp.isfile(pose_json):
@@ -182,6 +189,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             "default_ldr_event": default_ldr_event,
             "frame_count": frame_count,
             "event_h5": event_path,
+            "event_dir": osp.basename(osp.dirname(event_path)),
             "pose_json": pose_json,
         }
 
@@ -251,7 +259,9 @@ class MyEventDataset(BaseEventMultiViewDataset):
         mask_paths = mask_paths[:frame_count] if mask_paths else []
         depth_paths = depth_paths[:frame_count] if depth_paths else []
 
-        frame_event_index = self.build_frame_event_index(record["event_h5"], frame_count)
+        frame_event_index, event_time_bounds, event_time_info = self.build_frame_event_index(
+            record["event_h5"], frame_count, return_time_info=True
+        )
 
         # Split dataset: last test_frame_count frames for test, rest for train
         train_frame_count = frame_count - self.test_frame_count
@@ -284,8 +294,19 @@ class MyEventDataset(BaseEventMultiViewDataset):
             "intrinsics": intrinsics[:frame_count],
             "poses": poses[:frame_count],
             "event_h5": record["event_h5"],
+            "event_dir": record.get("event_dir", osp.basename(osp.dirname(record["event_h5"]))),
             "frame_count": frame_count,
             "frame_event_index": frame_event_index,
+            "event_time_bounds": event_time_bounds,
+            "event_time_info": event_time_info,
+            "event_columns": event_time_info["columns"],
+            "event_resolution": np.array(
+                [
+                    event_time_info.get("event_width") or 0,
+                    event_time_info.get("event_height") or 0,
+                ],
+                dtype=np.int32,
+            ),
             "start_ids": start_ids,
         }
 
@@ -345,6 +366,29 @@ class MyEventDataset(BaseEventMultiViewDataset):
         else:
             ldr_events = set.union(*event_sets)
         return sorted(ldr_events, key=_numeric_ev_key)
+
+    def _should_flip_event_y(self, scene_meta):
+        value = self.event_y_flip
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered in {"1", "true", "yes", "y", "flip"}:
+                return True
+            if lowered in {"0", "false", "no", "n", "none"}:
+                return False
+
+            attrs = scene_meta.get("event_time_info", {}).get("h5_attrs", {})
+            y_origin = str(attrs.get("y_origin", "")).lower()
+            if y_origin in {"bottom", "bottom_left", "blender", "opengl"}:
+                return True
+            if y_origin in {"top", "top_left", "image", "opencv"}:
+                return False
+
+            # Blender Image.pixels is conventionally bottom-up; the ESIM
+            # renderer writes y from that buffer, while PIL images/masks use
+            # top-left indexing. Auto mode therefore flips known rendered event
+            # folders unless the H5 explicitly says otherwise.
+            return scene_meta.get("event_dir") in {"cur_event", "cur_best_event", "esim_event"}
+        return bool(value)
 
     @staticmethod
     def _coerce_ldr_event_name(ldr_event_id):
@@ -469,7 +513,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         return resized
 
     @staticmethod
-    def _resize_event_data(event_data, src_resolution, dst_resolution):
+    def _resize_event_data(event_data, src_resolution, dst_resolution, *, flip_y=False):
         src_width, src_height = int(src_resolution[0]), int(src_resolution[1])
         dst_width, dst_height = int(dst_resolution[0]), int(dst_resolution[1])
 
@@ -489,6 +533,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         sy = dst_height / max(src_height, 1)
 
         resized_xy = event_xy.astype(np.float32, copy=True)
+        if flip_y:
+            resized_xy[:, 1] = (src_height - 1) - resized_xy[:, 1]
         resized_xy[:, 0] = np.floor(resized_xy[:, 0] * sx)
         resized_xy[:, 1] = np.floor(resized_xy[:, 1] * sy)
         resized_xy = resized_xy.astype(np.int32)
@@ -531,11 +577,22 @@ class MyEventDataset(BaseEventMultiViewDataset):
             resized = self._load_view_data(scene_meta, frame_idx, resolution, ldr_event_id=ldr_event_id)
             width, height = resized["img"].size
             event_start, event_end = scene_meta["frame_event_index"][frame_idx]
-            event_data = self.load_event_slice(scene_meta["event_h5"], event_start, event_end)
+            event_data = self.load_event_slice(
+                scene_meta["event_h5"],
+                event_start,
+                event_end,
+                event_columns=scene_meta.get("event_columns"),
+                time_origin=scene_meta.get("event_time_info", {}).get("origin", 0.0),
+            )
+            event_src_resolution = scene_meta.get("event_resolution", resized["src_resolution"])
+            if np.asarray(event_src_resolution).reshape(-1).size < 2 or np.any(np.asarray(event_src_resolution) <= 0):
+                event_src_resolution = resized["src_resolution"]
+            event_y_flip = self._should_flip_event_y(scene_meta)
             event_data = self._resize_event_data(
                 event_data,
-                src_resolution=resized["src_resolution"],
+                src_resolution=event_src_resolution,
                 dst_resolution=resized["dst_resolution"],
+                flip_y=event_y_flip,
             )
 
             # Apply mask to events if mask is available
@@ -550,9 +607,15 @@ class MyEventDataset(BaseEventMultiViewDataset):
             if frame_idx == 0:
                 time_range = np.array([0.0, 0.0], dtype=np.float32)
             else:
-                time_range = np.array(
-                    [(frame_idx - 1) * self.dt_us, frame_idx * self.dt_us], dtype=np.float32
-                )
+                event_time_bounds = scene_meta.get("event_time_bounds")
+                if event_time_bounds is not None and frame_idx < len(event_time_bounds):
+                    time_range = np.array(
+                        [event_time_bounds[frame_idx - 1], event_time_bounds[frame_idx]], dtype=np.float32
+                    )
+                else:
+                    time_range = np.array(
+                        [(frame_idx - 1) * self.dt_us, frame_idx * self.dt_us], dtype=np.float32
+                    )
 
             image_path = scene_meta["image_paths_by_ldr"][ldr_event_id][frame_idx]
             basename = osp.splitext(osp.basename(image_path))[0]
@@ -577,6 +640,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 events=event_data["events"],
                 event_time_range=time_range,
                 event_resolution=np.array([width, height], dtype=np.int32),
+                event_source_resolution=np.asarray(event_src_resolution, dtype=np.int32),
+                event_y_flip=np.array(event_y_flip, dtype=bool),
                 has_event=np.array(frame_idx > 0, dtype=bool),
                 dataset="my_event_dataset",
                 label=f"{scene_name}_{ldr_event_id}_{basename}",
@@ -605,6 +670,7 @@ def get_combined_dataset(
     split="train",
     test_frame_count=10,
     ldr_event_id="auto",
+    event_y_flip="auto",
 ):
     return MyEventDataset(
         ROOT=root,
@@ -619,6 +685,7 @@ def get_combined_dataset(
         active_scene_count=active_scene_count,
         test_frame_count=test_frame_count,
         ldr_event_id=ldr_event_id,
+        event_y_flip=event_y_flip,
         # normalize=True
     )
 

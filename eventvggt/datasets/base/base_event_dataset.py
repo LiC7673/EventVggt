@@ -569,8 +569,213 @@ class BaseEventMultiViewDataset(EasyDataset):
                 raise ValueError(f"Unsupported event format: {path}")
             return len(h5_file["events"])
 
-    def build_frame_event_index(self, h5_path, frame_count, chunk_size=1_000_000):
-        boundaries = np.arange(frame_count, dtype=np.float64) * float(self.dt_us)
+    @staticmethod
+    def _sample_h5_events(events_ds, max_count=200_000):
+        total_events = len(events_ds)
+        if total_events <= 0:
+            return np.zeros((0, 4), dtype=np.float64)
+        head_count = min(max_count // 2, total_events)
+        tail_count = min(max_count - head_count, max(0, total_events - head_count))
+        chunks = [events_ds[:head_count]]
+        if tail_count > 0:
+            chunks.append(events_ds[total_events - tail_count : total_events])
+        return np.concatenate(chunks, axis=0).astype(np.float64, copy=False)
+
+    @staticmethod
+    def _decode_h5_attr(value):
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray) and value.size == 1:
+            return BaseEventMultiViewDataset._decode_h5_attr(value.reshape(-1)[0])
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        return value
+
+    @staticmethod
+    def _normalize_time_unit(value):
+        if value is None:
+            return None
+        unit = str(BaseEventMultiViewDataset._decode_h5_attr(value)).strip().lower()
+        if unit in {"sec", "s", "second", "seconds"}:
+            return "seconds"
+        if unit in {"ms", "millisecond", "milliseconds"}:
+            return "milliseconds"
+        if unit in {"us", "microsecond", "microseconds"}:
+            return "microseconds"
+        if unit in {"ns", "nanosecond", "nanoseconds"}:
+            return "nanoseconds"
+        return None
+
+    @staticmethod
+    def _dt_from_time_unit(unit, fps):
+        if unit == "seconds":
+            return 1.0 / float(fps)
+        if unit == "milliseconds":
+            return 1_000.0 / float(fps)
+        if unit == "microseconds":
+            return 1_000_000.0 / float(fps)
+        if unit == "nanoseconds":
+            return 1_000_000_000.0 / float(fps)
+        return None
+
+    @staticmethod
+    def _event_columns_from_attrs(attrs):
+        columns_attr = attrs.get("columns", None)
+        if columns_attr is not None:
+            columns = str(BaseEventMultiViewDataset._decode_h5_attr(columns_attr)).lower().replace(" ", "")
+            if columns in {"t,x,y,p", "[t,x,y,p]"}:
+                return {"t": 0, "x": 1, "y": 2, "p": 3, "format": "t,x,y,p"}
+            if columns in {"x,y,t,p", "[x,y,t,p]"}:
+                return {"t": 2, "x": 0, "y": 1, "p": 3, "format": "x,y,t,p"}
+
+        format_attr = attrs.get("format", None)
+        if format_attr is not None:
+            fmt = str(BaseEventMultiViewDataset._decode_h5_attr(format_attr)).lower().replace(" ", "")
+            if "[t,x,y,p]" in fmt or "= [t,x,y,p]".replace(" ", "") in fmt:
+                return {"t": 0, "x": 1, "y": 2, "p": 3, "format": "t,x,y,p"}
+            if "[x,y,t,p]" in fmt:
+                return {"t": 2, "x": 0, "y": 1, "p": 3, "format": "x,y,t,p"}
+
+        return None
+
+    @staticmethod
+    def _infer_event_columns(sample):
+        if sample.size == 0 or sample.ndim != 2 or sample.shape[1] < 4:
+            return {"t": 0, "x": 1, "y": 2, "p": 3, "format": "t,x,y,p"}
+
+        scores = []
+        for col in range(sample.shape[1]):
+            values = sample[:, col].astype(np.float64, copy=False)
+            finite = np.isfinite(values)
+            if finite.sum() < 2:
+                scores.append((-np.inf, col))
+                continue
+            values = values[finite]
+            diffs = np.diff(values)
+            monotonic = float((diffs >= 0).mean()) if diffs.size else 0.0
+            value_range = float(values.max() - values.min())
+            unique_count = len(np.unique(values[: min(values.size, 5000)]))
+            binary_like = unique_count <= 4 and values.min() >= -1.0 and values.max() <= 1.0
+            score = monotonic * 50.0 + np.log1p(max(value_range, 0.0))
+            if binary_like:
+                score -= 20.0
+            scores.append((score, col))
+
+        time_col = max(scores)[1]
+        remaining = [col for col in range(sample.shape[1]) if col != time_col]
+
+        polarity_scores = []
+        for col in remaining:
+            values = sample[:, col].astype(np.float64, copy=False)
+            finite = np.isfinite(values)
+            values = values[finite]
+            if values.size == 0:
+                polarity_scores.append((-np.inf, col))
+                continue
+            rounded = np.unique(np.round(values[: min(values.size, 20000)], decimals=3))
+            small_cardinality = len(rounded) <= 4
+            signed_or_binary = values.min() >= -1.0 and values.max() <= 1.0
+            integer_like = float(np.mean(np.isclose(values, np.round(values))))
+            score = 0.0
+            score += 8.0 if small_cardinality else 0.0
+            score += 8.0 if signed_or_binary else 0.0
+            score += integer_like
+            polarity_scores.append((score, col))
+        polarity_col = max(polarity_scores)[1] if polarity_scores else 3
+
+        coord_cols = [col for col in range(sample.shape[1]) if col not in (time_col, polarity_col)]
+        coord_cols = coord_cols[:2]
+        if len(coord_cols) < 2:
+            coord_cols = [1, 2]
+
+        return {
+            "t": int(time_col),
+            "x": int(coord_cols[0]),
+            "y": int(coord_cols[1]),
+            "p": int(polarity_col),
+            "format": f"col{time_col},col{coord_cols[0]},col{coord_cols[1]},col{polarity_col}",
+        }
+
+    def _infer_event_timing(self, sample, columns, frame_count, time_unit=None):
+        if sample.size == 0:
+            return {
+                "unit": "microseconds",
+                "dt": float(self.dt_us),
+                "origin": 0.0,
+                "first_t": 0.0,
+                "last_t": 0.0,
+            }
+
+        t_values = sample[:, columns["t"]].astype(np.float64, copy=False)
+        t_values = t_values[np.isfinite(t_values)]
+        if t_values.size == 0:
+            first_t = last_t = 0.0
+        else:
+            first_t = float(t_values.min())
+            last_t = float(t_values.max())
+
+        normalized_unit = self._normalize_time_unit(time_unit)
+        if normalized_unit is not None:
+            return {
+                "unit": normalized_unit,
+                "dt": float(self._dt_from_time_unit(normalized_unit, self.fps)),
+                "origin": 0.0,
+                "first_t": float(first_t),
+                "last_t": float(last_t),
+            }
+
+        duration = max(last_t - first_t, 0.0)
+        expected_steps = max(frame_count - 1, 1)
+        candidates = [
+            ("seconds", 1.0 / float(self.fps)),
+            ("milliseconds", 1_000.0 / float(self.fps)),
+            ("microseconds", 1_000_000.0 / float(self.fps)),
+            ("nanoseconds", 1_000_000_000.0 / float(self.fps)),
+        ]
+
+        best_unit, best_dt, best_score = "microseconds", float(self.dt_us), float("inf")
+        for unit, dt in candidates:
+            expected_duration = expected_steps * dt
+            score = abs(np.log((duration + 1e-9) / (expected_duration + 1e-9)))
+            if score < best_score:
+                best_unit, best_dt, best_score = unit, dt, score
+
+        expected_total = max(frame_count - 1, 1) * float(best_dt)
+        if first_t >= 0.0 and last_t <= expected_total + 2.0 * float(best_dt):
+            origin = 0.0
+        else:
+            origin = 0.0 if abs(first_t) <= best_dt else first_t
+        return {
+            "unit": best_unit,
+            "dt": float(best_dt),
+            "origin": float(origin),
+            "first_t": float(first_t),
+            "last_t": float(last_t),
+        }
+
+    def build_frame_event_index(
+        self,
+        h5_path,
+        frame_count,
+        chunk_size=1_000_000,
+        *,
+        return_time_info=False,
+    ):
+        with h5py.File(h5_path, "r") as h5_file:
+            if "events" not in h5_file:
+                raise ValueError(f"Unsupported event format: {h5_path}")
+            events_ds = h5_file["events"]
+            attrs = {key: self._decode_h5_attr(value) for key, value in h5_file.attrs.items()}
+            attrs.update({key: self._decode_h5_attr(value) for key, value in events_ds.attrs.items()})
+            sample = self._sample_h5_events(events_ds)
+            columns = self._event_columns_from_attrs(attrs) or self._infer_event_columns(sample)
+            timing = self._infer_event_timing(sample, columns, frame_count, time_unit=attrs.get("time_unit"))
+
+        raw_boundaries = timing["origin"] + np.arange(frame_count, dtype=np.float64) * float(timing["dt"])
+        relative_boundaries = (raw_boundaries - float(timing["origin"])).astype(np.float32)
+        boundaries = raw_boundaries
         boundary_indices = np.empty(len(boundaries), dtype=np.int64)
         boundary_pos = 0
         global_offset = 0
@@ -581,7 +786,7 @@ class BaseEventMultiViewDataset(EasyDataset):
 
             while global_offset < total_events and boundary_pos < len(boundaries):
                 chunk_end = min(global_offset + chunk_size, total_events)
-                timestamps = events_ds[global_offset:chunk_end, 0].astype(np.float64)
+                timestamps = events_ds[global_offset:chunk_end, columns["t"]].astype(np.float64)
                 if timestamps.size == 0:
                     break
                 chunk_last = timestamps[-1]
@@ -600,7 +805,19 @@ class BaseEventMultiViewDataset(EasyDataset):
         for frame_idx in range(1, frame_count):
             frame_event_index[frame_idx, 0] = boundary_indices[frame_idx - 1]
             frame_event_index[frame_idx, 1] = boundary_indices[frame_idx]
-        return frame_event_index
+        if not return_time_info:
+            return frame_event_index
+
+        time_info = {
+            **timing,
+            "columns": columns,
+            "h5_attrs": attrs,
+            "event_width": int(attrs["width"]) if "width" in attrs else None,
+            "event_height": int(attrs["height"]) if "height" in attrs else None,
+            "raw_first_boundary": float(raw_boundaries[0]) if raw_boundaries.size else 0.0,
+            "raw_last_boundary": float(raw_boundaries[-1]) if raw_boundaries.size else 0.0,
+        }
+        return frame_event_index, relative_boundaries, time_info
 
     def _crop_resize_if_necessary(
         self, image, depthmap, intrinsics, resolution, rng=None, info=None
@@ -631,7 +848,7 @@ class BaseEventMultiViewDataset(EasyDataset):
         return image, depthmap, intrinsics
 
     @staticmethod
-    def load_event_slice(path, start_idx, end_idx):
+    def load_event_slice(path, start_idx, end_idx, *, event_columns=None, time_origin=0.0):
         with h5py.File(path, "r") as h5_file:
             if "events" not in h5_file:
                 raise ValueError(f"Unsupported event format: {path}")
@@ -645,10 +862,13 @@ class BaseEventMultiViewDataset(EasyDataset):
                 "events": np.zeros((0, 4), dtype=np.float32),
             }
 
-        event_t = events[:, 0].astype(np.float32)
-        event_x = events[:, 1].astype(np.int32)
-        event_y = events[:, 2].astype(np.int32)
-        event_p = events[:, 3].astype(np.float32)
+        if event_columns is None:
+            event_columns = {"t": 0, "x": 1, "y": 2, "p": 3}
+
+        event_t = (events[:, event_columns["t"]].astype(np.float64) - float(time_origin)).astype(np.float32)
+        event_x = events[:, event_columns["x"]].astype(np.int32)
+        event_y = events[:, event_columns["y"]].astype(np.int32)
+        event_p = events[:, event_columns["p"]].astype(np.float32)
         event_p[event_p == 0] = -1.0
         return {
             "event_xy": np.stack([event_x, event_y], axis=-1).astype(np.int32),

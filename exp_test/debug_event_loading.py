@@ -113,12 +113,8 @@ def inspect_h5(h5_path: str) -> Dict[str, object]:
             "total_events": int(total),
             "first_event": [float(x) for x in first],
             "last_event": [float(x) for x in last],
-            "sample_time_min": float(sampled[:, 0].min()),
-            "sample_time_max": float(sampled[:, 0].max()),
-            "sample_x_min": int(sampled[:, 1].min()),
-            "sample_x_max": int(sampled[:, 1].max()),
-            "sample_y_min": int(sampled[:, 2].min()),
-            "sample_y_max": int(sampled[:, 2].max()),
+            "col_min": [float(sampled[:, col].min()) for col in range(sampled.shape[1])],
+            "col_max": [float(sampled[:, col].max()) for col in range(sampled.shape[1])],
         }
 
 
@@ -135,11 +131,22 @@ def analyze_frame(dataset, sample_idx: int, local_frame_idx: int, out_dir: Path,
     )
 
     event_start, event_end = scene_meta["frame_event_index"][frame_idx]
-    raw_event = dataset.load_event_slice(scene_meta["event_h5"], event_start, event_end)
+    raw_event = dataset.load_event_slice(
+        scene_meta["event_h5"],
+        event_start,
+        event_end,
+        event_columns=scene_meta.get("event_columns"),
+        time_origin=scene_meta.get("event_time_info", {}).get("origin", 0.0),
+    )
+    event_src_resolution = scene_meta.get("event_resolution", resized["src_resolution"])
+    if np.asarray(event_src_resolution).reshape(-1).size < 2 or np.any(np.asarray(event_src_resolution) <= 0):
+        event_src_resolution = resized["src_resolution"]
+    event_y_flip = dataset._should_flip_event_y(scene_meta)
     resized_event = dataset._resize_event_data(
         raw_event,
-        src_resolution=resized["src_resolution"],
+        src_resolution=event_src_resolution,
         dst_resolution=resized["dst_resolution"],
+        flip_y=event_y_flip,
     )
     masked_event = {key: value.copy() if isinstance(value, np.ndarray) else value for key, value in resized_event.items()}
     mask_true_ratio = None
@@ -163,9 +170,12 @@ def analyze_frame(dataset, sample_idx: int, local_frame_idx: int, out_dir: Path,
         "scene": scene_name,
         "ldr_event_id": ldr_event_id,
         "event_h5": scene_meta["event_h5"],
+        "event_time_info": scene_meta.get("event_time_info", {}),
         "event_index_range": [int(event_start), int(event_end)],
         "event_index_count": int(event_end - event_start),
-        "src_resolution": [int(x) for x in resized["src_resolution"]],
+        "image_src_resolution": [int(x) for x in resized["src_resolution"]],
+        "event_src_resolution": [int(x) for x in event_src_resolution],
+        "event_y_flip": bool(event_y_flip),
         "dst_resolution": [int(x) for x in resized["dst_resolution"]],
         "mask_true_ratio": mask_true_ratio,
         "mask_kept_events": kept_by_mask,
