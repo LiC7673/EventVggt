@@ -139,6 +139,71 @@ def box_blur(value: np.ndarray, iterations: int = 1) -> np.ndarray:
     return out
 
 
+def _odd_kernel_size(ksize: int) -> int:
+    ksize = int(ksize)
+    if ksize <= 1:
+        return 0
+    return ksize if ksize % 2 == 1 else ksize + 1
+
+
+def _window_reduce(value: np.ndarray, ksize: int, op: str) -> np.ndarray:
+    ksize = _odd_kernel_size(ksize)
+    if ksize <= 1:
+        return value.astype(np.float32)
+    radius = ksize // 2
+    padded = np.pad(value.astype(np.float32), radius, mode="edge")
+    h, w = value.shape
+    windows = [
+        padded[y : y + h, x : x + w]
+        for y in range(ksize)
+        for x in range(ksize)
+    ]
+    stacked = np.stack(windows, axis=0)
+    if op == "median":
+        return np.median(stacked, axis=0).astype(np.float32)
+    if op == "max":
+        return stacked.max(axis=0).astype(np.float32)
+    if op == "min":
+        return stacked.min(axis=0).astype(np.float32)
+    raise ValueError(f"Unknown window op {op}")
+
+
+def median_filter2d(value: np.ndarray, ksize: int) -> np.ndarray:
+    return _window_reduce(value, ksize, "median")
+
+
+def max_filter2d(value: np.ndarray, ksize: int) -> np.ndarray:
+    return _window_reduce(value, ksize, "max")
+
+
+def min_filter2d(value: np.ndarray, ksize: int) -> np.ndarray:
+    return _window_reduce(value, ksize, "min")
+
+
+def close_filter2d(value: np.ndarray, ksize: int) -> np.ndarray:
+    return min_filter2d(max_filter2d(value, ksize), ksize)
+
+
+def preprocess_map(
+    value: np.ndarray,
+    *,
+    median_ksize: int = 0,
+    close_ksize: int = 0,
+    dilate_ksize: int = 0,
+    blur_iters: int = 0,
+) -> np.ndarray:
+    out = np.nan_to_num(value.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    if median_ksize > 1:
+        out = median_filter2d(out, median_ksize)
+    if close_ksize > 1:
+        out = close_filter2d(out, close_ksize)
+    if dilate_ksize > 1:
+        out = max_filter2d(out, dilate_ksize)
+    if blur_iters > 0:
+        out = box_blur(out, iterations=blur_iters)
+    return out.astype(np.float32)
+
+
 def gradients(value: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     value = value.astype(np.float32)
     gx = np.zeros_like(value, dtype=np.float32)
@@ -331,18 +396,62 @@ def compute_frame_metrics(view: Dict, rng: np.random.Generator, args) -> Tuple[D
     abs_inv_depth_lap = np.abs(inv_depth_lap)
     geom_detail = 0.5 * robust_normalize(normal_grad, mask) + 0.5 * robust_normalize(abs_inv_depth_lap, mask)
     geom_detail = box_blur(geom_detail, iterations=1)
+    geom_detail_raw = geom_detail.copy()
+    normal_grad_raw = normal_grad.copy()
+    abs_inv_depth_lap_raw = abs_inv_depth_lap.copy()
+    geom_detail = preprocess_map(
+        geom_detail,
+        median_ksize=args.geometry_median_ksize,
+        close_ksize=args.geometry_close_ksize,
+        dilate_ksize=args.geometry_dilate_ksize,
+        blur_iters=args.geometry_blur_iters,
+    )
+    normal_grad_metric = preprocess_map(
+        normal_grad,
+        median_ksize=args.geometry_median_ksize,
+        close_ksize=0,
+        dilate_ksize=0,
+        blur_iters=args.geometry_blur_iters,
+    )
+    abs_inv_depth_lap_metric = preprocess_map(
+        abs_inv_depth_lap,
+        median_ksize=args.geometry_median_ksize,
+        close_ksize=0,
+        dilate_ksize=0,
+        blur_iters=args.geometry_blur_iters,
+    )
     ggx, ggy = gradients(geom_detail)
     geom_orientation = np.arctan2(ggy, ggx).astype(np.float32)
 
     event = build_event_cues(view, height, width)
+    event_abs_raw = event["event_abs"].copy()
+    event_time_grad_raw = event["event_time_grad"].copy()
+    event["event_abs"] = preprocess_map(
+        event["event_abs"],
+        median_ksize=args.event_median_ksize,
+        close_ksize=args.event_close_ksize,
+        dilate_ksize=args.event_dilate_ksize,
+        blur_iters=args.event_blur_iters,
+    )
+    event["event_time_grad"] = preprocess_map(
+        event["event_time_grad"],
+        median_ksize=args.event_median_ksize,
+        close_ksize=args.event_close_ksize,
+        dilate_ksize=args.event_dilate_ksize,
+        blur_iters=args.event_blur_iters,
+    )
+    if args.event_signed_median_ksize > 1:
+        event["event_signed"] = median_filter2d(event["event_signed"], args.event_signed_median_ksize)
+    egx, egy = gradients(box_blur(event["event_abs"], iterations=2))
+    event["event_orientation"] = np.arctan2(egy, egx).astype(np.float32)
     valid = mask & np.isfinite(geom_detail)
     sampled = sample_valid_pixels(valid, args.max_pixels_per_frame, rng)
     flat = lambda x: x.reshape(-1)[sampled]
 
     e_abs = flat(event["event_abs"])
     e_signed = flat(event["event_signed"])
-    n_grad = flat(normal_grad)
-    lap_abs = flat(abs_inv_depth_lap)
+    n_grad = flat(normal_grad_metric)
+    lap_abs = flat(abs_inv_depth_lap_metric)
     geom = flat(geom_detail)
     lap_signed = flat(inv_depth_lap)
 
@@ -396,11 +505,16 @@ def compute_frame_metrics(view: Dict, rng: np.random.Generator, args) -> Tuple[D
     maps = {
         "rgb": tensor_image_to_uint8(view["img"]),
         "event_abs": event["event_abs"],
+        "event_abs_raw": event_abs_raw,
         "event_signed": event["event_signed"],
         "event_time_grad": event["event_time_grad"],
-        "normal_grad": normal_grad,
+        "event_time_grad_raw": event_time_grad_raw,
+        "normal_grad": normal_grad_metric,
+        "normal_grad_raw": normal_grad_raw,
         "inv_depth_lap": inv_depth_lap,
+        "abs_inv_depth_lap_raw": abs_inv_depth_lap_raw,
         "geom_detail": geom_detail,
+        "geom_detail_raw": geom_detail_raw,
         "mask": mask,
     }
     return metrics, maps
@@ -417,11 +531,13 @@ def save_visualization(out_dir: Path, maps: Dict[str, np.ndarray], label: str) -
     rows = [
         [
             label_panel("rgb", maps["rgb"]),
+            label_panel("event_abs_raw", gray_to_rgb(maps["event_abs_raw"], mask=None)),
             label_panel("event_abs", gray_to_rgb(maps["event_abs"], mask=None)),
             label_panel("event_signed", signed_to_rgb(maps["event_signed"], mask=None, percentile=100.0)),
             label_panel("event_time_grad", gray_to_rgb(maps["event_time_grad"], mask=None)),
         ],
         [
+            label_panel("geom_detail_raw", gray_to_rgb(maps["geom_detail_raw"], mask=mask)),
             label_panel("normal_grad", gray_to_rgb(maps["normal_grad"], mask=mask)),
             label_panel("abs_lap_inv_depth", gray_to_rgb(np.abs(maps["inv_depth_lap"]), mask=mask)),
             label_panel("signed_lap_inv_depth", signed_to_rgb(maps["inv_depth_lap"], mask=mask)),
@@ -450,8 +566,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pixels-per-frame", type=int, default=50000)
     parser.add_argument("--event-percentile", type=float, default=90.0)
     parser.add_argument("--geometry-percentile", type=float, default=90.0)
+    parser.add_argument(
+        "--preprocess-preset",
+        default="none",
+        choices=["none", "median", "event_support"],
+        help="Convenience preprocessing preset. Explicit args override unset preset values.",
+    )
+    parser.add_argument("--event-median-ksize", type=int, default=0)
+    parser.add_argument("--event-close-ksize", type=int, default=0)
+    parser.add_argument("--event-dilate-ksize", type=int, default=0)
+    parser.add_argument("--event-blur-iters", type=int, default=0)
+    parser.add_argument("--event-signed-median-ksize", type=int, default=0)
+    parser.add_argument("--geometry-median-ksize", type=int, default=0)
+    parser.add_argument("--geometry-close-ksize", type=int, default=0)
+    parser.add_argument("--geometry-dilate-ksize", type=int, default=0)
+    parser.add_argument("--geometry-blur-iters", type=int, default=0)
     parser.add_argument("--save-visuals", type=int, default=8)
-    return parser.parse_args()
+    args = parser.parse_args()
+    apply_preprocess_preset(args)
+    return args
+
+
+def apply_preprocess_preset(args: argparse.Namespace) -> None:
+    if args.preprocess_preset == "median":
+        if args.event_median_ksize <= 1:
+            args.event_median_ksize = 3
+        if args.geometry_median_ksize <= 1:
+            args.geometry_median_ksize = 3
+    elif args.preprocess_preset == "event_support":
+        # Events are sparse. Dilate/close before blur keeps support instead of
+        # deleting it like a plain median filter often does.
+        if args.event_close_ksize <= 1:
+            args.event_close_ksize = 3
+        if args.event_dilate_ksize <= 1:
+            args.event_dilate_ksize = 5
+        if args.event_blur_iters <= 0:
+            args.event_blur_iters = 2
+        if args.geometry_median_ksize <= 1:
+            args.geometry_median_ksize = 3
+        if args.geometry_blur_iters <= 0:
+            args.geometry_blur_iters = 1
 
 
 def main() -> None:
@@ -511,6 +665,18 @@ def main() -> None:
         "root": args.root,
         "ldr_event_id": args.ldr_event_id,
         "resolution": args.resolution,
+        "preprocessing": {
+            "preprocess_preset": args.preprocess_preset,
+            "event_median_ksize": args.event_median_ksize,
+            "event_close_ksize": args.event_close_ksize,
+            "event_dilate_ksize": args.event_dilate_ksize,
+            "event_blur_iters": args.event_blur_iters,
+            "event_signed_median_ksize": args.event_signed_median_ksize,
+            "geometry_median_ksize": args.geometry_median_ksize,
+            "geometry_close_ksize": args.geometry_close_ksize,
+            "geometry_dilate_ksize": args.geometry_dilate_ksize,
+            "geometry_blur_iters": args.geometry_blur_iters,
+        },
         "metrics_mean": {key: nanmean(float(row[key]) for row in records) for key in metric_keys},
     }
 
@@ -531,6 +697,7 @@ def main() -> None:
         f.write(f"- Dataset root: `{args.root}`\n")
         f.write(f"- Active scenes: `{summary['active_scenes']}`\n")
         f.write(f"- Evaluated event frames: `{len(records)}`\n")
+        f.write(f"- Preprocessing: `{summary['preprocessing']}`\n")
         f.write(f"- Per-frame CSV: `{csv_path.name}`\n")
         f.write(f"- Visualizations: `visuals/`\n\n")
         f.write("## Mean Metrics\n\n")
