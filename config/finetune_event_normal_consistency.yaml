@@ -58,6 +58,8 @@ data:
   resolution: [518, 392]
   fps: 120
   ldr_event_id: 5
+  event_vis_out: null
+  event_vis_bins: 10
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 3

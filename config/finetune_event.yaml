@@ -57,6 +57,8 @@ data:
   resolution: [518, 392]
   fps: 120
   ldr_event_id: 5  # auto picks the largest LDR/ev_xx folder; set 2, 5, 10, or ev_10 to choose explicitly
+  event_vis_out: null  # set to vis_out to dump post-processed event bins for debugging
+  event_vis_bins: 10
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 3  # Increase to train on multiple scenes
