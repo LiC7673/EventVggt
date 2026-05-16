@@ -78,8 +78,15 @@ class SimpleEventEncoder(nn.Module):
         width: int,
         device: torch.device,
         dtype: torch.dtype,
+        event_voxel: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Build [B, S, 3, H, W] pseudo-images from event lists."""
+        if event_voxel is not None and event_voxel.numel() > 0:
+            event_tensor = self._voxel_to_legacy_rep(event_voxel.to(device=device, dtype=dtype))
+            bs, seq, channels, h, w = event_tensor.shape
+            pseudo_images = self.proj(event_tensor.reshape(bs * seq, channels, h, w))
+            return pseudo_images.reshape(bs, seq, -1, h, w)
+
         batch_size = len(event_xy)
         seq_len = len(event_xy[0]) if batch_size > 0 else 0
         encoded_frames = []
@@ -116,6 +123,35 @@ class SimpleEventEncoder(nn.Module):
         # if getattr(self, "debug_viz", False): # 可以通过给实例设置 encoder.debug_viz = True 来随时开启
         # save_energy_map_viz(out_features, save_dir="debug_event_energy")
         return pseudo_images.reshape(bs, seq, -1, h, w)
+
+    @staticmethod
+    def _normalize_count_map(counts: torch.Tensor) -> torch.Tensor:
+        counts = torch.log1p(counts)
+        denom = counts.amax(dim=(-2, -1), keepdim=True).clamp_min(1.0)
+        return counts / denom
+
+    def _voxel_to_legacy_rep(self, event_voxel: torch.Tensor) -> torch.Tensor:
+        # event_voxel: [B, S, 2*T, H, W], first T channels are positive polarity.
+        bs, seq, channels, height, width = event_voxel.shape
+        num_bins = max(channels // 2, 1)
+        pos = event_voxel[:, :, :num_bins].clamp_min(0.0)
+        neg = event_voxel[:, :, num_bins : 2 * num_bins].clamp_min(0.0)
+
+        pos_count = self._normalize_count_map(pos.sum(dim=2))
+        neg_count = self._normalize_count_map(neg.sum(dim=2))
+
+        bin_values = torch.linspace(
+            0.0,
+            1.0,
+            num_bins,
+            device=event_voxel.device,
+            dtype=event_voxel.dtype,
+        ).view(1, 1, num_bins, 1, 1)
+        pos_latest = torch.where(pos > 0, bin_values, torch.zeros_like(pos)).amax(dim=2)
+        neg_latest = torch.where(neg > 0, bin_values, torch.zeros_like(neg)).amax(dim=2)
+        occupancy = ((pos.sum(dim=2) + neg.sum(dim=2)) > 0).to(dtype=event_voxel.dtype)
+
+        return torch.stack([pos_count, neg_count, pos_latest, neg_latest, occupancy], dim=2)
 
     def _encode_single_frame(
         self,

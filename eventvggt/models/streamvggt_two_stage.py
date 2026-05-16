@@ -42,7 +42,20 @@ class BinnedEventEncoder(nn.Module):
         width: int,
         device: torch.device,
         dtype: torch.dtype,
+        event_voxel: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if event_voxel is not None and event_voxel.numel() > 0:
+            voxel = event_voxel.to(device=device, dtype=dtype)
+            bs, seq, channels, voxel_h, voxel_w = voxel.shape
+            if voxel_h != height or voxel_w != width:
+                flat_voxel = voxel.reshape(bs * seq, channels, voxel_h, voxel_w)
+                flat_voxel = F.interpolate(flat_voxel, size=(height, width), mode="area")
+                flat_voxel = flat_voxel * (float(voxel_h * voxel_w) / max(float(height * width), 1.0))
+                voxel = flat_voxel.reshape(bs, seq, channels, height, width)
+            voxel = self._match_voxel_bins(voxel)
+            voxel = torch.clamp(voxel, max=self.count_cmax)
+            return torch.log1p(voxel) / torch.log1p(voxel.new_tensor(self.count_cmax))
+
         batch_size = len(event_xy)
         seq_len = len(event_xy[0]) if batch_size > 0 else 0
         encoded_frames = []
@@ -119,6 +132,26 @@ class BinnedEventEncoder(nn.Module):
         rep = torch.clamp(rep, max=self.count_cmax)
         rep = torch.log1p(rep) / torch.log1p(rep.new_tensor(self.count_cmax))
         return rep
+
+    def _match_voxel_bins(self, voxel: torch.Tensor) -> torch.Tensor:
+        channels = voxel.shape[2]
+        old_bins = max(channels // 2, 1)
+        pos = voxel[:, :, :old_bins]
+        neg = voxel[:, :, old_bins : 2 * old_bins]
+        if old_bins == self.num_bins:
+            return torch.cat([pos, neg], dim=2)
+
+        pos_bins = []
+        neg_bins = []
+        edges = torch.linspace(0, old_bins, self.num_bins + 1, device=voxel.device)
+        for bin_idx in range(self.num_bins):
+            start = int(torch.floor(edges[bin_idx]).item())
+            end = int(torch.ceil(edges[bin_idx + 1]).item())
+            end = max(start + 1, min(end, old_bins))
+            start = min(start, old_bins - 1)
+            pos_bins.append(pos[:, :, start:end].sum(dim=2))
+            neg_bins.append(neg[:, :, start:end].sum(dim=2))
+        return torch.cat([torch.stack(pos_bins, dim=2), torch.stack(neg_bins, dim=2)], dim=2)
 
 
 def _group_count(channels: int, max_groups: int = 8) -> int:
@@ -624,12 +657,14 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         event_t = []
         event_p = []
         event_time_range = []
+        event_voxel = []
 
         for view in views:
             event_xy.append(view["event_xy"])
             event_t.append(view["event_t"])
             event_p.append(view["event_p"])
             event_time_range.append(view["event_time_range"])
+            event_voxel.append(view["event_voxel"] if "event_voxel" in view else None)
 
         batch_size = len(event_xy[0])
         batched_event_xy = [[event_xy[s][b] for s in range(seq_len)] for b in range(batch_size)]
@@ -668,6 +703,11 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             ]
 
         time_range = torch.stack(event_time_range, dim=1).to(device=device, dtype=dtype)
+        voxel_tensor = None
+        if all(voxel is not None for voxel in event_voxel):
+            voxel_tensor = torch.stack(event_voxel, dim=0).permute(1, 0, 2, 3, 4)
+            if voxel_tensor.shape[2] == 0:
+                voxel_tensor = None
         return self.event_encoder(
             event_xy=batched_event_xy,
             event_t=batched_event_t,
@@ -677,4 +717,5 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             width=encode_w,
             device=device,
             dtype=dtype,
+            event_voxel=voxel_tensor,
         )

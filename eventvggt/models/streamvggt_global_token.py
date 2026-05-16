@@ -385,12 +385,14 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         event_t = []
         event_p = []
         event_time_range = []
+        event_voxel = []
 
         for view in views:
             event_xy.append(view["event_xy"])
             event_t.append(view["event_t"])
             event_p.append(view["event_p"])
             event_time_range.append(view["event_time_range"])
+            event_voxel.append(view["event_voxel"] if "event_voxel" in view else None)
 
         batch_size = len(event_xy[0])
         batched_event_xy = [[event_xy[s][b] for s in range(seq_len)] for b in range(batch_size)]
@@ -408,6 +410,11 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             dtype = reference_img.dtype
 
         time_range = torch.stack(event_time_range, dim=1).to(device=device, dtype=dtype)
+        voxel_tensor = None
+        if all(voxel is not None for voxel in event_voxel):
+            voxel_tensor = torch.stack(event_voxel, dim=0).permute(1, 0, 2, 3, 4)
+            if voxel_tensor.shape[2] == 0:
+                voxel_tensor = None
         return self.event_encoder(
             event_xy=batched_event_xy,
             event_t=batched_event_t,
@@ -417,4 +424,5 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             width=width,
             device=device,
             dtype=dtype,
+            event_voxel=voxel_tensor,
         )
