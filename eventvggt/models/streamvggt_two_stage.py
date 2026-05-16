@@ -114,7 +114,8 @@ class BinnedEventEncoder(nn.Module):
         flat_idx = channel_idx * (height * width) + pixel_idx
 
         flat = rep.reshape(-1)
-        flat.index_add_(0, flat_idx, torch.ones_like(flat_idx, dtype=dtype))
+        event_weight = event_p.to(device=device, dtype=dtype).abs()
+        flat.index_add_(0, flat_idx, event_weight)
         rep = torch.clamp(rep, max=self.count_cmax)
         rep = torch.log1p(rep) / torch.log1p(rep.new_tensor(self.count_cmax))
         return rep

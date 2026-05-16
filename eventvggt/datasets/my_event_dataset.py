@@ -3,6 +3,7 @@ import json
 import os
 import os.path as osp
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -63,6 +64,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         event_spatial_transform="auto",
         event_vis_out=None,
         event_vis_bins=10,
+        event_resize_method="voxel_antialias",
+        event_resize_bins=10,
         **kwargs,
     ):
         self.ROOT = ROOT
@@ -76,6 +79,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.event_spatial_transform = event_spatial_transform
         self.event_vis_out = event_vis_out
         self.event_vis_bins = event_vis_bins
+        self.event_resize_method = event_resize_method
+        self.event_resize_bins = event_resize_bins
         self.start_img_ids = []
         self.is_metric = False
         self.video = True
@@ -551,6 +556,115 @@ class MyEventDataset(BaseEventMultiViewDataset):
         return resized
 
     @staticmethod
+    def _pack_event_data(event_xy, event_t, event_p):
+        event_xy = event_xy.astype(np.int32, copy=False)
+        event_t = event_t.astype(np.float32, copy=False)
+        event_p = event_p.astype(np.float32, copy=False)
+        if event_xy.size == 0:
+            events = np.zeros((0, 4), dtype=np.float32)
+        else:
+            events = np.stack(
+                [
+                    event_xy[:, 0].astype(np.float32, copy=False),
+                    event_xy[:, 1].astype(np.float32, copy=False),
+                    event_t,
+                    event_p,
+                ],
+                axis=-1,
+            ).astype(np.float32, copy=False)
+        return {
+            "event_xy": event_xy,
+            "event_t": event_t,
+            "event_p": event_p,
+            "events": events,
+        }
+
+    @staticmethod
+    def _events_to_antialias_voxel_resize(
+        event_xy,
+        event_t,
+        event_p,
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+        *,
+        num_bins=10,
+    ):
+        num_bins = max(int(num_bins), 1)
+        valid = (
+            (event_xy[:, 0] >= 0)
+            & (event_xy[:, 0] < src_width)
+            & (event_xy[:, 1] >= 0)
+            & (event_xy[:, 1] < src_height)
+            & np.isfinite(event_t)
+            & np.isfinite(event_p)
+            & (np.abs(event_p) > 0.0)
+        )
+        if not np.any(valid):
+            return MyEventDataset._pack_event_data(
+                np.zeros((0, 2), dtype=np.int32),
+                np.zeros((0,), dtype=np.float32),
+                np.zeros((0,), dtype=np.float32),
+            )
+
+        event_xy = event_xy[valid].astype(np.int32, copy=False)
+        event_t = event_t[valid].astype(np.float32, copy=False)
+        event_p = event_p[valid].astype(np.float32, copy=False)
+
+        t0 = float(np.nanmin(event_t))
+        t1 = float(np.nanmax(event_t))
+        if not np.isfinite(t0):
+            t0 = 0.0
+        if not np.isfinite(t1):
+            t1 = t0
+
+        if t1 <= t0:
+            bin_ids = np.zeros(event_t.shape, dtype=np.int64)
+            bin_times = np.full((num_bins,), t0, dtype=np.float32)
+        else:
+            norm_t = (event_t.astype(np.float64) - t0) / max(t1 - t0, 1e-12)
+            bin_ids = np.floor(norm_t * num_bins).astype(np.int64)
+            bin_ids = np.clip(bin_ids, 0, num_bins - 1)
+            bin_times = (
+                t0 + (np.arange(num_bins, dtype=np.float32) + 0.5) * ((t1 - t0) / num_bins)
+            ).astype(np.float32)
+
+        channel_ids = bin_ids + np.where(event_p > 0, 0, num_bins)
+        flat_idx = (
+            channel_ids.astype(np.int64) * (src_height * src_width)
+            + event_xy[:, 1].astype(np.int64) * src_width
+            + event_xy[:, 0].astype(np.int64)
+        )
+        voxel = np.zeros((2 * num_bins, src_height, src_width), dtype=np.float32)
+        np.add.at(voxel.reshape(-1), flat_idx, np.abs(event_p).astype(np.float32, copy=False))
+
+        interpolation = cv2.INTER_AREA if dst_width <= src_width and dst_height <= src_height else cv2.INTER_LINEAR
+        area_scale = float(src_width * src_height) / max(float(dst_width * dst_height), 1.0)
+        resized_channels = []
+        for channel in voxel:
+            resized = cv2.resize(channel, (dst_width, dst_height), interpolation=interpolation)
+            resized_channels.append(resized.astype(np.float32, copy=False) * area_scale)
+        resized_voxel = np.stack(resized_channels, axis=0)
+
+        nonzero = resized_voxel > 1e-6
+        channel_idx, y_idx, x_idx = np.nonzero(nonzero)
+        if channel_idx.size == 0:
+            return MyEventDataset._pack_event_data(
+                np.zeros((0, 2), dtype=np.int32),
+                np.zeros((0,), dtype=np.float32),
+                np.zeros((0,), dtype=np.float32),
+            )
+
+        weights = resized_voxel[channel_idx, y_idx, x_idx].astype(np.float32, copy=False)
+        bin_idx = channel_idx % num_bins
+        polarity = np.where(channel_idx < num_bins, 1.0, -1.0).astype(np.float32)
+        event_xy_out = np.stack([x_idx, y_idx], axis=-1).astype(np.int32, copy=False)
+        event_t_out = bin_times[bin_idx].astype(np.float32, copy=False)
+        event_p_out = (polarity * weights).astype(np.float32, copy=False)
+        return MyEventDataset._pack_event_data(event_xy_out, event_t_out, event_p_out)
+
+    @staticmethod
     def _resize_event_data(
         event_data,
         src_resolution,
@@ -558,6 +672,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         *,
         flip_y=False,
         spatial_transform="none",
+        resize_method="voxel_antialias",
+        resize_bins=10,
     ):
         src_width, src_height = int(src_resolution[0]), int(src_resolution[1])
         dst_width, dst_height = int(dst_resolution[0]), int(dst_resolution[1])
@@ -567,15 +683,11 @@ class MyEventDataset(BaseEventMultiViewDataset):
         event_p = event_data["event_p"]
 
         if event_xy.size == 0:
-            return {
-                "event_xy": event_xy.astype(np.int32, copy=False),
-                "event_t": event_t.astype(np.float32, copy=False),
-                "event_p": event_p.astype(np.float32, copy=False),
-                "events": np.zeros((0, 4), dtype=np.float32),
-            }
-
-        sx = dst_width / max(src_width, 1)
-        sy = dst_height / max(src_height, 1)
+            return MyEventDataset._pack_event_data(
+                event_xy.astype(np.int32, copy=False),
+                event_t.astype(np.float32, copy=False),
+                event_p.astype(np.float32, copy=False),
+            )
 
         resized_xy = event_xy.astype(np.float32, copy=True)
         if flip_y and spatial_transform == "none":
@@ -591,34 +703,47 @@ class MyEventDataset(BaseEventMultiViewDataset):
         elif spatial_transform not in ("none", None):
             raise ValueError(f"Unsupported event spatial transform: {spatial_transform}")
 
-        resized_xy[:, 0] = np.floor(resized_xy[:, 0] * sx)
-        resized_xy[:, 1] = np.floor(resized_xy[:, 1] * sy)
-        resized_xy = resized_xy.astype(np.int32)
-
-        valid = (
+        valid_src = (
             (resized_xy[:, 0] >= 0)
-            & (resized_xy[:, 0] < dst_width)
+            & (resized_xy[:, 0] < src_width)
             & (resized_xy[:, 1] >= 0)
-            & (resized_xy[:, 1] < dst_height)
+            & (resized_xy[:, 1] < src_height)
         )
-        resized_xy = resized_xy[valid]
-        event_t = event_t[valid].astype(np.float32, copy=False)
-        event_p = event_p[valid].astype(np.float32, copy=False)
+        resized_xy = resized_xy[valid_src]
+        event_t = event_t[valid_src].astype(np.float32, copy=False)
+        event_p = event_p[valid_src].astype(np.float32, copy=False)
 
-        return {
-            "event_xy": resized_xy,
-            "event_t": event_t,
-            "event_p": event_p,
-            "events": np.stack(
-                [
-                    resized_xy[:, 0].astype(np.float32, copy=False),
-                    resized_xy[:, 1].astype(np.float32, copy=False),
-                    event_t,
-                    event_p,
-                ],
-                axis=-1,
-            ).astype(np.float32, copy=False),
-        }
+        resize_method = str(resize_method or "voxel_antialias").lower()
+        if src_width == dst_width and src_height == dst_height:
+            return MyEventDataset._pack_event_data(resized_xy.astype(np.int32), event_t, event_p)
+
+        if resize_method in {"floor", "nearest", "legacy"}:
+            sx = dst_width / max(src_width, 1)
+            sy = dst_height / max(src_height, 1)
+            resized_xy[:, 0] = np.floor(resized_xy[:, 0] * sx)
+            resized_xy[:, 1] = np.floor(resized_xy[:, 1] * sy)
+            resized_xy = resized_xy.astype(np.int32)
+            valid = (
+                (resized_xy[:, 0] >= 0)
+                & (resized_xy[:, 0] < dst_width)
+                & (resized_xy[:, 1] >= 0)
+                & (resized_xy[:, 1] < dst_height)
+            )
+            return MyEventDataset._pack_event_data(resized_xy[valid], event_t[valid], event_p[valid])
+
+        if resize_method not in {"voxel", "voxel_antialias", "antialias"}:
+            raise ValueError(f"Unsupported event_resize_method={resize_method}")
+
+        return MyEventDataset._events_to_antialias_voxel_resize(
+            resized_xy,
+            event_t,
+            event_p,
+            src_width,
+            src_height,
+            dst_width,
+            dst_height,
+            num_bins=resize_bins,
+        )
 
     def _visualize_processed_event_data(
         self,
@@ -695,16 +820,9 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 src_resolution=event_src_resolution,
                 dst_resolution=resized["dst_resolution"],
                 spatial_transform=event_spatial_transform,
+                resize_method=self.event_resize_method,
+                resize_bins=self.event_resize_bins,
             )
-
-            # Apply mask to events if mask is available
-            if "mask" in resized and event_data["event_xy"].size > 0:
-                mask = resized["mask"]
-                valid_events = mask[event_data["event_xy"][:, 1], event_data["event_xy"][:, 0]]
-                event_data["event_xy"] = event_data["event_xy"][valid_events]
-                event_data["event_t"] = event_data["event_t"][valid_events]
-                event_data["event_p"] = event_data["event_p"][valid_events]
-                event_data["events"] = event_data["events"][valid_events]
 
             self._visualize_processed_event_data(
                 scene_name=scene_name,
@@ -716,6 +834,15 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 resolution=resized["dst_resolution"],
                 event_spatial_transform=event_spatial_transform,
             )
+
+            # Apply mask to events if mask is available
+            if "mask" in resized and event_data["event_xy"].size > 0:
+                mask = resized["mask"]
+                valid_events = mask[event_data["event_xy"][:, 1], event_data["event_xy"][:, 0]]
+                event_data["event_xy"] = event_data["event_xy"][valid_events]
+                event_data["event_t"] = event_data["event_t"][valid_events]
+                event_data["event_p"] = event_data["event_p"][valid_events]
+                event_data["events"] = event_data["events"][valid_events]
 
             if frame_idx == 0:
                 time_range = np.array([0.0, 0.0], dtype=np.float32)
@@ -788,6 +915,8 @@ def get_combined_dataset(
     event_spatial_transform="auto",
     event_vis_out=None,
     event_vis_bins=10,
+    event_resize_method="voxel_antialias",
+    event_resize_bins=10,
 ):
     return MyEventDataset(
         ROOT=root,
@@ -806,6 +935,8 @@ def get_combined_dataset(
         event_spatial_transform=event_spatial_transform,
         event_vis_out=event_vis_out,
         event_vis_bins=event_vis_bins,
+        event_resize_method=event_resize_method,
+        event_resize_bins=event_resize_bins,
         # normalize=True
     )
 

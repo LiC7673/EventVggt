@@ -120,6 +120,8 @@ def build_event_loader(cfg, split="train"):
         event_spatial_transform=getattr(cfg.data, "event_spatial_transform", "auto"),
         event_vis_out=getattr(cfg.data, "event_vis_out", None),
         event_vis_bins=getattr(cfg.data, "event_vis_bins", 10),
+        event_resize_method=getattr(cfg.data, "event_resize_method", "voxel_antialias"),
+        event_resize_bins=getattr(cfg.data, "event_resize_bins", 10),
     )
     if len(dataset) <= 0:
         scene_stats = []

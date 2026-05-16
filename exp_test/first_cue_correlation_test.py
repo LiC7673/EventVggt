@@ -295,8 +295,8 @@ def build_event_cues(view: Dict, height: int, width: int) -> Dict[str, np.ndarra
     y = np.clip(event_xy[:, 1], 0, height - 1)
     flat = y * width + x
     pos_mask = event_p > 0
-    np.add.at(pos.reshape(-1), flat[pos_mask], 1.0)
-    np.add.at(neg.reshape(-1), flat[~pos_mask], 1.0)
+    np.add.at(pos.reshape(-1), flat[pos_mask], np.abs(event_p[pos_mask]).astype(np.float32, copy=False))
+    np.add.at(neg.reshape(-1), flat[~pos_mask], np.abs(event_p[~pos_mask]).astype(np.float32, copy=False))
 
     if event_t.size == event_xy.shape[0]:
         t_min = float(event_t.min())

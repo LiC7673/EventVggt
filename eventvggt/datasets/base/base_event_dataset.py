@@ -928,8 +928,8 @@ class BaseEventMultiViewDataset(EasyDataset):
             neg = np.zeros(height * width, dtype=np.float32)
             pos_mask = p > 0
             if flat.size > 0:
-                np.add.at(pos, flat[pos_mask], 1.0)
-                np.add.at(neg, flat[~pos_mask], 1.0)
+                np.add.at(pos, flat[pos_mask], np.abs(p[pos_mask]).astype(np.float32, copy=False))
+                np.add.at(neg, flat[~pos_mask], np.abs(p[~pos_mask]).astype(np.float32, copy=False))
 
             pos = np.log1p(pos.reshape(height, width))
             neg = np.log1p(neg.reshape(height, width))

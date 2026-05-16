@@ -62,6 +62,8 @@ data:
   event_vis_bins: 10
   event_vis_only: false
   event_vis_max_batches: 1
+  event_resize_method: voxel_antialias
+  event_resize_bins: 10
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 3

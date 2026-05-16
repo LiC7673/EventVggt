@@ -154,9 +154,10 @@ class SimpleEventEncoder(nn.Module):
 
         pos_mask = event_p > 0
         neg_mask = ~pos_mask
+        event_weight = event_p.abs().to(device=device, dtype=dtype)
 
-        rep[0] = self._build_count_map(linear_idx, pos_mask, height, width, device, dtype)
-        rep[1] = self._build_count_map(linear_idx, neg_mask, height, width, device, dtype)
+        rep[0] = self._build_count_map(linear_idx, pos_mask, event_weight, height, width, device, dtype)
+        rep[1] = self._build_count_map(linear_idx, neg_mask, event_weight, height, width, device, dtype)
         rep[2] = self._build_latest_time_map(linear_idx, norm_t, pos_mask, height, width, device, dtype)
         rep[3] = self._build_latest_time_map(linear_idx, norm_t, neg_mask, height, width, device, dtype)
         rep[4].view(-1).index_fill_(0, linear_idx.unique(), 1.0)
@@ -166,6 +167,7 @@ class SimpleEventEncoder(nn.Module):
     def _build_count_map(
         linear_idx: torch.Tensor,
         mask: torch.Tensor,
+        weights: torch.Tensor,
         height: int,
         width: int,
         device: torch.device,
@@ -173,7 +175,7 @@ class SimpleEventEncoder(nn.Module):
     ) -> torch.Tensor:
         counts = torch.zeros(height * width, device=device, dtype=dtype)
         if mask.any():
-            counts.index_add_(0, linear_idx[mask], torch.ones(int(mask.sum().item()), device=device, dtype=dtype))
+            counts.index_add_(0, linear_idx[mask], weights[mask])
             counts = torch.log1p(counts)
             counts = counts / counts.max().clamp_min(1.0)
         return counts.view(height, width)
