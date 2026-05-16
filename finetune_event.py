@@ -1233,6 +1233,8 @@ def train(cfg):
     
     # Test evaluation interval
     eval_every_steps = getattr(cfg, "eval_every_steps", max(cfg.save_every_steps, 500))
+    event_vis_only = bool(getattr(cfg.data, "event_vis_only", False))
+    event_vis_max_batches = max(int(getattr(cfg.data, "event_vis_max_batches", 1)), 1)
 
     for epoch in range(cfg.start_epoch, cfg.epochs):
         model.train()
@@ -1241,6 +1243,20 @@ def train(cfg):
         header = f"Epoch: [{epoch}]"
 
         for data_iter_step, views in enumerate(metric_logger.log_every(data_loader_train, cfg.print_freq, accelerator, header)):
+            if event_vis_only:
+                if accelerator.is_main_process:
+                    printer.info(
+                        "Event visualization only: dumped batch %d/%d to %s",
+                        data_iter_step + 1,
+                        event_vis_max_batches,
+                        getattr(cfg.data, "event_vis_out", None),
+                    )
+                if data_iter_step + 1 >= event_vis_max_batches:
+                    if log_writer is not None:
+                        log_writer.close()
+                    return
+                continue
+
             with accelerator.accumulate(model):
 
                 optimizer.zero_grad(set_to_none=True)

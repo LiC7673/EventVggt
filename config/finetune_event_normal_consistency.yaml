@@ -60,6 +60,8 @@ data:
   ldr_event_id: 5
   event_vis_out: null
   event_vis_bins: 10
+  event_vis_only: false
+  event_vis_max_batches: 1
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 3
