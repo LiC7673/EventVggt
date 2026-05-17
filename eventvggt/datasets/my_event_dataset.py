@@ -66,6 +66,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         event_vis_bins=10,
         event_resize_method="voxel_antialias",
         event_resize_bins=10,
+        return_normal_gt=False,
+        return_debug_event_fields=False,
         **kwargs,
     ):
         self.ROOT = ROOT
@@ -81,6 +83,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.event_vis_bins = event_vis_bins
         self.event_resize_method = event_resize_method
         self.event_resize_bins = event_resize_bins
+        self.return_normal_gt = return_normal_gt
+        self.return_debug_event_fields = return_debug_event_fields
         self.start_img_ids = []
         self.is_metric = False
         self.video = True
@@ -934,11 +938,6 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 depthmap=resized["depthmap"].astype(np.float32),
                 camera_pose=scene_meta["poses"][frame_idx].astype(np.float32),
                 camera_intrinsics=resized["camera_intrinsics"].astype(np.float32),
-                normal_gt=(
-                    resized["normal"].astype(np.float32)
-                    if "normal" in resized
-                    else np.zeros((height, width, 3), dtype=np.float32)
-                ),
                 mask=(
                     resized["mask"].astype(bool)
                     if "mask" in resized
@@ -947,7 +946,6 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 event_xy=event_data["event_xy"],
                 event_t=event_data["event_t"],
                 event_p=event_data["event_p"],
-                events=event_data["events"],
                 event_voxel=event_data.get(
                     "event_voxel",
                     np.zeros((0, height, width), dtype=np.float32),
@@ -967,6 +965,14 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 img_mask=np.array(True, dtype=bool),
                 reset=np.array(frame_idx == start_id, dtype=bool),
             )
+            if self.return_normal_gt:
+                view["normal_gt"] = (
+                    resized["normal"].astype(np.float32)
+                    if "normal" in resized
+                    else np.zeros((height, width, 3), dtype=np.float32)
+                )
+            if self.return_debug_event_fields:
+                view["events"] = event_data["events"]
             views.append(view)
 
         return views
@@ -991,6 +997,8 @@ def get_combined_dataset(
     event_vis_bins=10,
     event_resize_method="voxel_antialias",
     event_resize_bins=10,
+    return_normal_gt=False,
+    return_debug_event_fields=False,
 ):
     return MyEventDataset(
         ROOT=root,
@@ -1011,6 +1019,8 @@ def get_combined_dataset(
         event_vis_bins=event_vis_bins,
         event_resize_method=event_resize_method,
         event_resize_bins=event_resize_bins,
+        return_normal_gt=return_normal_gt,
+        return_debug_event_fields=return_debug_event_fields,
         # normalize=True
     )
 

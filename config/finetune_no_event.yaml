@@ -51,7 +51,7 @@ vis:
 
 data:
   root: /data1/lzh/dataset/reflective_raw
-  num_views: 4
+  num_views: 6
   resolution: [518, 392]
   fps: 120
   ldr_event_id: auto  # auto picks largest LDR/ev_xx; set 10 or ev_10 for a fixed high exposure folder

@@ -53,7 +53,7 @@ vis:
 
 data:
   root: /data1/lzh/dataset/reflective_raw
-  num_views: 4
+  num_views: 6
   resolution: [518, 392]
   fps: 120
   ldr_event_id: 5
@@ -63,6 +63,8 @@ data:
   event_vis_max_batches: 1
   event_resize_method: voxel_antialias
   event_resize_bins: 10
+  return_normal_gt: false
+  return_debug_event_fields: false
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 3

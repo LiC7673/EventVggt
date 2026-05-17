@@ -40,4 +40,4 @@ loss:
   points_loss_type: "l1"
 
 data:
-  num_views: 4
+  num_views: 6

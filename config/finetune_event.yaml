@@ -32,7 +32,6 @@ model:
   embed_dim: 1024
   event_hidden_dim: 32
   head_frames_chunk_size: 2
-  enable_point_head: false  # false saves a full DPT point-head forward; points loss uses depth+pose backprojection
 
 train:
   unfreeze_heads: true
@@ -54,7 +53,7 @@ vis:
 
 data:
   root: /data1/lzh/dataset/reflective_raw
-  num_views: 10
+  num_views: 6
   resolution: [518, 392]
   fps: 120
   ldr_event_id: 5  # auto picks the largest LDR/ev_xx folder; set 2, 5, 10, or ev_10 to choose explicitly
@@ -64,6 +63,8 @@ data:
   event_vis_max_batches: 1
   event_resize_method: voxel_antialias  # floor restores the old coordinate floor downsampling
   event_resize_bins: 10
+  return_normal_gt: false
+  return_debug_event_fields: false
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 3  # Increase to train on multiple scenes
