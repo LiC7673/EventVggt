@@ -32,6 +32,7 @@ model:
   embed_dim: 1024
   event_hidden_dim: 32
   head_frames_chunk_size: 2
+  enable_point_head: false  # false saves a full DPT point-head forward; points loss uses depth+pose backprojection
 
 train:
   unfreeze_heads: true

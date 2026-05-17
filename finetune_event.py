@@ -169,6 +169,8 @@ def configure_trainable_params(model: EventStreamVGGT, cfg) -> None:
 
     if cfg.train.unfreeze_heads:
         for module in (model.camera_head, model.depth_head, model.point_head, model.track_head):
+            if module is None:
+                continue
             for param in module.parameters():
                 param.requires_grad = True
 
@@ -508,7 +510,11 @@ class EventSupervisedLoss(nn.Module):
         pred = model_output.ress
 
         depth_pred = torch.stack([res["depth"] for res in pred], dim=1).squeeze(-1)
-        points_pred = torch.stack([res["pts3d_in_other_view"] for res in pred], dim=1)
+        points_pred_from_head = (
+            torch.stack([res["pts3d_in_other_view"] for res in pred], dim=1)
+            if all("pts3d_in_other_view" in res for res in pred)
+            else None
+        )
         pose_pred = torch.stack([res["camera_pose"] for res in pred], dim=1)
 
         depth_gt = stack_view_field(views, "depthmap").to(device=depth_pred.device, dtype=depth_pred.dtype)
@@ -573,6 +579,10 @@ class EventSupervisedLoss(nn.Module):
             pred_intrinsics,
             image_size_hw=(height, width),
         ).to(device=pose_pred.device, dtype=pose_pred.dtype)
+        if points_pred_from_head is None:
+            points_pred = depth_to_world_points(depth_pred, pred_intrinsics, pred_c2w)
+        else:
+            points_pred = points_pred_from_head
         points_pred_aligned = transform_world_points(points_pred, first_frame_alignment)
 
         # ============ Pose Loss 计算 ============
@@ -1181,6 +1191,7 @@ def train(cfg):
         embed_dim=cfg.model.embed_dim,
         event_hidden_dim=cfg.model.event_hidden_dim,
         head_frames_chunk_size=int(getattr(cfg.model, "head_frames_chunk_size", 2)),
+        enable_point_head=bool(getattr(cfg.model, "enable_point_head", False)),
     )
 
     if cfg.pretrained:
