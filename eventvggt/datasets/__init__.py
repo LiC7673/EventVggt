@@ -3,6 +3,7 @@ from .base.batched_sampler import BatchedRandomSampler  # noqa
 from .arkitscenes import ARKitScenes_Multi  # noqa
 from .arkitscenes_highres import ARKitScenesHighRes_Multi
 from .my_event_dataset import MyEventDataset, get_combined_dataset, event_multiview_collate
+from .mvsec_event_dataset import MVSECEventDataset, get_mvsec_dataset
 
 from accelerate import Accelerator
 
