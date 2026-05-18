@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -276,10 +277,45 @@ def build_event_cues(view: Dict, height: int, width: int) -> Dict[str, np.ndarra
     event_xy = to_numpy(view.get("event_xy", np.zeros((0, 2), dtype=np.int32))).astype(np.int64)
     event_p = to_numpy(view.get("event_p", np.zeros((0,), dtype=np.float32))).astype(np.float32)
     event_t = to_numpy(view.get("event_t", np.zeros((0,), dtype=np.float32))).astype(np.float32)
+    event_voxel = to_numpy(view.get("event_voxel", np.zeros((0, height, width), dtype=np.float32))).astype(np.float32)
 
     pos = np.zeros((height, width), dtype=np.float32)
     neg = np.zeros((height, width), dtype=np.float32)
     time_surface = np.zeros((height, width), dtype=np.float32)
+    if event_voxel.size > 0 and event_voxel.ndim == 3 and event_voxel.shape[0] >= 2:
+        num_bins = max(event_voxel.shape[0] // 2, 1)
+        pos = event_voxel[:num_bins].sum(axis=0).astype(np.float32)
+        neg = event_voxel[num_bins : 2 * num_bins].sum(axis=0).astype(np.float32)
+        if pos.shape != (height, width):
+            pos = cv2.resize(pos, (width, height), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+            neg = cv2.resize(neg, (width, height), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+        bin_values = np.linspace(0.0, 1.0, num_bins, dtype=np.float32)[:, None, None]
+        support = event_voxel[:num_bins] + event_voxel[num_bins : 2 * num_bins]
+        if support.shape[1:] != (height, width):
+            support = np.stack(
+                [cv2.resize(channel, (width, height), interpolation=cv2.INTER_LINEAR) for channel in support],
+                axis=0,
+            ).astype(np.float32)
+        time_surface = np.where(support > 0, bin_values, 0.0).max(axis=0).astype(np.float32)
+
+        event_count = pos + neg
+        event_abs = np.log1p(event_count)
+        if event_abs.max() > 0:
+            event_abs = event_abs / max(float(np.percentile(event_abs[event_abs > 0], 99.0)), EPS)
+        event_abs = np.clip(event_abs, 0.0, 1.0).astype(np.float32)
+        event_signed = ((pos - neg) / (event_count + EPS)).astype(np.float32)
+        event_time_grad = gradient_magnitude(box_blur(time_surface, iterations=2))
+        egx, egy = gradients(box_blur(event_abs, iterations=2))
+        event_orientation = np.arctan2(egy, egx).astype(np.float32)
+        return {
+            "event_abs": event_abs,
+            "event_signed": event_signed,
+            "event_time_grad": event_time_grad,
+            "event_orientation": event_orientation,
+            "event_pos": pos,
+            "event_neg": neg,
+        }
+
     if event_xy.size == 0:
         event_abs = pos
         return {
@@ -553,7 +589,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="exp_test/first_cue_correlation")
     parser.add_argument("--split", default="train", choices=["train", "test", "all"])
     parser.add_argument("--num-samples", type=int, default=24)
-    parser.add_argument("--num-views", type=int, default=4)
+    parser.add_argument("--num-views", type=int, default=6)
     parser.add_argument("--resolution", type=int, nargs=2, default=[518, 392], metavar=("W", "H"))
     parser.add_argument("--fps", type=int, default=120)
     parser.add_argument("--ldr-event-id", default="5")

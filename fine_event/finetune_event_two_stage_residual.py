@@ -198,60 +198,15 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
         if self.train_mode == "stage1":
             return self._forward_stage1(model_output, views)
 
-        pred = model_output.ress
-        depth_pred = torch.stack([res["depth"] for res in pred], dim=1).squeeze(-1)
-        pose_pred = torch.stack([res["camera_pose"] for res in pred], dim=1)
-        points_pred_head = torch.stack([res["pts3d_in_other_view"] for res in pred], dim=1)
-
-        depth_gt = fe.stack_view_field(views, "depthmap").to(device=depth_pred.device, dtype=depth_pred.dtype)
-        intrinsics_gt = fe.stack_view_field(views, "camera_intrinsics").to(
-            device=depth_pred.device,
-            dtype=depth_pred.dtype,
-        )
-        pose_matrix_gt = fe.stack_view_field(views, "camera_pose").to(
-            device=depth_pred.device,
-            dtype=depth_pred.dtype,
-        )
-        valid_mask = fe.build_valid_mask(
-            views,
-            depth_gt,
-            depth_min=self.depth_min,
-            depth_max=self.depth_max,
-        ).to(device=depth_pred.device)
-
-        if self.align_depth_scale_enabled:
-            depth_gt_aligned, depth_scales = fe.align_depth_scale(depth_pred.detach(), depth_gt, valid_mask)
-        else:
-            depth_gt_aligned = depth_gt
-            depth_scales = depth_gt.new_ones(depth_gt.shape[:2])
-
-        depth_pred_safe = torch.nan_to_num(depth_pred, nan=0.0, posinf=0.0, neginf=0.0)
-        depth_gt_aligned_safe = torch.nan_to_num(depth_gt_aligned, nan=0.0, posinf=0.0, neginf=0.0)
-        depth_loss = _finite_masked_l1(depth_pred_safe, depth_gt_aligned_safe, valid_mask)
-        points_gt = fe.depth_to_world_points(depth_gt_aligned_safe, intrinsics_gt, pose_matrix_gt)
-        points_pred_from_depth = fe.depth_to_world_points(depth_pred_safe, intrinsics_gt, pose_matrix_gt)
-        points_mask = valid_mask.unsqueeze(-1).expand_as(points_gt)
-        if self.points_loss_type == "l1":
-            points_loss = _finite_masked_l1(points_pred_from_depth, points_gt, points_mask)
-        else:
-            points_loss = fe.masked_chamfer_distance(points_pred_from_depth, points_gt, valid_mask)
-            points_loss = torch.nan_to_num(points_loss, nan=0.0, posinf=0.0, neginf=0.0)
-
-        height, width = depth_gt.shape[-2:]
-        pose_gt = fe.camera_pose_to_pose_encoding(
-            pose_matrix_gt,
-            intrinsics_gt,
-            image_size_hw=(height, width),
-        ).to(device=pose_pred.device, dtype=pose_pred.dtype)
-        if self.align_depth_scale_enabled:
-            pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
-
-        pose_pred_for_loss = torch.nan_to_num(pose_pred, nan=0.0, posinf=0.0, neginf=0.0)
-        pose_gt_for_loss = torch.nan_to_num(pose_gt, nan=0.0, posinf=0.0, neginf=0.0)
-        if pose_pred_for_loss.shape[1] > 1:
-            pose_loss = _finite_smooth_l1(pose_pred_for_loss[:, 1:, :], pose_gt_for_loss[:, 1:, :])
-        else:
-            pose_loss = pose_pred.new_tensor(0.0)
+        # Keep the primary supervised losses numerically identical to
+        # finetune_event.py. The residual branch only adds auxiliary losses.
+        total_loss, details, aux = super().forward(model_output, views)
+        depth_pred = _stack_res_field(model_output, "depth")
+        if depth_pred is None:
+            depth_pred = torch.stack([res["depth"] for res in model_output.ress], dim=1).squeeze(-1)
+        depth_gt_aligned = aux["depth_gt_aligned"].to(device=depth_pred.device, dtype=depth_pred.dtype)
+        valid_mask = aux["valid_mask"].to(device=depth_pred.device)
+        depth_scales = depth_pred.new_tensor(float(details.get("depth_scale", 1.0)))
 
         depth_coarse = _stack_res_field(model_output, "depth_coarse")
         depth_residual = _stack_res_field(model_output, "depth_residual")
@@ -268,6 +223,7 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
             depth_coarse = depth_coarse.to(device=depth_pred.device, dtype=depth_pred.dtype)
             depth_residual = depth_residual.to(device=depth_pred.device, dtype=depth_pred.dtype)
             residual_target = depth_gt_aligned - depth_coarse.detach()
+            depth_gt_aligned_safe = torch.nan_to_num(depth_gt_aligned, nan=0.0, posinf=0.0, neginf=0.0)
             coarse_depth_loss = _finite_masked_l1(depth_coarse, depth_gt_aligned_safe, valid_mask)
             residual_depth_loss = _finite_masked_l1(depth_residual, residual_target, valid_mask)
             residual_smooth_loss = _edge_aware_residual_smoothness(
@@ -279,48 +235,22 @@ class TwoStageResidualEventSupervisedLoss(fe.EventSupervisedLoss):
             residual_second_order_loss = _residual_second_order_smoothness(depth_residual, valid_mask)
             residual_abs = _finite_masked_l1(depth_residual, torch.zeros_like(depth_residual), valid_mask)
 
-        if self.normal_weight > 0:
-            normal_loss = _depth_normal_loss(depth_pred, depth_gt_aligned, intrinsics_gt, valid_mask)
-        else:
-            normal_loss = depth_pred.new_tensor(0.0)
-
-        total_loss = (
-            self.depth_weight * depth_loss
-            + self.pose_weight * pose_loss
-            + self.points_weight * points_loss
-            + self.coarse_depth_weight * coarse_depth_loss
+        residual_total = (
+            self.coarse_depth_weight * coarse_depth_loss
             + self.residual_depth_weight * residual_depth_loss
             + self.residual_smooth_weight * residual_smooth_loss
             + self.residual_second_order_weight * residual_second_order_loss
             + self.residual_abs_weight * residual_abs
-            + self.normal_weight * normal_loss
         )
+        total_loss = total_loss + residual_total
         total_loss = torch.nan_to_num(total_loss, nan=0.0, posinf=0.0, neginf=0.0)
 
-        details = {
-            "pose_loss": _safe_float(pose_loss),
-            "depth_loss": _safe_float(depth_loss),
-            "points_loss": _safe_float(points_loss),
-            "normal_loss": _safe_float(normal_loss),
-            "depth_scale": _safe_float(depth_scales.mean()),
-            "coarse_depth_loss": _safe_float(coarse_depth_loss),
-            "residual_depth_loss": _safe_float(residual_depth_loss),
-            "residual_smooth_loss": _safe_float(residual_smooth_loss),
-            "residual_second_order_loss": _safe_float(residual_second_order_loss),
-            "depth_residual_abs": _safe_float(residual_abs),
-        }
-
-        aux = {
-            "depth_pred": depth_pred.detach(),
-            "depth_gt": depth_gt.detach(),
-            "depth_gt_aligned": depth_gt_aligned.detach(),
-            "points_pred": points_pred_from_depth.detach(),
-            "points_pred_head": points_pred_head.detach(),
-            "points_gt": points_gt.detach(),
-            "valid_mask": valid_mask.detach(),
-            "pose_pred": pose_pred_for_loss.detach(),
-            "pose_gt": pose_gt.detach(),
-        }
+        details["depth_scale"] = _safe_float(depth_scales.mean())
+        details["coarse_depth_loss"] = _safe_float(coarse_depth_loss)
+        details["residual_depth_loss"] = _safe_float(residual_depth_loss)
+        details["residual_smooth_loss"] = _safe_float(residual_smooth_loss)
+        details["residual_second_order_loss"] = _safe_float(residual_second_order_loss)
+        details["depth_residual_abs"] = _safe_float(residual_abs)
 
         if depth_coarse is not None and depth_residual is not None:
             aux["depth_coarse"] = depth_coarse.detach()
