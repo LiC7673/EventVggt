@@ -55,3 +55,26 @@ CUDA_VISIBLE_DEVICES=0,1 accelerate launch --multi_gpu --num_processes 2 \
 
 This uses GT depth/normal-derived detail as the target; events only boost the
 weight in co-supported areas.
+
+Multi-LDR training from `mul_ldr.md`:
+
+```bash
+bash mul_loss_fine/run_mul_ldr_2gpu.sh
+```
+
+Useful overrides:
+
+```bash
+LDR_TRAIN_IDS=ev_2,ev_5,ev_10 \
+EVAL_LDR_ID=ev_10 \
+EXPOSURES_PER_SAMPLE=2 \
+GPU_LIST=0,1 \
+bash mul_loss_fine/run_mul_ldr_2gpu.sh \
+  data.root=/data1/lzh/dataset/reflective_raw
+```
+
+The test-set visualizations are saved under:
+
+```text
+checkpoints/<exp_name>/test_vis/step_xxxxxxx/
+```

@@ -19,11 +19,11 @@ def run(cfg: OmegaConf):
             "mv_normal_weight": 0.2,
             "mv_presence_weight": 0.05,
             "mv_hf_weight": 0.1,
-            "detail_gt_normal_weight": 0.2,
+            "detail_gt_normal_weight": 3.0,
             "detail_gt_hf_weight": 0.5,
             "detail_gt_grad_weight": 0.5,
             "detail_gt_event_boost": 0.5,
-            "detail_gt_threshold": 0.02,
+            "detail_gt_threshold": 0.2,
         },
     )
 

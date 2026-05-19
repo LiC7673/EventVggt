@@ -872,10 +872,12 @@ def evaluate_on_test_set(
         metric_logger.update(**loss_details)
         
         # Accumulate for visualization (limit to first few samples)
-        if accelerator.is_main_process and batch_idx < 2:  # Save visualization for first 2 batches
+        test_vis_max_batches = max(int(getattr(getattr(cfg, "vis", None), "test_max_batches", 2)), 0)
+        test_vis_num_views = max(int(getattr(getattr(cfg, "vis", None), "test_num_views", 10)), 1)
+        if accelerator.is_main_process and batch_idx < test_vis_max_batches:
             batch_size = aux["depth_pred"].shape[0]
             num_views = aux["depth_pred"].shape[1]
-            num_views_to_save = min(10, num_views)
+            num_views_to_save = min(test_vis_num_views, num_views)
             
             for i in range(min(batch_size, 1)):
                 for frame_idx in range(num_views_to_save):
@@ -885,7 +887,17 @@ def evaluate_on_test_set(
                 
                 # Save per-batch visualization for each frame
                 for frame_idx in range(num_views_to_save):
-                    save_training_visuals(cfg, views, aux, global_step * 1000 + batch_idx, frame_idx, i)
+                    save_training_visuals(
+                        cfg,
+                        views,
+                        aux,
+                        global_step,
+                        frame_idx,
+                        i,
+                        vis_subdir=f"test_vis/step_{global_step:07d}",
+                        force=True,
+                        filename_prefix=f"test_b{batch_idx:04d}_s{i:02d}_",
+                    )
     
     metric_logger.synchronize_between_processes(accelerator)
     test_stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
@@ -1050,10 +1062,13 @@ def save_training_visuals(
     global_step: int,
     frame_idx: Optional[int] = None,
     sample_idx: Optional[int] = None,
+    vis_subdir: str = "train_vis",
+    force: bool = False,
+    filename_prefix: str = "",
 ) -> None:
     vis_cfg = getattr(cfg, "vis", None)
     save_every = getattr(vis_cfg, "save_every_steps", 200)
-    if save_every <= 0 or global_step % save_every != 0:
+    if not force and (save_every <= 0 or global_step % save_every != 0):
         return
 
     if sample_idx is None:
@@ -1069,7 +1084,7 @@ def save_training_visuals(
         num_views_to_save = min(10, num_views)
         frames_to_save = list(range(num_views_to_save))
     
-    vis_dir = Path(cfg.output_dir) / "train_vis"
+    vis_dir = Path(cfg.output_dir) / vis_subdir
     vis_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1127,7 +1142,7 @@ def save_training_visuals(
             x_offset += panel.width
 
         # 保存可视化面板，frame编号为frame_id
-        canvas_name = f"{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}.png"
+        canvas_name = f"{filename_prefix}{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}.png"
         canvas.save(vis_dir / canvas_name)
 
         # 保存预测点云
@@ -1137,12 +1152,12 @@ def save_training_visuals(
         else:
             rgb_np = np.array(rgb)
 
-        pcl_name = f"{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}.ply"
+        pcl_name = f"{filename_prefix}{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}.ply"
         save_pointcloud_ply(pointcloud, rgb_np, valid_mask, vis_dir / pcl_name)
 
         # 保存GT点云
         gt_pointcloud = aux["points_gt"][sample_idx, frame_id]  # [H, W, 3]
-        gt_pcl_name = f"{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}_gt.ply"
+        gt_pcl_name = f"{filename_prefix}{timestamp}_step_{global_step:07d}_frame_{frame_id:02d}_gt.ply"
         save_pointcloud_ply(gt_pointcloud, rgb_np, valid_mask, vis_dir / gt_pcl_name)
 
 
