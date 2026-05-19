@@ -433,6 +433,9 @@ class MVSECEventDataset(BaseEventMultiViewDataset):
             if events_ds is None or image_ds is None or depth_ds is None:
                 return None
 
+            event_count = int(events_ds.shape[0])
+            image_count = int(image_ds.shape[0])
+            pose_count = int(pose_ds.shape[0]) if pose_ds is not None else 0
             image_ts = _find_timestamps(data_h5, [image_path] + self._image_paths())
             depth_ts = _find_timestamps(gt_h5, [depth_path] + self._depth_paths())
             pose_ts = _find_timestamps(gt_h5, [pose_path] + self._pose_paths()) if pose_path else None
@@ -444,15 +447,15 @@ class MVSECEventDataset(BaseEventMultiViewDataset):
                 depth_ts = np.asarray(depth_ts[:frame_count], dtype=np.float64)
 
             if image_ts is None:
-                image_ts = depth_ts[: int(image_ds.shape[0])] if image_ds.shape[0] <= len(depth_ts) else np.arange(image_ds.shape[0])
+                image_ts = depth_ts[:image_count] if image_count <= len(depth_ts) else np.arange(image_count)
             image_ts = np.asarray(image_ts, dtype=np.float64).reshape(-1)
 
             if pose_ds is not None:
                 if pose_ts is None:
-                    pose_ts = depth_ts[: int(pose_ds.shape[0])] if pose_ds.shape[0] <= len(depth_ts) else np.arange(pose_ds.shape[0])
+                    pose_ts = depth_ts[:pose_count] if pose_count <= len(depth_ts) else np.arange(pose_count)
                 pose_ts = np.asarray(pose_ts, dtype=np.float64).reshape(-1)
 
-            sample_count = min(int(events_ds.shape[0]), 20000)
+            sample_count = min(event_count, 20000)
             sample = np.asarray(events_ds[:sample_count]) if sample_count > 0 else np.zeros((0, 4), dtype=np.float32)
             image_resolution = _image_to_rgb(image_ds[0]).size
             attrs = {key: BaseEventMultiViewDataset._decode_h5_attr(value) for key, value in events_ds.attrs.items()}
@@ -465,7 +468,7 @@ class MVSECEventDataset(BaseEventMultiViewDataset):
             image_event_inds = None
             if event_inds_ds is not None and int(event_inds_ds.shape[0]) > 0:
                 image_event_inds = np.asarray(event_inds_ds[:], dtype=np.int64).reshape(-1)
-                image_event_inds = np.clip(image_event_inds, 0, int(events_ds.shape[0]))
+                image_event_inds = np.clip(image_event_inds, 0, event_count)
                 image_for_depth = np.clip(image_for_depth, 0, len(image_event_inds) - 1)
                 depth_event_inds = image_event_inds[image_for_depth]
                 event_index = np.zeros((frame_count, 2), dtype=np.int64)
@@ -503,8 +506,8 @@ class MVSECEventDataset(BaseEventMultiViewDataset):
             "event_index": event_index,
             "event_index_source": event_index_source,
             "frame_count": frame_count,
-            "image_count": int(image_ds.shape[0]),
-            "pose_count": int(pose_ds.shape[0]) if pose_ds is not None else 0,
+            "image_count": image_count,
+            "pose_count": pose_count,
             "src_resolution": np.array(image_resolution, dtype=np.int32),
             "intrinsics": intrinsics.astype(np.float32),
         }
