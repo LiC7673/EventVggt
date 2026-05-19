@@ -26,6 +26,12 @@ DEFAULT_EVENT_LOSS = {
     "mv_max_pairs": 4,
     "mv_detach_warp_grid": True,
     "mv_projection_pose": "gt",
+    "detail_gt_normal_weight": 0.0,
+    "detail_gt_hf_weight": 0.0,
+    "detail_gt_grad_weight": 0.0,
+    "detail_gt_event_boost": 0.5,
+    "detail_gt_threshold": 0.03,
+    "detail_gt_weight_power": 1.0,
 }
 
 
@@ -69,6 +75,12 @@ def make_configured_loss(cfg):
                 mv_max_pairs=int(getattr(cfg.loss, "mv_max_pairs", 4)),
                 mv_detach_warp_grid=bool(getattr(cfg.loss, "mv_detach_warp_grid", True)),
                 mv_projection_pose=str(getattr(cfg.loss, "mv_projection_pose", "gt")),
+                detail_gt_normal_weight=float(getattr(cfg.loss, "detail_gt_normal_weight", 0.0)),
+                detail_gt_hf_weight=float(getattr(cfg.loss, "detail_gt_hf_weight", 0.0)),
+                detail_gt_grad_weight=float(getattr(cfg.loss, "detail_gt_grad_weight", 0.0)),
+                detail_gt_event_boost=float(getattr(cfg.loss, "detail_gt_event_boost", 0.5)),
+                detail_gt_threshold=float(getattr(cfg.loss, "detail_gt_threshold", 0.03)),
+                detail_gt_weight_power=float(getattr(cfg.loss, "detail_gt_weight_power", 1.0)),
                 **kwargs,
             )
 
@@ -85,6 +97,9 @@ def launch_mul_loss(cfg, *, weights, exp_name):
         f"mv_presence={float(getattr(cfg.loss, 'mv_presence_weight', 0.0)):.4f} "
         f"mv_hf={float(getattr(cfg.loss, 'mv_hf_weight', 0.0)):.4f} "
         f"mv_orient={float(getattr(cfg.loss, 'mv_orient_weight', 0.0)):.4f} "
+        f"detail_gt_normal={float(getattr(cfg.loss, 'detail_gt_normal_weight', 0.0)):.4f} "
+        f"detail_gt_hf={float(getattr(cfg.loss, 'detail_gt_hf_weight', 0.0)):.4f} "
+        f"detail_gt_grad={float(getattr(cfg.loss, 'detail_gt_grad_weight', 0.0)):.4f} "
         f"max_pairs={int(getattr(cfg.loss, 'mv_max_pairs', 4))} "
         f"projection_pose={str(getattr(cfg.loss, 'mv_projection_pose', 'gt'))}"
     )

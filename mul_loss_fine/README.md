@@ -13,6 +13,8 @@ weight for multi-view geometry/detail consistency.
 | `finetune_mul_loss_mv_normal_hf.py` | Normal consistency + high-frequency consistency |
 | `finetune_mul_loss_mv_all.py` | Normal + presence + high-frequency |
 | `finetune_mul_loss_mv_all_orient.py` | All losses + small detail-orientation term |
+| `finetune_mul_loss_detail_gt.py` | GT-normal/detail weighted high-frequency supervision |
+| `finetune_mul_loss_mv_all_detail_gt.py` | Cross-view event losses + GT detail supervision |
 
 Run one script on two GPUs:
 
@@ -42,3 +44,14 @@ the multi-view projection:
 ```bash
 +loss.mv_projection_pose=pred
 ```
+
+If the model improves scalar metrics but still produces over-smoothed normals,
+start from:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --multi_gpu --num_processes 2 \
+  mul_loss_fine/finetune_mul_loss_detail_gt.py num_workers=0 pin_mem=false
+```
+
+This uses GT depth/normal-derived detail as the target; events only boost the
+weight in co-supported areas.

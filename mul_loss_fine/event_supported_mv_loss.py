@@ -94,6 +94,53 @@ def _gradient_orientation(x: torch.Tensor) -> torch.Tensor:
     return F.normalize(orient, dim=1, eps=1e-6)
 
 
+def _weighted_mean(loss: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    return (loss * weight).sum() / weight.sum().clamp_min(1.0)
+
+
+def _normalize_detail_support(
+    detail: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    threshold: float = 0.03,
+    power: float = 1.0,
+) -> torch.Tensor:
+    # detail: [B, S, 1, H, W], valid_mask: [B, S, H, W]
+    valid = valid_mask.unsqueeze(2).to(dtype=detail.dtype)
+    masked = detail.detach().clamp_min(0.0) * valid
+    scale = masked.flatten(2).amax(dim=-1).view(detail.shape[0], detail.shape[1], 1, 1, 1).clamp_min(1e-6)
+    support = (masked / scale - float(threshold)).clamp_min(0.0) / max(1.0 - float(threshold), 1e-6)
+    if power != 1.0:
+        support = support.pow(float(power))
+    return support.clamp(0.0, 1.0) * valid
+
+
+def _gt_normals_from_views(
+    views: List[Dict[str, torch.Tensor]],
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Optional[torch.Tensor]:
+    key = None
+    if all("normal" in view for view in views):
+        key = "normal"
+    elif all("normal_gt" in view for view in views):
+        key = "normal_gt"
+    if key is None:
+        return None
+
+    normals = fe.stack_view_field(views, key).to(device=device, dtype=dtype)
+    if normals.ndim != 5:
+        return None
+    if normals.shape[2] == 3:
+        normals = normals.permute(0, 1, 3, 4, 2)
+    elif normals.shape[-1] != 3:
+        return None
+    if normals.detach().abs().amax() > 2.0:
+        normals = normals / 127.5 - 1.0
+    return F.normalize(normals, dim=-1, eps=1e-6)
+
+
 def _sample_grid(map_bchw: torch.Tensor, grid: torch.Tensor, mode: str = "bilinear") -> torch.Tensor:
     return F.grid_sample(
         map_bchw,
@@ -385,9 +432,21 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         mv_max_pairs: int = 4,
         mv_detach_warp_grid: bool = True,
         mv_projection_pose: str = "gt",
+        detail_gt_normal_weight: float = 0.0,
+        detail_gt_hf_weight: float = 0.0,
+        detail_gt_grad_weight: float = 0.0,
+        detail_gt_event_boost: float = 0.5,
+        detail_gt_threshold: float = 0.03,
+        detail_gt_weight_power: float = 1.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.detail_gt_normal_weight = float(detail_gt_normal_weight)
+        self.detail_gt_hf_weight = float(detail_gt_hf_weight)
+        self.detail_gt_grad_weight = float(detail_gt_grad_weight)
+        self.detail_gt_event_boost = float(detail_gt_event_boost)
+        self.detail_gt_threshold = float(detail_gt_threshold)
+        self.detail_gt_weight_power = float(detail_gt_weight_power)
         self.mv_loss = EventSupportedMultiViewLoss(
             normal_weight=mv_normal_weight,
             presence_weight=mv_presence_weight,
@@ -405,9 +464,81 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             projection_pose=mv_projection_pose,
         )
 
+    @property
+    def detail_gt_enabled(self) -> bool:
+        return any(
+            weight > 0.0
+            for weight in (
+                self.detail_gt_normal_weight,
+                self.detail_gt_hf_weight,
+                self.detail_gt_grad_weight,
+            )
+        )
+
+    def _detail_gt_loss(
+        self,
+        *,
+        pred_normals: torch.Tensor,
+        gt_normals: torch.Tensor,
+        event_support: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        batch, seq_len, height, width = valid_mask.shape
+        pred_flat = pred_normals.flatten(0, 1)
+        gt_flat = gt_normals.flatten(0, 1)
+        gt_grad = _normal_gradient_magnitude(gt_flat).view(batch, seq_len, 1, height, width).detach()
+        pred_grad = _normal_gradient_magnitude(pred_flat).view(batch, seq_len, 1, height, width)
+
+        detail_weight = _normalize_detail_support(
+            gt_grad,
+            valid_mask,
+            threshold=self.detail_gt_threshold,
+            power=self.detail_gt_weight_power,
+        )
+        if self.detail_gt_event_boost > 0.0:
+            detail_weight = detail_weight * (1.0 + self.detail_gt_event_boost * event_support.unsqueeze(2).detach())
+        detail_weight = detail_weight * valid_mask.unsqueeze(2).to(dtype=detail_weight.dtype)
+
+        normal_loss = pred_normals.new_tensor(0.0)
+        hf_loss = pred_normals.new_tensor(0.0)
+        grad_loss = pred_normals.new_tensor(0.0)
+
+        if self.detail_gt_normal_weight > 0.0:
+            pred_n = F.normalize(pred_normals, dim=-1, eps=1e-6)
+            gt_n = F.normalize(gt_normals.detach(), dim=-1, eps=1e-6)
+            cos_loss = 1.0 - (pred_n * gt_n).sum(dim=-1, keepdim=False).clamp(-1.0, 1.0)
+            normal_loss = _weighted_mean(cos_loss.unsqueeze(2), detail_weight)
+
+        if self.detail_gt_hf_weight > 0.0:
+            pred_hf = _high_frequency_normals(pred_flat, kernel=self.mv_loss.hf_kernel).view(
+                batch, seq_len, 3, height, width
+            )
+            gt_hf = _high_frequency_normals(gt_flat.detach(), kernel=self.mv_loss.hf_kernel).view(
+                batch, seq_len, 3, height, width
+            )
+            hf_loss = _weighted_mean((pred_hf - gt_hf).abs().mean(dim=2, keepdim=True), detail_weight)
+
+        if self.detail_gt_grad_weight > 0.0:
+            grad_scale = gt_grad.flatten(2).amax(dim=-1).view(batch, seq_len, 1, 1, 1).clamp_min(1e-6)
+            grad_loss = _weighted_mean(((pred_grad - gt_grad).abs() / grad_scale), detail_weight)
+
+        total = (
+            self.detail_gt_normal_weight * normal_loss
+            + self.detail_gt_hf_weight * hf_loss
+            + self.detail_gt_grad_weight * grad_loss
+        )
+        details = {
+            "detail_gt_loss": float(total.detach()),
+            "detail_gt_normal_loss": float(normal_loss.detach()),
+            "detail_gt_hf_loss": float(hf_loss.detach()),
+            "detail_gt_grad_loss": float(grad_loss.detach()),
+            "detail_gt_weight_mean": float(detail_weight.mean().detach()),
+        }
+        return total, details
+
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]):
         base_loss, details, aux = super().forward(model_output, views)
-        if not self.mv_loss.enabled:
+        if not self.mv_loss.enabled and not self.detail_gt_enabled:
             details.update(
                 {
                     "mv_event_loss": 0.0,
@@ -416,6 +547,11 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "mv_event_hf_loss": 0.0,
                     "mv_event_orient_loss": 0.0,
                     "mv_event_weight_mean": 0.0,
+                    "detail_gt_loss": 0.0,
+                    "detail_gt_normal_loss": 0.0,
+                    "detail_gt_hf_loss": 0.0,
+                    "detail_gt_grad_loss": 0.0,
+                    "detail_gt_weight_mean": 0.0,
                 }
             )
             return base_loss, details, aux
@@ -432,20 +568,68 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         valid_mask = fe.build_valid_mask(views, depth_gt, depth_min=self.depth_min, depth_max=self.depth_max)
         height, width = depth_gt.shape[-2:]
         pred_normals = fe.depth_to_normals(depth_pred.clamp_min(self.depth_min), intrinsics_gt)
+        total_extra = depth_pred.new_tensor(0.0)
 
-        if self.mv_loss.projection_pose == "pred":
-            pred_c2w, _ = fe.pose_encoding_to_c2w(pose_pred, image_size_hw=(height, width))
-            c2w_for_projection, _ = fe.align_c2w_by_first_frame(pred_c2w, pose_matrix_gt)
+        if self.mv_loss.enabled:
+            if self.mv_loss.projection_pose == "pred":
+                pred_c2w, _ = fe.pose_encoding_to_c2w(pose_pred, image_size_hw=(height, width))
+                c2w_for_projection, _ = fe.align_c2w_by_first_frame(pred_c2w, pose_matrix_gt)
+            else:
+                c2w_for_projection = pose_matrix_gt
+
+            mv_loss, mv_details = self.mv_loss(
+                depth_pred=depth_pred,
+                pred_normals=pred_normals,
+                intrinsics=intrinsics_gt,
+                c2w_for_projection=c2w_for_projection,
+                valid_mask=valid_mask,
+                views=views,
+            )
+            total_extra = total_extra + mv_loss
+            details.update(mv_details)
         else:
-            c2w_for_projection = pose_matrix_gt
+            details.update(
+                {
+                    "mv_event_loss": 0.0,
+                    "mv_event_normal_loss": 0.0,
+                    "mv_event_presence_loss": 0.0,
+                    "mv_event_hf_loss": 0.0,
+                    "mv_event_orient_loss": 0.0,
+                    "mv_event_weight_mean": 0.0,
+                }
+            )
 
-        mv_loss, mv_details = self.mv_loss(
-            depth_pred=depth_pred,
-            pred_normals=pred_normals,
-            intrinsics=intrinsics_gt,
-            c2w_for_projection=c2w_for_projection,
-            valid_mask=valid_mask,
-            views=views,
-        )
-        details.update(mv_details)
-        return base_loss + mv_loss, details, aux
+        if self.detail_gt_enabled:
+            gt_normals = _gt_normals_from_views(views, device=depth_pred.device, dtype=depth_pred.dtype)
+            if gt_normals is None:
+                gt_normals = fe.depth_to_normals(depth_gt.clamp_min(self.depth_min), intrinsics_gt)
+            event_support = _make_event_support(
+                views,
+                height=height,
+                width=width,
+                device=depth_pred.device,
+                dtype=depth_pred.dtype,
+                blur_kernel=self.mv_loss.event_blur_kernel,
+                dilate_kernel=self.mv_loss.event_dilate_kernel,
+                threshold=self.mv_loss.event_threshold,
+                power=self.mv_loss.event_power,
+            ).detach()
+            detail_gt_loss, detail_gt_details = self._detail_gt_loss(
+                pred_normals=pred_normals,
+                gt_normals=gt_normals,
+                event_support=event_support,
+                valid_mask=valid_mask,
+            )
+            total_extra = total_extra + detail_gt_loss
+            details.update(detail_gt_details)
+        else:
+            details.update(
+                {
+                    "detail_gt_loss": 0.0,
+                    "detail_gt_normal_loss": 0.0,
+                    "detail_gt_hf_loss": 0.0,
+                    "detail_gt_grad_loss": 0.0,
+                    "detail_gt_weight_mean": 0.0,
+                }
+            )
+        return base_loss + total_extra, details, aux
