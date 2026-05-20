@@ -32,6 +32,7 @@ from eventvggt.datasets.my_event_dataset import (
     event_multiview_collate,
     get_combined_dataset,
 )
+from eventvggt.models.streamvggt_rgb_antigrid import StreamVGGT as RGBAntiGridStreamVGGT
 from streamvggt.models.streamvggt import StreamVGGT as RGBStreamVGGT
 from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
@@ -169,9 +170,33 @@ def build_rgb_loader(cfg, split="train"):
     return data_loader
 
 
+def build_rgb_model(cfg) -> nn.Module:
+    variant = str(getattr(cfg.model, "variant", "base")).lower()
+    common_kwargs = dict(
+        img_size=cfg.model.img_size,
+        patch_size=cfg.model.patch_size,
+        embed_dim=cfg.model.embed_dim,
+    )
+    if variant in ("base", "streamvggt"):
+        return RGBStreamVGGT(**common_kwargs)
+    if variant in ("antigrid", "anti_grid", "refiner", "output_refiner"):
+        return RGBAntiGridStreamVGGT(
+            **common_kwargs,
+            refiner_hidden_dim=int(getattr(cfg.model, "refiner_hidden_dim", 48)),
+            refiner_num_blocks=int(getattr(cfg.model, "refiner_num_blocks", 4)),
+            refiner_residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.05)),
+            refiner_refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
+        )
+    raise ValueError(f"Unknown RGB model variant: {variant}")
+
+
 def configure_trainable_params(model: RGBStreamVGGT, cfg) -> None:
     for _, param in model.named_parameters():
         param.requires_grad = False
+
+    for name, param in model.named_parameters():
+        if "antigrid_refiner" in name:
+            param.requires_grad = True
 
     if cfg.train.unfreeze_heads:
         for module in (model.camera_head, model.depth_head, model.point_head, model.track_head):
@@ -502,6 +527,9 @@ class RGBSupervisedLoss(nn.Module):
         depth_max: Optional[float] = None,
         align_depth_scale_enabled: bool = False,
         points_loss_type: str = "cd",  # "l1" or "cd" (Chamfer Distance)
+        depth_second_order_weight: float = 0.0,
+        grid_suppress_weight: float = 0.0,
+        grid_patch_size: int = 14,
     ):
         super().__init__()
         self.pose_weight = pose_weight
@@ -512,6 +540,9 @@ class RGBSupervisedLoss(nn.Module):
         self.depth_max = depth_max
         self.align_depth_scale_enabled = align_depth_scale_enabled
         self.points_loss_type = points_loss_type.lower()
+        self.depth_second_order_weight = float(depth_second_order_weight)
+        self.grid_suppress_weight = float(grid_suppress_weight)
+        self.grid_patch_size = int(grid_patch_size)
         
         if self.points_loss_type not in ["l1", "cd"]:
             raise ValueError(f"points_loss_type must be 'l1' or 'cd', got '{self.points_loss_type}'")
@@ -620,12 +651,22 @@ class RGBSupervisedLoss(nn.Module):
         else:  # "cd"
             points_loss = masked_chamfer_distance(points_pred_for_loss, points_gt_for_loss, valid_mask_for_loss)
 
+        second_order_loss = depth_second_order_smooth_loss(depth_pred, valid_mask, eps=self.depth_min)
+        grid_suppress_loss = depth_patch_grid_suppress_loss(
+            depth_pred,
+            valid_mask,
+            patch_size=self.grid_patch_size,
+            eps=self.depth_min,
+        )
+
         total_loss = (
             # self.depth_weight * depth_loss
             self.pose_weight * pose_loss
             + self.depth_weight * depth_loss
             + self.points_weight * points_loss
-            # + self.normal_weight * normal_loss
+            + self.normal_weight * normal_loss
+            + self.depth_second_order_weight * second_order_loss
+            + self.grid_suppress_weight * grid_suppress_loss
         )
 
         details = {
@@ -633,6 +674,8 @@ class RGBSupervisedLoss(nn.Module):
             "depth_loss": float(depth_loss.detach()),
             "points_loss": float(points_loss.detach()),
             "normal_loss": float(normal_loss.detach()),
+            "depth_second_order_loss": float(second_order_loss.detach()),
+            "grid_suppress_loss": float(grid_suppress_loss.detach()),
             "depth_scale": float(depth_scales.mean().detach()),
         }
         aux = {
@@ -672,6 +715,59 @@ def masked_cosine_loss(pred: torch.Tensor, target: torch.Tensor, mask: Optional[
     else:
         denom = loss.numel()
     return loss.sum() / denom
+
+
+def _masked_abs_mean(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    mask = mask.to(device=value.device)
+    if mask.dtype != value.dtype:
+        mask = mask.to(dtype=value.dtype)
+    return (value.abs() * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def depth_second_order_smooth_loss(depth: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    log_depth = torch.log(depth.clamp_min(eps))
+    mask = mask.bool() & torch.isfinite(log_depth)
+
+    if log_depth.shape[-1] < 3 or log_depth.shape[-2] < 3:
+        return depth.new_tensor(0.0)
+
+    dxx = log_depth[..., :, 2:] - 2.0 * log_depth[..., :, 1:-1] + log_depth[..., :, :-2]
+    mxx = mask[..., :, 2:] & mask[..., :, 1:-1] & mask[..., :, :-2]
+    dyy = log_depth[..., 2:, :] - 2.0 * log_depth[..., 1:-1, :] + log_depth[..., :-2, :]
+    myy = mask[..., 2:, :] & mask[..., 1:-1, :] & mask[..., :-2, :]
+
+    return 0.5 * (_masked_abs_mean(dxx, mxx) + _masked_abs_mean(dyy, myy))
+
+
+def depth_patch_grid_suppress_loss(
+    depth: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    patch_size: int = 14,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    patch_size = int(patch_size)
+    if patch_size <= 1:
+        return depth.new_tensor(0.0)
+
+    log_depth = torch.log(depth.clamp_min(eps))
+    mask = mask.bool() & torch.isfinite(log_depth)
+    _, _, height, width = log_depth.shape
+    terms = []
+
+    for col in range(patch_size, width, patch_size):
+        jump = log_depth[..., :, col] - log_depth[..., :, col - 1]
+        valid = mask[..., :, col] & mask[..., :, col - 1]
+        terms.append(_masked_abs_mean(jump, valid))
+
+    for row in range(patch_size, height, patch_size):
+        jump = log_depth[..., row, :] - log_depth[..., row - 1, :]
+        valid = mask[..., row, :] & mask[..., row - 1, :]
+        terms.append(_masked_abs_mean(jump, valid))
+
+    if not terms:
+        return depth.new_tensor(0.0)
+    return torch.stack(terms).mean()
 
 
 def tensor_rgb_to_uint8(img: torch.Tensor, mask: Optional[torch.Tensor] = None) -> np.ndarray:
@@ -1190,11 +1286,8 @@ def train(cfg):
     
     printer.info("Train dataset: %d samples, Test dataset: %d samples", train_samples_count, test_samples_count)
 
-    model = RGBStreamVGGT(
-        img_size=cfg.model.img_size,
-        patch_size=cfg.model.patch_size,
-        embed_dim=cfg.model.embed_dim,
-    )
+    model = build_rgb_model(cfg)
+    printer.info("Using RGB model variant: %s", str(getattr(cfg.model, "variant", "base")))
     assert_no_event_stream_parameters(model)
 
     if cfg.pretrained:
@@ -1215,10 +1308,21 @@ def train(cfg):
         depth_max=(float(cfg.loss.depth_max) if getattr(cfg.loss, "depth_max", None) is not None else None),
         align_depth_scale_enabled=bool(getattr(cfg.loss, "align_depth_scale",True)),
         points_loss_type=str(getattr(cfg.loss, "points_loss_type", "cd")),
+        depth_second_order_weight=float(getattr(cfg.loss, "depth_second_order_weight", 0.0)),
+        grid_suppress_weight=float(getattr(cfg.loss, "grid_suppress_weight", 0.0)),
+        grid_patch_size=int(getattr(cfg.loss, "grid_patch_size", getattr(cfg.model, "patch_size", 14))),
     )
     
-    printer.info("Loss configuration: pose_weight=%.4f, depth_weight=%.4f, points_weight=%.4f, points_loss_type=%s",
-                 cfg.loss.pose_weight, cfg.loss.depth_weight, cfg.loss.points_weight, criterion.points_loss_type)
+    printer.info(
+        "Loss configuration: pose_weight=%.4f, depth_weight=%.4f, points_weight=%.4f, "
+        "points_loss_type=%s, depth_second_order_weight=%.4f, grid_suppress_weight=%.4f",
+        cfg.loss.pose_weight,
+        cfg.loss.depth_weight,
+        cfg.loss.points_weight,
+        criterion.points_loss_type,
+        criterion.depth_second_order_weight,
+        criterion.grid_suppress_weight,
+    )
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     if not trainable_params:

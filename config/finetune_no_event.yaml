@@ -27,9 +27,14 @@ logdir: ${save_dir}/${exp_name}/logs
 output_dir: ${save_dir}/${exp_name}
 
 model:
+  variant: base  # base or antigrid
   img_size: 518
   patch_size: 14
   embed_dim: 1024
+  refiner_hidden_dim: 48
+  refiner_num_blocks: 4
+  refiner_residual_scale: 0.05
+  refiner_refine_points: true
 
 train:
   unfreeze_heads: true
@@ -43,6 +48,11 @@ loss:
   align_depth_scale: false
   depth_min: 1.0e-6
   depth_max: null
+  # Suppress patch-grid ripples that become obvious in depth-derived normals.
+  # Start with 0.02 / 0.05 if normals show grid artifacts.
+  depth_second_order_weight: 0.0
+  grid_suppress_weight: 0.0
+  grid_patch_size: 14
 
 vis:
   save_every_steps: 200

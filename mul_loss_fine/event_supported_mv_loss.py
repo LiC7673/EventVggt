@@ -538,6 +538,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
 
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]):
         base_loss, details, aux = super().forward(model_output, views)
+        details["base_supervised_loss"] = float(base_loss.detach())
         if not self.mv_loss.enabled and not self.detail_gt_enabled:
             details.update(
                 {
@@ -552,6 +553,8 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "detail_gt_hf_loss": 0.0,
                     "detail_gt_grad_loss": 0.0,
                     "detail_gt_weight_mean": 0.0,
+                    "extra_loss_total": 0.0,
+                    "total_loss_with_extra": float(base_loss.detach()),
                 }
             )
             return base_loss, details, aux
@@ -632,4 +635,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "detail_gt_weight_mean": 0.0,
                 }
             )
-        return base_loss + total_extra, details, aux
+        total_loss = base_loss + total_extra
+        details["extra_loss_total"] = float(total_extra.detach())
+        details["total_loss_with_extra"] = float(total_loss.detach())
+        return total_loss, details, aux

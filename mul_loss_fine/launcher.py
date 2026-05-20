@@ -42,11 +42,17 @@ def _set_if_missing(cfg, key, value):
 
 def configure_mul_loss_cfg(cfg, *, weights, exp_name):
     OmegaConf.set_struct(cfg, False)
-    user_loss_keys = set(cfg.loss.keys())
     for key, value in DEFAULT_EVENT_LOSS.items():
         _set_if_missing(cfg.loss, key, value)
+
+    # By default each ablation script must own its weights. Otherwise a shared
+    # yaml/CLI value such as loss.mv_hf_weight can silently make all scripts run
+    # with the same loss, which defeats the ablation.
+    respect_existing = bool(getattr(cfg.loss, "respect_existing_mul_loss_weights", False))
     for key, value in weights.items():
-        if key not in user_loss_keys:
+        if not respect_existing:
+            setattr(cfg.loss, key, value)
+        elif not hasattr(cfg.loss, key):
             setattr(cfg.loss, key, value)
 
     if str(getattr(cfg, "exp_name", "")) == "event_finetune_LDR5":
