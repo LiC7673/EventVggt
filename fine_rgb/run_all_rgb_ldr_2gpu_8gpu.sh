@@ -15,6 +15,7 @@ PIN_MEM="${PIN_MEM:-false}"
 OMP_THREADS="${OMP_THREADS:-1}"
 LDR_MODE="${LDR_MODE:-common}"
 LDR_LIST="${LDR_LIST:-auto_detect}"
+MODEL_VARIANT="${MODEL_VARIANT:-base}"
 IFS=',' read -r -a GPUS <<< "$GPU_LIST"
 
 if [[ "$LDR_LIST" == "auto_detect" ]]; then
@@ -73,6 +74,7 @@ echo "Root: ${ROOT_DIR}"
 echo "Data root: ${DATA_ROOT}"
 echo "LDR ids: ${LDR_IDS[*]}"
 echo "GPU groups: ${GPU_GROUPS[*]}"
+echo "Model variant: ${MODEL_VARIANT}"
 echo "Logs: ${LOG_DIR}"
 echo "Extra Hydra args: $*"
 echo
@@ -111,6 +113,7 @@ run_worker() {
         data.num_views="$NUM_VIEWS" \
         data.ldr_event_id="$ldr_id" \
         exp_name="fine_rgb_${safe_ldr}" \
+        model.variant="$MODEL_VARIANT" \
         num_workers="$NUM_WORKERS" \
         pin_mem="$PIN_MEM" \
         "$@"

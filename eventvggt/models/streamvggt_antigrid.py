@@ -9,10 +9,11 @@ class StreamVGGT(BaseStreamVGGT):
     def __init__(
         self,
         *args,
-        refiner_hidden_dim: int = 48,
-        refiner_num_blocks: int = 4,
-        refiner_residual_scale: float = 0.05,
+        refiner_hidden_dim: int = 16,
+        refiner_num_blocks: int = 2,
+        refiner_residual_scale: float = 0.03,
         refiner_refine_points: bool = True,
+        refiner_use_checkpoint: bool = True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -22,6 +23,7 @@ class StreamVGGT(BaseStreamVGGT):
             num_blocks=refiner_num_blocks,
             residual_scale=refiner_residual_scale,
             refine_points=refiner_refine_points,
+            use_checkpoint=refiner_use_checkpoint,
         )
 
     def forward(self, views, *args, **kwargs):

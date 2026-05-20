@@ -33,10 +33,11 @@ model:
   embed_dim: 1024
   event_hidden_dim: 32
   head_frames_chunk_size: 2
-  refiner_hidden_dim: 48
-  refiner_num_blocks: 4
-  refiner_residual_scale: 0.05
+  refiner_hidden_dim: 16
+  refiner_num_blocks: 2
+  refiner_residual_scale: 0.03
   refiner_refine_points: true
+  refiner_use_checkpoint: true
 
 train:
   unfreeze_heads: true

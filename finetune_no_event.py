@@ -182,10 +182,11 @@ def build_rgb_model(cfg) -> nn.Module:
     if variant in ("antigrid", "anti_grid", "refiner", "output_refiner"):
         return RGBAntiGridStreamVGGT(
             **common_kwargs,
-            refiner_hidden_dim=int(getattr(cfg.model, "refiner_hidden_dim", 48)),
-            refiner_num_blocks=int(getattr(cfg.model, "refiner_num_blocks", 4)),
-            refiner_residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.05)),
+            refiner_hidden_dim=int(getattr(cfg.model, "refiner_hidden_dim", 16)),
+            refiner_num_blocks=int(getattr(cfg.model, "refiner_num_blocks", 2)),
+            refiner_residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.03)),
             refiner_refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
+            refiner_use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
         )
     raise ValueError(f"Unknown RGB model variant: {variant}")
 

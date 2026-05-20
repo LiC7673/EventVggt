@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 def _group_count(channels: int) -> int:
@@ -46,11 +47,13 @@ class AntiGridDepthPointRefiner(nn.Module):
         num_blocks: int = 4,
         residual_scale: float = 0.05,
         refine_points: bool = True,
+        use_checkpoint: bool = False,
         min_depth: float = 1e-6,
     ):
         super().__init__()
         self.residual_scale = float(residual_scale)
         self.refine_points = bool(refine_points)
+        self.use_checkpoint = bool(use_checkpoint)
         self.min_depth = float(min_depth)
 
         input_channels = 1 + int(image_channels) + 4
@@ -97,7 +100,12 @@ class AntiGridDepthPointRefiner(nn.Module):
         img_grad = torch.sqrt(img_gx.square() + img_gy.square() + 1e-6)
 
         features = torch.cat([depth_feat, image, img_grad, depth_gx, depth_gy, depth_high], dim=1)
-        delta_log_depth = torch.tanh(self.out(self.blocks(self.stem(features)))) * self.residual_scale
+        hidden = self.stem(features)
+        if self.use_checkpoint and self.training and hidden.requires_grad:
+            hidden = checkpoint(self.blocks, hidden, use_reentrant=False)
+        else:
+            hidden = self.blocks(hidden)
+        delta_log_depth = torch.tanh(self.out(hidden)) * self.residual_scale
         refined_depth_chw = torch.exp(log_depth + delta_log_depth).clamp_min(self.min_depth)
         refined_depth = refined_depth_chw.permute(0, 2, 3, 1).contiguous()
 
