@@ -16,10 +16,12 @@ SCRIPTS=(
   "mul_loss_fine/finetune_mul_loss_mv_normal.py"
   "mul_loss_fine/finetune_mul_loss_mv_presence.py"
   "mul_loss_fine/finetune_mul_loss_mv_hf.py"
+  "mul_loss_fine/finetune_mul_loss_mv_presence_hf.py"
   "mul_loss_fine/finetune_mul_loss_mv_normal_hf.py"
   "mul_loss_fine/finetune_mul_loss_mv_all.py"
   "mul_loss_fine/finetune_mul_loss_mv_all_orient.py"
   "mul_loss_fine/finetune_mul_loss_detail_gt.py"
+  "mul_loss_fine/finetune_mul_loss_detail_gt_salient.py"
   "mul_loss_fine/finetune_mul_loss_mv_all_detail_gt.py"
 )
 

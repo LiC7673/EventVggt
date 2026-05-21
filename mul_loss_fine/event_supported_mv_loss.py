@@ -438,6 +438,12 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         detail_gt_event_boost: float = 0.5,
         detail_gt_threshold: float = 0.03,
         detail_gt_weight_power: float = 1.0,
+        detail_gt_salient_hf_weight: float = 0.0,
+        detail_gt_salient_mag_weight: float = 0.0,
+        detail_gt_salient_presence_weight: float = 0.0,
+        detail_gt_salient_threshold: float = 0.35,
+        detail_gt_salient_power: float = 2.0,
+        detail_gt_salient_presence_ratio: float = 0.8,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -447,6 +453,12 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         self.detail_gt_event_boost = float(detail_gt_event_boost)
         self.detail_gt_threshold = float(detail_gt_threshold)
         self.detail_gt_weight_power = float(detail_gt_weight_power)
+        self.detail_gt_salient_hf_weight = float(detail_gt_salient_hf_weight)
+        self.detail_gt_salient_mag_weight = float(detail_gt_salient_mag_weight)
+        self.detail_gt_salient_presence_weight = float(detail_gt_salient_presence_weight)
+        self.detail_gt_salient_threshold = float(detail_gt_salient_threshold)
+        self.detail_gt_salient_power = float(detail_gt_salient_power)
+        self.detail_gt_salient_presence_ratio = float(detail_gt_salient_presence_ratio)
         self.mv_loss = EventSupportedMultiViewLoss(
             normal_weight=mv_normal_weight,
             presence_weight=mv_presence_weight,
@@ -472,6 +484,9 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                 self.detail_gt_normal_weight,
                 self.detail_gt_hf_weight,
                 self.detail_gt_grad_weight,
+                self.detail_gt_salient_hf_weight,
+                self.detail_gt_salient_mag_weight,
+                self.detail_gt_salient_presence_weight,
             )
         )
 
@@ -502,6 +517,19 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         normal_loss = pred_normals.new_tensor(0.0)
         hf_loss = pred_normals.new_tensor(0.0)
         grad_loss = pred_normals.new_tensor(0.0)
+        salient_hf_loss = pred_normals.new_tensor(0.0)
+        salient_mag_loss = pred_normals.new_tensor(0.0)
+        salient_presence_loss = pred_normals.new_tensor(0.0)
+        salient_weight_mean = pred_normals.new_tensor(0.0)
+
+        salient_enabled = (
+            self.detail_gt_salient_hf_weight > 0.0
+            or self.detail_gt_salient_mag_weight > 0.0
+            or self.detail_gt_salient_presence_weight > 0.0
+        )
+        hf_needed = self.detail_gt_hf_weight > 0.0 or salient_enabled
+        pred_hf = None
+        gt_hf = None
 
         if self.detail_gt_normal_weight > 0.0:
             pred_n = F.normalize(pred_normals, dim=-1, eps=1e-6)
@@ -509,23 +537,65 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             cos_loss = 1.0 - (pred_n * gt_n).sum(dim=-1, keepdim=False).clamp(-1.0, 1.0)
             normal_loss = _weighted_mean(cos_loss.unsqueeze(2), detail_weight)
 
-        if self.detail_gt_hf_weight > 0.0:
+        if hf_needed:
             pred_hf = _high_frequency_normals(pred_flat, kernel=self.mv_loss.hf_kernel).view(
                 batch, seq_len, 3, height, width
             )
             gt_hf = _high_frequency_normals(gt_flat.detach(), kernel=self.mv_loss.hf_kernel).view(
                 batch, seq_len, 3, height, width
             )
+
+        if self.detail_gt_hf_weight > 0.0:
             hf_loss = _weighted_mean((pred_hf - gt_hf).abs().mean(dim=2, keepdim=True), detail_weight)
 
         if self.detail_gt_grad_weight > 0.0:
             grad_scale = gt_grad.flatten(2).amax(dim=-1).view(batch, seq_len, 1, 1, 1).clamp_min(1e-6)
             grad_loss = _weighted_mean(((pred_grad - gt_grad).abs() / grad_scale), detail_weight)
 
+        if salient_enabled:
+            gt_hf_mag = gt_hf.detach().abs().mean(dim=2, keepdim=True)
+            pred_hf_mag = pred_hf.abs().mean(dim=2, keepdim=True)
+            grad_support = _normalize_detail_support(gt_grad, valid_mask, threshold=0.0, power=1.0)
+            hf_support = _normalize_detail_support(gt_hf_mag, valid_mask, threshold=0.0, power=1.0)
+            salient_score = torch.maximum(grad_support, hf_support).detach()
+            salient_weight = (salient_score - self.detail_gt_salient_threshold).clamp_min(0.0)
+            salient_weight = salient_weight / max(1.0 - self.detail_gt_salient_threshold, 1e-6)
+            if self.detail_gt_salient_power != 1.0:
+                salient_weight = salient_weight.pow(self.detail_gt_salient_power)
+            if self.detail_gt_event_boost > 0.0:
+                salient_weight = salient_weight * (
+                    1.0 + self.detail_gt_event_boost * event_support.unsqueeze(2).detach()
+                )
+            salient_weight = salient_weight * valid_mask.unsqueeze(2).to(dtype=salient_weight.dtype)
+            salient_weight_mean = salient_weight.mean()
+
+            if self.detail_gt_salient_hf_weight > 0.0:
+                salient_hf_loss = _weighted_mean(
+                    (pred_hf - gt_hf.detach()).abs().mean(dim=2, keepdim=True),
+                    salient_weight,
+                )
+
+            mag_scale = gt_hf_mag.flatten(2).amax(dim=-1).view(batch, seq_len, 1, 1, 1).clamp_min(1e-6)
+            if self.detail_gt_salient_mag_weight > 0.0:
+                salient_mag_loss = _weighted_mean((pred_hf_mag - gt_hf_mag).abs() / mag_scale, salient_weight)
+
+            if self.detail_gt_salient_presence_weight > 0.0:
+                target_mag = self.detail_gt_salient_presence_ratio * gt_hf_mag
+                salient_presence_loss = _weighted_mean(
+                    F.relu(target_mag - pred_hf_mag) / mag_scale,
+                    salient_weight,
+                )
+
+        salient_loss = (
+            self.detail_gt_salient_hf_weight * salient_hf_loss
+            + self.detail_gt_salient_mag_weight * salient_mag_loss
+            + self.detail_gt_salient_presence_weight * salient_presence_loss
+        )
         total = (
             self.detail_gt_normal_weight * normal_loss
             + self.detail_gt_hf_weight * hf_loss
             + self.detail_gt_grad_weight * grad_loss
+            + salient_loss
         )
         details = {
             "detail_gt_loss": float(total.detach()),
@@ -533,6 +603,11 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             "detail_gt_hf_loss": float(hf_loss.detach()),
             "detail_gt_grad_loss": float(grad_loss.detach()),
             "detail_gt_weight_mean": float(detail_weight.mean().detach()),
+            "detail_gt_salient_loss": float(salient_loss.detach()),
+            "detail_gt_salient_hf_loss": float(salient_hf_loss.detach()),
+            "detail_gt_salient_mag_loss": float(salient_mag_loss.detach()),
+            "detail_gt_salient_presence_loss": float(salient_presence_loss.detach()),
+            "detail_gt_salient_weight_mean": float(salient_weight_mean.detach()),
         }
         return total, details
 
@@ -553,6 +628,11 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "detail_gt_hf_loss": 0.0,
                     "detail_gt_grad_loss": 0.0,
                     "detail_gt_weight_mean": 0.0,
+                    "detail_gt_salient_loss": 0.0,
+                    "detail_gt_salient_hf_loss": 0.0,
+                    "detail_gt_salient_mag_loss": 0.0,
+                    "detail_gt_salient_presence_loss": 0.0,
+                    "detail_gt_salient_weight_mean": 0.0,
                     "extra_loss_total": 0.0,
                     "total_loss_with_extra": float(base_loss.detach()),
                 }
@@ -633,6 +713,11 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "detail_gt_hf_loss": 0.0,
                     "detail_gt_grad_loss": 0.0,
                     "detail_gt_weight_mean": 0.0,
+                    "detail_gt_salient_loss": 0.0,
+                    "detail_gt_salient_hf_loss": 0.0,
+                    "detail_gt_salient_mag_loss": 0.0,
+                    "detail_gt_salient_presence_loss": 0.0,
+                    "detail_gt_salient_weight_mean": 0.0,
                 }
             )
         total_loss = base_loss + total_extra

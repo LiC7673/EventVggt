@@ -10,10 +10,12 @@ weight for multi-view geometry/detail consistency.
 | `finetune_mul_loss_mv_normal.py` | Event-supported cross-view normal consistency |
 | `finetune_mul_loss_mv_presence.py` | Event-supported detail presence margin |
 | `finetune_mul_loss_mv_hf.py` | Event-supported high-frequency normal consistency |
+| `finetune_mul_loss_mv_presence_hf.py` | Recommended detail setup: presence + high-frequency, no full-normal consistency |
 | `finetune_mul_loss_mv_normal_hf.py` | Normal consistency + high-frequency consistency |
 | `finetune_mul_loss_mv_all.py` | Normal + presence + high-frequency |
 | `finetune_mul_loss_mv_all_orient.py` | All losses + small detail-orientation term |
 | `finetune_mul_loss_detail_gt.py` | GT-normal/detail weighted high-frequency supervision |
+| `finetune_mul_loss_detail_gt_salient.py` | Strong GT detail supervision focused on salient high-frequency geometry |
 | `finetune_mul_loss_mv_all_detail_gt.py` | Cross-view event losses + GT detail supervision |
 
 Run one script on two GPUs:
