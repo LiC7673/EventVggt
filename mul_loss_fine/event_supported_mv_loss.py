@@ -115,6 +115,23 @@ def _normalize_detail_support(
     return support.clamp(0.0, 1.0) * valid
 
 
+def _normalize_detail_support_flat(
+    detail: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    threshold: float = 0.03,
+    power: float = 1.0,
+) -> torch.Tensor:
+    # detail: [N, 1, H, W], valid_mask: [N, H, W]
+    valid = valid_mask.unsqueeze(1).to(dtype=detail.dtype)
+    masked = detail.detach().clamp_min(0.0) * valid
+    scale = masked.flatten(2).amax(dim=-1).view(detail.shape[0], 1, 1, 1).clamp_min(1e-6)
+    support = (masked / scale - float(threshold)).clamp_min(0.0) / max(1.0 - float(threshold), 1e-6)
+    if power != 1.0:
+        support = support.pow(float(power))
+    return support.clamp(0.0, 1.0) * valid
+
+
 def _gt_normals_from_views(
     views: List[Dict[str, torch.Tensor]],
     *,
@@ -444,6 +461,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         detail_gt_salient_threshold: float = 0.35,
         detail_gt_salient_power: float = 2.0,
         detail_gt_salient_presence_ratio: float = 0.8,
+        detail_gt_chunk_size: int = 1,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -459,6 +477,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         self.detail_gt_salient_threshold = float(detail_gt_salient_threshold)
         self.detail_gt_salient_power = float(detail_gt_salient_power)
         self.detail_gt_salient_presence_ratio = float(detail_gt_salient_presence_ratio)
+        self.detail_gt_chunk_size = max(1, int(detail_gt_chunk_size))
         self.mv_loss = EventSupportedMultiViewLoss(
             normal_weight=mv_normal_weight,
             presence_weight=mv_presence_weight,
@@ -502,7 +521,6 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         pred_flat = pred_normals.flatten(0, 1)
         gt_flat = gt_normals.flatten(0, 1)
         gt_grad = _normal_gradient_magnitude(gt_flat).view(batch, seq_len, 1, height, width).detach()
-        pred_grad = _normal_gradient_magnitude(pred_flat).view(batch, seq_len, 1, height, width)
 
         detail_weight = _normalize_detail_support(
             gt_grad,
@@ -528,8 +546,6 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             or self.detail_gt_salient_presence_weight > 0.0
         )
         hf_needed = self.detail_gt_hf_weight > 0.0 or salient_enabled
-        pred_hf = None
-        gt_hf = None
 
         if self.detail_gt_normal_weight > 0.0:
             pred_n = F.normalize(pred_normals, dim=-1, eps=1e-6)
@@ -537,54 +553,108 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             cos_loss = 1.0 - (pred_n * gt_n).sum(dim=-1, keepdim=False).clamp(-1.0, 1.0)
             normal_loss = _weighted_mean(cos_loss.unsqueeze(2), detail_weight)
 
-        if hf_needed:
-            pred_hf = _high_frequency_normals(pred_flat, kernel=self.mv_loss.hf_kernel).view(
-                batch, seq_len, 3, height, width
-            )
-            gt_hf = _high_frequency_normals(gt_flat.detach(), kernel=self.mv_loss.hf_kernel).view(
-                batch, seq_len, 3, height, width
-            )
-
-        if self.detail_gt_hf_weight > 0.0:
-            hf_loss = _weighted_mean((pred_hf - gt_hf).abs().mean(dim=2, keepdim=True), detail_weight)
-
         if self.detail_gt_grad_weight > 0.0:
-            grad_scale = gt_grad.flatten(2).amax(dim=-1).view(batch, seq_len, 1, 1, 1).clamp_min(1e-6)
-            grad_loss = _weighted_mean(((pred_grad - gt_grad).abs() / grad_scale), detail_weight)
+            flat_count = batch * seq_len
+            flat_detail_weight = detail_weight.reshape(flat_count, 1, height, width)
+            flat_gt_grad = gt_grad.reshape(flat_count, 1, height, width)
+            grad_num = pred_normals.new_tensor(0.0)
+            grad_den = pred_normals.new_tensor(0.0)
+            for start in range(0, flat_count, self.detail_gt_chunk_size):
+                end = min(start + self.detail_gt_chunk_size, flat_count)
+                pred_grad_chunk = _normal_gradient_magnitude(pred_flat[start:end])
+                gt_grad_chunk = flat_gt_grad[start:end]
+                weight_chunk = flat_detail_weight[start:end]
+                grad_scale = gt_grad_chunk.flatten(2).amax(dim=-1).view(end - start, 1, 1, 1).clamp_min(1e-6)
+                grad_num = grad_num + (((pred_grad_chunk - gt_grad_chunk).abs() / grad_scale) * weight_chunk).sum()
+                grad_den = grad_den + weight_chunk.sum()
+            grad_loss = grad_num / grad_den.clamp_min(1.0)
 
-        if salient_enabled:
-            gt_hf_mag = gt_hf.detach().abs().mean(dim=2, keepdim=True)
-            pred_hf_mag = pred_hf.abs().mean(dim=2, keepdim=True)
-            grad_support = _normalize_detail_support(gt_grad, valid_mask, threshold=0.0, power=1.0)
-            hf_support = _normalize_detail_support(gt_hf_mag, valid_mask, threshold=0.0, power=1.0)
-            salient_score = torch.maximum(grad_support, hf_support).detach()
-            salient_weight = (salient_score - self.detail_gt_salient_threshold).clamp_min(0.0)
-            salient_weight = salient_weight / max(1.0 - self.detail_gt_salient_threshold, 1e-6)
-            if self.detail_gt_salient_power != 1.0:
-                salient_weight = salient_weight.pow(self.detail_gt_salient_power)
-            if self.detail_gt_event_boost > 0.0:
-                salient_weight = salient_weight * (
-                    1.0 + self.detail_gt_event_boost * event_support.unsqueeze(2).detach()
-                )
-            salient_weight = salient_weight * valid_mask.unsqueeze(2).to(dtype=salient_weight.dtype)
-            salient_weight_mean = salient_weight.mean()
+        if hf_needed:
+            flat_count = batch * seq_len
+            flat_detail_weight = detail_weight.reshape(flat_count, 1, height, width)
+            flat_valid = valid_mask.reshape(flat_count, height, width)
+            flat_gt_grad = gt_grad.reshape(flat_count, 1, height, width)
+            flat_event_support = event_support.reshape(flat_count, height, width)
 
+            hf_num = pred_normals.new_tensor(0.0)
+            hf_den = pred_normals.new_tensor(0.0)
+            salient_hf_num = pred_normals.new_tensor(0.0)
+            salient_hf_den = pred_normals.new_tensor(0.0)
+            salient_mag_num = pred_normals.new_tensor(0.0)
+            salient_mag_den = pred_normals.new_tensor(0.0)
+            salient_presence_num = pred_normals.new_tensor(0.0)
+            salient_presence_den = pred_normals.new_tensor(0.0)
+            salient_weight_sum = pred_normals.new_tensor(0.0)
+            salient_weight_count = pred_normals.new_tensor(0.0)
+
+            for start in range(0, flat_count, self.detail_gt_chunk_size):
+                end = min(start + self.detail_gt_chunk_size, flat_count)
+                pred_hf = _high_frequency_normals(pred_flat[start:end], kernel=self.mv_loss.hf_kernel)
+                gt_hf = _high_frequency_normals(gt_flat[start:end].detach(), kernel=self.mv_loss.hf_kernel)
+
+                if self.detail_gt_hf_weight > 0.0:
+                    loss_map = (pred_hf - gt_hf.detach()).abs().mean(dim=1, keepdim=True)
+                    weight = flat_detail_weight[start:end]
+                    hf_num = hf_num + (loss_map * weight).sum()
+                    hf_den = hf_den + weight.sum()
+
+                if salient_enabled:
+                    gt_hf_mag = gt_hf.detach().abs().mean(dim=1, keepdim=True)
+                    pred_hf_mag = pred_hf.abs().mean(dim=1, keepdim=True)
+                    grad_support = _normalize_detail_support_flat(
+                        flat_gt_grad[start:end],
+                        flat_valid[start:end],
+                        threshold=0.0,
+                        power=1.0,
+                    )
+                    hf_support = _normalize_detail_support_flat(
+                        gt_hf_mag,
+                        flat_valid[start:end],
+                        threshold=0.0,
+                        power=1.0,
+                    )
+                    salient_score = torch.maximum(grad_support, hf_support).detach()
+                    salient_weight = (salient_score - self.detail_gt_salient_threshold).clamp_min(0.0)
+                    salient_weight = salient_weight / max(1.0 - self.detail_gt_salient_threshold, 1e-6)
+                    if self.detail_gt_salient_power != 1.0:
+                        salient_weight = salient_weight.pow(self.detail_gt_salient_power)
+                    if self.detail_gt_event_boost > 0.0:
+                        salient_weight = salient_weight * (
+                            1.0 + self.detail_gt_event_boost * flat_event_support[start:end].unsqueeze(1).detach()
+                        )
+                    salient_weight = salient_weight * flat_valid[start:end].unsqueeze(1).to(
+                        dtype=salient_weight.dtype
+                    )
+                    salient_weight_sum = salient_weight_sum + salient_weight.detach().sum()
+                    salient_weight_count = salient_weight_count + salient_weight.detach().numel()
+
+                    if self.detail_gt_salient_hf_weight > 0.0:
+                        loss_map = (pred_hf - gt_hf.detach()).abs().mean(dim=1, keepdim=True)
+                        salient_hf_num = salient_hf_num + (loss_map * salient_weight).sum()
+                        salient_hf_den = salient_hf_den + salient_weight.sum()
+
+                    mag_scale = gt_hf_mag.flatten(2).amax(dim=-1).view(end - start, 1, 1, 1).clamp_min(1e-6)
+                    if self.detail_gt_salient_mag_weight > 0.0:
+                        loss_map = (pred_hf_mag - gt_hf_mag).abs() / mag_scale
+                        salient_mag_num = salient_mag_num + (loss_map * salient_weight).sum()
+                        salient_mag_den = salient_mag_den + salient_weight.sum()
+
+                    if self.detail_gt_salient_presence_weight > 0.0:
+                        target_mag = self.detail_gt_salient_presence_ratio * gt_hf_mag
+                        loss_map = F.relu(target_mag - pred_hf_mag) / mag_scale
+                        salient_presence_num = salient_presence_num + (loss_map * salient_weight).sum()
+                        salient_presence_den = salient_presence_den + salient_weight.sum()
+
+            if self.detail_gt_hf_weight > 0.0:
+                hf_loss = hf_num / hf_den.clamp_min(1.0)
+            if salient_enabled:
+                salient_weight_mean = salient_weight_sum / salient_weight_count.clamp_min(1.0)
             if self.detail_gt_salient_hf_weight > 0.0:
-                salient_hf_loss = _weighted_mean(
-                    (pred_hf - gt_hf.detach()).abs().mean(dim=2, keepdim=True),
-                    salient_weight,
-                )
-
-            mag_scale = gt_hf_mag.flatten(2).amax(dim=-1).view(batch, seq_len, 1, 1, 1).clamp_min(1e-6)
+                salient_hf_loss = salient_hf_num / salient_hf_den.clamp_min(1.0)
             if self.detail_gt_salient_mag_weight > 0.0:
-                salient_mag_loss = _weighted_mean((pred_hf_mag - gt_hf_mag).abs() / mag_scale, salient_weight)
-
+                salient_mag_loss = salient_mag_num / salient_mag_den.clamp_min(1.0)
             if self.detail_gt_salient_presence_weight > 0.0:
-                target_mag = self.detail_gt_salient_presence_ratio * gt_hf_mag
-                salient_presence_loss = _weighted_mean(
-                    F.relu(target_mag - pred_hf_mag) / mag_scale,
-                    salient_weight,
-                )
+                salient_presence_loss = salient_presence_num / salient_presence_den.clamp_min(1.0)
 
         salient_loss = (
             self.detail_gt_salient_hf_weight * salient_hf_loss

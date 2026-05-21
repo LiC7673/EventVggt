@@ -38,6 +38,7 @@ DEFAULT_EVENT_LOSS = {
     "detail_gt_salient_threshold": 0.35,
     "detail_gt_salient_power": 2.0,
     "detail_gt_salient_presence_ratio": 0.8,
+    "detail_gt_chunk_size": 1,
 }
 
 
@@ -103,6 +104,7 @@ def make_configured_loss(cfg):
                 detail_gt_salient_presence_ratio=float(
                     getattr(cfg.loss, "detail_gt_salient_presence_ratio", 0.8)
                 ),
+                detail_gt_chunk_size=int(getattr(cfg.loss, "detail_gt_chunk_size", 1)),
                 **kwargs,
             )
 
