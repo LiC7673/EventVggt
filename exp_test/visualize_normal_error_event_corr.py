@@ -21,7 +21,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from PIL import Image, ImageDraw
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -337,6 +337,22 @@ def build_dataset(args, split: str):
     return dataset
 
 
+def select_scene_samples(dataset, samples_per_scene: int):
+    if samples_per_scene <= 0:
+        return dataset, None
+
+    selected_indices = []
+    scene_counts = {}
+    for sample_idx, (scene_name, _) in enumerate(dataset.start_img_ids):
+        count = scene_counts.get(scene_name, 0)
+        if count >= samples_per_scene:
+            continue
+        selected_indices.append(sample_idx)
+        scene_counts[scene_name] = count + 1
+
+    return Subset(dataset, selected_indices), scene_counts
+
+
 def build_model(args, device: torch.device):
     if not args.checkpoint:
         return None
@@ -437,8 +453,9 @@ def visualize_pair(
 
 def process_split(args, split: str, model, device: torch.device) -> List[Dict]:
     dataset = build_dataset(args, split)
+    selected_dataset, selected_scene_counts = select_scene_samples(dataset, args.samples_per_scene)
     loader = DataLoader(
-        dataset,
+        selected_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
@@ -447,7 +464,11 @@ def process_split(args, split: str, model, device: torch.device) -> List[Dict]:
     )
     out_dir = Path(args.output_dir) / split
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"{split}: active_scenes={dataset.get_active_scenes()}, samples={len(dataset)}, out={out_dir}")
+    print(
+        f"{split}: active_scenes={dataset.get_active_scenes()}, "
+        f"dataset_samples={len(dataset)}, visualized_samples={len(selected_dataset)}, "
+        f"samples_per_scene={args.samples_per_scene}, selected={selected_scene_counts}, out={out_dir}"
+    )
 
     records = []
     sample_global_idx = 0
@@ -545,8 +566,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--pin-mem", action="store_true")
-    parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--num-views", type=int, default=4)
+    parser.add_argument("--max-samples", type=int, default=None, help="Optional hard limit after scene sampling")
+    parser.add_argument("--num-views", type=int, default=4, help="Number of consecutive views in each visualization")
     parser.add_argument("--num-bins", type=int, default=5)
     parser.add_argument("--resolution", type=int, nargs=2, default=[518, 392], metavar=("W", "H"))
     parser.add_argument("--fps", type=int, default=120)
@@ -559,7 +580,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-bin-rows", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--scene-names", nargs="*", default=None)
     parser.add_argument("--initial-scene-idx", type=int, default=0)
-    parser.add_argument("--active-scene-count", type=int, default=3, help="Set <=0 to use all valid scenes")
+    parser.add_argument("--active-scene-count", type=int, default=4, help="Default visualizes only four scenes; set <=0 for all")
+    parser.add_argument(
+        "--samples-per-scene",
+        type=int,
+        default=1,
+        help="Sliding-window samples rendered per scene; set <=0 to render every sample",
+    )
     parser.add_argument("--test-frame-count", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda")
