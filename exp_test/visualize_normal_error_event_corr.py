@@ -178,21 +178,34 @@ def normal_error_deg(pred_normal: torch.Tensor, gt_normal: torch.Tensor, mask: t
     return err
 
 
-def get_gt_normals(sample_views: List[Dict], depth_gt: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tensor:
+def load_rendered_normals(sample_views: List[Dict]) -> Optional[torch.Tensor]:
     if all(("normal_gt" in view) for view in sample_views):
         normals = torch.stack([view["normal_gt"].float() for view in sample_views], dim=0)
     elif all(("normal" in view) for view in sample_views):
         normals = torch.stack([view["normal"].float() for view in sample_views], dim=0)
     else:
-        return fe.depth_to_normals(depth_gt, intrinsics)
+        return None
 
     if normals.ndim == 4 and normals.shape[1] == 3:
         normals = normals.permute(0, 2, 3, 1)
     if normals.detach().abs().amax() > 2.0:
         normals = normals / 127.5 - 1.0
     if normals.detach().abs().amax() < 1e-5:
-        return fe.depth_to_normals(depth_gt, intrinsics)
+        return None
     return torch.nn.functional.normalize(normals, dim=-1, eps=1e-6)
+
+
+def get_gt_normals(
+    sample_views: List[Dict],
+    depth_gt: torch.Tensor,
+    intrinsics: torch.Tensor,
+    source: str,
+) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    depth_normals = fe.depth_to_normals(depth_gt, intrinsics)
+    rendered_normals = load_rendered_normals(sample_views)
+    if source == "rendered" and rendered_normals is not None:
+        return rendered_normals, depth_normals, rendered_normals
+    return depth_normals, depth_normals, rendered_normals
 
 
 def event_voxel_parts(view: Dict, num_bins: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -312,6 +325,40 @@ def spearman_corr(a: np.ndarray, b: np.ndarray, mask: Optional[np.ndarray] = Non
     return pearson_corr(rankdata(a[valid]), rankdata(b[valid]))
 
 
+def masked_mean(value: np.ndarray, mask: np.ndarray) -> float:
+    valid = mask.astype(bool) & np.isfinite(value)
+    return float(value[valid].mean()) if valid.any() else float("nan")
+
+
+def ranked_event_regions(
+    support: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    high_fraction: float,
+    low_fraction: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    valid_indices = np.flatnonzero(valid_mask.reshape(-1).astype(bool) & np.isfinite(support.reshape(-1)))
+    high = np.zeros_like(valid_mask, dtype=bool)
+    low = np.zeros_like(valid_mask, dtype=bool)
+    if valid_indices.size == 0:
+        return high, low
+
+    values = support.reshape(-1)[valid_indices]
+    order = np.argsort(values, kind="mergesort")
+    high_count = max(1, int(math.ceil(np.clip(high_fraction, 0.0, 1.0) * valid_indices.size)))
+    low_count = max(1, int(math.ceil(np.clip(low_fraction, 0.0, 1.0) * valid_indices.size)))
+    high.reshape(-1)[valid_indices[order[-high_count:]]] = True
+    low.reshape(-1)[valid_indices[order[:low_count]]] = True
+    return high, low
+
+
+def event_region_to_rgb(high: np.ndarray, low: np.ndarray) -> np.ndarray:
+    rgb = np.zeros((*high.shape, 3), dtype=np.uint8)
+    rgb[..., 0][high] = 255
+    rgb[..., 2][low] = 255
+    return rgb
+
+
 def build_dataset(args, split: str):
     active_count = args.active_scene_count if args.active_scene_count > 0 else 1
     dataset = get_combined_dataset(
@@ -396,6 +443,8 @@ def visualize_pair(
     pair: Tuple[int, int],
     pred_normals: torch.Tensor,
     gt_normals: torch.Tensor,
+    depth_gt_normals: torch.Tensor,
+    rendered_normals: Optional[torch.Tensor],
     normal_errors: torch.Tensor,
     valid_mask: torch.Tensor,
     args,
@@ -410,17 +459,27 @@ def visualize_pair(
         mask_np = to_numpy(valid_mask[idx]).astype(bool)
         row.append(label_panel(f"rgb view{idx}", rgb))
         row.append(label_panel(f"pred_normal view{idx}", fe.normal_to_uint8(pred_normals[idx], valid_mask[idx])))
-        row.append(label_panel(f"gt_normal view{idx}", fe.normal_to_uint8(gt_normals[idx], valid_mask[idx])))
+        row.append(label_panel(f"gt_{args.gt_normal_source}_normal view{idx}", fe.normal_to_uint8(gt_normals[idx], valid_mask[idx])))
         row.append(label_panel(f"normal_err view{idx}", error_to_rgb(to_numpy(normal_errors[idx]), mask_np)))
     rows.append(row)
 
     row = []
     event_supports = {}
+    event_high_masks = {}
+    event_low_masks = {}
     for idx in pair:
         pos, neg = event_voxel_parts(sample_views[idx], args.num_bins)
         support = event_support_from_parts(pos, neg, mode=args.event_support_mode)
         event_supports[idx] = support
         mask_np = to_numpy(valid_mask[idx]).astype(bool)
+        high_mask, low_mask = ranked_event_regions(
+            support,
+            mask_np,
+            high_fraction=args.event_high_fraction,
+            low_fraction=args.event_low_fraction,
+        )
+        event_high_masks[idx] = high_mask
+        event_low_masks[idx] = low_mask
         gt_detail = to_numpy(normal_gradient(gt_normals[idx]))
         pred_detail = to_numpy(normal_gradient(pred_normals[idx]))
         err_np = to_numpy(normal_errors[idx])
@@ -428,10 +487,21 @@ def visualize_pair(
         records[f"view{idx}_corr_event_error_spearman"] = spearman_corr(support, err_np, mask_np)
         records[f"view{idx}_corr_event_gt_detail_pearson"] = pearson_corr(support, gt_detail, mask_np)
         records[f"view{idx}_corr_event_pred_detail_pearson"] = pearson_corr(support, pred_detail, mask_np)
-        records[f"view{idx}_normal_error_mean_deg"] = float(err_np[mask_np].mean()) if mask_np.any() else float("nan")
+        records[f"view{idx}_normal_error_mean_deg"] = masked_mean(err_np, mask_np)
+        records[f"view{idx}_high_event_normal_error_mean_deg"] = masked_mean(err_np, high_mask)
+        records[f"view{idx}_low_event_normal_error_mean_deg"] = masked_mean(err_np, low_mask)
+        records[f"view{idx}_high_minus_low_error_deg"] = (
+            records[f"view{idx}_high_event_normal_error_mean_deg"]
+            - records[f"view{idx}_low_event_normal_error_mean_deg"]
+        )
         records[f"view{idx}_event_pixels_ratio"] = float((support[mask_np] > args.event_threshold).mean()) if mask_np.any() else float("nan")
+        records[f"view{idx}_event_support_std"] = float(support[mask_np].std()) if mask_np.any() else float("nan")
+        if rendered_normals is not None:
+            rendered_error = to_numpy(normal_error_deg(rendered_normals[idx], depth_gt_normals[idx], valid_mask[idx]))
+            records[f"view{idx}_rendered_vs_depth_normal_error_mean_deg"] = masked_mean(rendered_error, mask_np)
         row.append(label_panel(f"event all view{idx}", event_rgb_from_parts(pos, neg)))
         row.append(label_panel(f"event_support view{idx}", gray_to_rgb(support, mask_np)))
+        row.append(label_panel(f"high(red)/low(blue) view{idx}", event_region_to_rgb(high_mask, low_mask)))
         row.append(label_panel(f"gt_detail view{idx}", gray_to_rgb(gt_detail, mask_np)))
     rows.append(row)
 
@@ -444,8 +514,19 @@ def visualize_pair(
     pair_support = 0.5 * (event_supports[i] + event_supports[j])
     pair_error = 0.5 * (to_numpy(normal_errors[i]) + to_numpy(normal_errors[j]))
     pair_mask = to_numpy(valid_mask[i]).astype(bool) & to_numpy(valid_mask[j]).astype(bool)
+    pair_high_mask, pair_low_mask = ranked_event_regions(
+        pair_support,
+        pair_mask,
+        high_fraction=args.event_high_fraction,
+        low_fraction=args.event_low_fraction,
+    )
     records["pair_corr_event_error_pearson"] = pearson_corr(pair_support, pair_error, pair_mask)
     records["pair_corr_event_error_spearman"] = spearman_corr(pair_support, pair_error, pair_mask)
+    records["pair_high_event_normal_error_mean_deg"] = masked_mean(pair_error, pair_high_mask)
+    records["pair_low_event_normal_error_mean_deg"] = masked_mean(pair_error, pair_low_mask)
+    records["pair_high_minus_low_error_deg"] = (
+        records["pair_high_event_normal_error_mean_deg"] - records["pair_low_event_normal_error_mean_deg"]
+    )
 
     make_grid(rows).save(out_path)
     return records
@@ -484,7 +565,17 @@ def process_split(args, split: str, model, device: torch.device) -> List[Dict]:
             depth_gt = torch.stack([view["depthmap"].float() for view in sample_views], dim=0)
             intrinsics = torch.stack([view["camera_intrinsics"].float() for view in sample_views], dim=0)
             valid_mask = torch.stack([view["valid_mask"].bool() for view in sample_views], dim=0)
-            gt_normals = get_gt_normals(sample_views, depth_gt, intrinsics)
+            normal_valid_mask = valid_mask.clone()
+            normal_valid_mask[..., 0, :] = False
+            normal_valid_mask[..., -1, :] = False
+            normal_valid_mask[..., :, 0] = False
+            normal_valid_mask[..., :, -1] = False
+            gt_normals, depth_gt_normals, rendered_normals = get_gt_normals(
+                sample_views,
+                depth_gt,
+                intrinsics,
+                args.gt_normal_source,
+            )
             if pred_depths is not None:
                 pred_depth = pred_depths[b].float()
                 pred_normals = fe.depth_to_normals(pred_depth, intrinsics)
@@ -492,7 +583,7 @@ def process_split(args, split: str, model, device: torch.device) -> List[Dict]:
             else:
                 pred_normals = fe.depth_to_normals(depth_gt, intrinsics)
                 source = "gt_depth_baseline"
-            normal_errors = normal_error_deg(pred_normals, gt_normals, valid_mask)
+            normal_errors = normal_error_deg(pred_normals, gt_normals, normal_valid_mask)
 
             label = sample_views[0].get("label", f"sample_{sample_global_idx}")
             label_text = label if isinstance(label, str) else str(label)
@@ -505,8 +596,10 @@ def process_split(args, split: str, model, device: torch.device) -> List[Dict]:
                     pair=(i, j),
                     pred_normals=pred_normals,
                     gt_normals=gt_normals,
+                    depth_gt_normals=depth_gt_normals,
+                    rendered_normals=rendered_normals,
                     normal_errors=normal_errors,
-                    valid_mask=valid_mask,
+                    valid_mask=normal_valid_mask,
                     args=args,
                 )
                 pair_record.update(
@@ -520,6 +613,7 @@ def process_split(args, split: str, model, device: torch.device) -> List[Dict]:
                         "image": str((out_dir / img_name).relative_to(Path(args.output_dir))),
                         "label": label_text,
                         "normal_error_source": source,
+                        "gt_normal_source": args.gt_normal_source,
                     }
                 )
                 records.append(pair_record)
@@ -549,7 +643,10 @@ def write_metrics(args, records: List[Dict]) -> None:
         "root": args.root,
         "split": args.split,
         "checkpoint": args.checkpoint,
+        "gt_normal_source": args.gt_normal_source,
         "event_support_mode": args.event_support_mode,
+        "event_high_fraction": args.event_high_fraction,
+        "event_low_fraction": args.event_low_fraction,
         "metrics_mean": {key: nanmean(record.get(key, float("nan")) for record in records) for key in metric_keys},
     }
     with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
@@ -563,6 +660,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="exp_test/normal_error_event_corr")
     parser.add_argument("--split", default="train", choices=["train", "test", "all"])
     parser.add_argument("--checkpoint", default=None, help="Optional model checkpoint for pred-vs-GT normal error")
+    parser.add_argument(
+        "--gt-normal-source",
+        default="depth",
+        choices=["depth", "rendered"],
+        help="Use depth-derived normals by default to match training; rendered normals are diagnostic only unless aligned.",
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--pin-mem", action="store_true")
@@ -577,6 +680,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-resize-bins", type=int, default=10)
     parser.add_argument("--event-support-mode", default="temporal_polarity", choices=["abs", "temporal", "polarity", "temporal_polarity"])
     parser.add_argument("--event-threshold", type=float, default=0.05)
+    parser.add_argument("--event-high-fraction", type=float, default=0.2, help="Top support fraction for high-event error")
+    parser.add_argument("--event-low-fraction", type=float, default=0.2, help="Bottom support fraction for low-event error")
     parser.add_argument("--save-bin-rows", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--scene-names", nargs="*", default=None)
     parser.add_argument("--initial-scene-idx", type=int, default=0)
