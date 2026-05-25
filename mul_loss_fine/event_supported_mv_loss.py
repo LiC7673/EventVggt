@@ -22,6 +22,7 @@ def _make_event_support(
     dilate_kernel: int = 3,
     threshold: float = 0.02,
     power: float = 1.0,
+    mode: str = "abs",
 ) -> torch.Tensor:
     if "event_voxel" not in views[0]:
         batch = views[0]["img"].shape[0]
@@ -32,7 +33,27 @@ def _make_event_support(
         batch = views[0]["img"].shape[0]
         return torch.zeros((batch, len(views), height, width), device=device, dtype=dtype)
 
-    support = torch.log1p(voxels.abs().sum(dim=2))
+    mode = str(mode or "abs").lower()
+    channels = voxels.shape[2]
+    num_bins = max(channels // 2, 1)
+    pos = voxels[:, :, :num_bins].clamp_min(0.0)
+    neg = voxels[:, :, num_bins : 2 * num_bins].clamp_min(0.0)
+    activity = pos + neg
+    activity_sum = activity.sum(dim=2)
+
+    support = torch.log1p(activity_sum)
+    if mode in {"temporal", "temporal_contrast", "bin", "bin_aware", "temporal_polarity", "polarity"}:
+        # Persistent highlight/noise often fires across many bins at the same pixel.
+        # True swept edges tend to be more temporally concentrated at each pixel.
+        temporal_peak = activity.amax(dim=2) / activity_sum.clamp_min(1e-6)
+        support = support * (0.5 + 0.5 * temporal_peak)
+
+    if mode in {"polarity", "signed", "temporal_polarity", "polarity_aware"}:
+        pos_sum = pos.sum(dim=2)
+        neg_sum = neg.sum(dim=2)
+        polarity_conf = (pos_sum - neg_sum).abs() / (pos_sum + neg_sum).clamp_min(1e-6)
+        support = support * (0.5 + 0.5 * polarity_conf)
+
     support = support.flatten(2)
     support = support / support.amax(dim=-1, keepdim=True).clamp_min(1e-6)
     support = support.view(voxels.shape[0], voxels.shape[1], voxels.shape[-2], voxels.shape[-1])
@@ -264,6 +285,7 @@ class EventSupportedMultiViewLoss(nn.Module):
         event_dilate_kernel: int = 3,
         event_threshold: float = 0.02,
         event_power: float = 1.0,
+        event_support_mode: str = "abs",
         hf_kernel: int = 7,
         bidirectional: bool = False,
         max_pairs: int = 4,
@@ -280,6 +302,7 @@ class EventSupportedMultiViewLoss(nn.Module):
         self.event_dilate_kernel = int(event_dilate_kernel)
         self.event_threshold = float(event_threshold)
         self.event_power = float(event_power)
+        self.event_support_mode = str(event_support_mode)
         self.hf_kernel = int(hf_kernel)
         self.bidirectional = bool(bidirectional)
         self.max_pairs = int(max_pairs)
@@ -325,6 +348,7 @@ class EventSupportedMultiViewLoss(nn.Module):
             dilate_kernel=self.event_dilate_kernel,
             threshold=self.event_threshold,
             power=self.event_power,
+            mode=self.event_support_mode,
         ).detach()
 
         normal_grad = _normal_gradient_magnitude(pred_normals.flatten(0, 1)).view(batch, seq_len, 1, height, width)
@@ -444,6 +468,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         mv_event_dilate_kernel: int = 3,
         mv_event_threshold: float = 0.02,
         mv_event_power: float = 1.0,
+        mv_event_support_mode: str = "abs",
         mv_hf_kernel: int = 7,
         mv_bidirectional: bool = False,
         mv_max_pairs: int = 4,
@@ -488,6 +513,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             event_dilate_kernel=mv_event_dilate_kernel,
             event_threshold=mv_event_threshold,
             event_power=mv_event_power,
+            event_support_mode=mv_event_support_mode,
             hf_kernel=mv_hf_kernel,
             bidirectional=mv_bidirectional,
             max_pairs=mv_max_pairs,
@@ -766,6 +792,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                 dilate_kernel=self.mv_loss.event_dilate_kernel,
                 threshold=self.mv_loss.event_threshold,
                 power=self.mv_loss.event_power,
+                mode=self.mv_loss.event_support_mode,
             ).detach()
             detail_gt_loss, detail_gt_details = self._detail_gt_loss(
                 pred_normals=pred_normals,
