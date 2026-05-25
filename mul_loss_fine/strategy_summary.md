@@ -44,12 +44,15 @@
 | `finetune_mul_loss_mv_all.py` | 同时使用 normal、presence、high-frequency 三类事件支持多视角约束。 |
 | `finetune_mul_loss_mv_all_orient.py` | 在 `mv_all` 基础上增加细节方向一致性，用来约束边缘/纹理走向。 |
 | `finetune_mul_loss_detail_gt.py` | 使用 GT 法向/GT depth 导出的细节监督，事件只用于增强细节区域权重。 |
+| `finetune_mul_loss_detail_gt_uniform.py` | 严格对照：固定使用 GT depth 推导法向的高频细节监督，不使用事件重新加权。 |
+| `finetune_mul_loss_detail_gt_selective_event.py` | 在相同 depth-derived GT 监督上，仅对时序/极性事件支持最强的前 20% 像素增强权重，用来验证事件是否真的帮助困难细节。 |
 | `finetune_mul_loss_detail_gt_salient.py` | 在 `detail_gt` 基础上进一步聚焦 GT 中最显著的高频几何细节，强化高频形状、幅值和细节存在性。 |
 | `finetune_mul_loss_mv_all_detail_gt.py` | 最强组合：事件支持的多视角约束 + GT detail 辅助监督。 |
 | `finetune_mul_ldr_event.py` | 多 LDR 曝光训练，用不同曝光下的 RGB/事件增强鲁棒性，并可加入曝光一致性约束。 |
 | `run_mul_loss_2gpu_8gpu.sh` | 八卡批量跑消融，每个脚本默认吃两张卡。 |
+| `run_detail_gt_event_pair_2gpu_5678.sh` | 默认使用 `5,6` 与 `7,8` 两组卡并行跑 GT-detail 对照和选择性事件加权实验。 |
 | `run_mul_ldr_2gpu.sh` | 两卡跑多 LDR 训练实验。 |
 
 ## 当前判断
 
-`mul_loss_fine` 的核心思想是：**事件流不直接监督深度，而是作为细节区域的可靠性权重**。如果指标提升但法向细节仍然不清晰，优先看 `detail_gt` 和 `mv_all_detail_gt`；如果网格伪影在纯 RGB 中也出现，优先看 `antigrid` 模型变体或 patch-grid 抑制，而不是继续加事件 loss。
+`mul_loss_fine` 的核心思想是：**事件流不直接监督深度，而是作为细节区域的可靠性权重**。当前验证中事件非零像素接近全图，因此新的 `detail_gt_uniform` 完全不做事件重加权，`detail_gt_selective_event` 只保留最强前 20% 事件支持区域；若后者在 high-event normal error 上优于前者，才能较干净地说明事件定位细节有效。如果网格伪影在纯 RGB 中也出现，优先看 `antigrid` 模型变体或 patch-grid 抑制，而不是继续加事件 loss。

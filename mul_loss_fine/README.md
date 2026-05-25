@@ -15,6 +15,8 @@ weight for multi-view geometry/detail consistency.
 | `finetune_mul_loss_mv_all.py` | Normal + presence + high-frequency |
 | `finetune_mul_loss_mv_all_orient.py` | All losses + small detail-orientation term |
 | `finetune_mul_loss_detail_gt.py` | GT-normal/detail weighted high-frequency supervision |
+| `finetune_mul_loss_detail_gt_uniform.py` | Depth-derived GT-detail control without event reweighting |
+| `finetune_mul_loss_detail_gt_selective_event.py` | Same depth-derived GT detail, boosted only at top-20% temporal/polarity event support |
 | `finetune_mul_loss_detail_gt_salient.py` | Strong GT detail supervision focused on salient high-frequency geometry |
 | `finetune_mul_loss_mv_all_detail_gt.py` | Cross-view event losses + GT detail supervision |
 
@@ -57,6 +59,26 @@ CUDA_VISIBLE_DEVICES=0,1 accelerate launch --multi_gpu --num_processes 2 \
 
 This uses GT depth/normal-derived detail as the target; events only boost the
 weight in co-supported areas.
+
+To verify whether events improve the difficult detail regions, first run the
+strict pair below. Both scripts derive normals from GT depth, use the same
+GT-detail weights, and disable
+multi-view terms; only the second one boosts the strongest temporal/polarity
+event support pixels:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --multi_gpu --num_processes 2 \
+  mul_loss_fine/finetune_mul_loss_detail_gt_uniform.py num_workers=0 pin_mem=false
+
+CUDA_VISIBLE_DEVICES=2,3 accelerate launch --multi_gpu --num_processes 2 \
+  mul_loss_fine/finetune_mul_loss_detail_gt_selective_event.py num_workers=0 pin_mem=false
+```
+
+Run the same pair concurrently on GPUs `5,6` and `7,8`:
+
+```bash
+bash mul_loss_fine/run_detail_gt_event_pair_2gpu_5678.sh
+```
 
 Multi-LDR training from `mul_ldr.md`:
 

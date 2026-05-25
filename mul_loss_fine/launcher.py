@@ -21,6 +21,7 @@ DEFAULT_EVENT_LOSS = {
     "mv_event_dilate_kernel": 3,
     "mv_event_threshold": 0.02,
     "mv_event_power": 1.0,
+    "mv_event_top_fraction": 0.0,
     "mv_event_support_mode": "abs",
     "mv_hf_kernel": 7,
     "mv_bidirectional": False,
@@ -33,6 +34,7 @@ DEFAULT_EVENT_LOSS = {
     "detail_gt_event_boost": 0.5,
     "detail_gt_threshold": 0.03,
     "detail_gt_weight_power": 1.0,
+    "detail_gt_normal_source": "auto",
     "detail_gt_salient_hf_weight": 0.0,
     "detail_gt_salient_mag_weight": 0.0,
     "detail_gt_salient_presence_weight": 0.0,
@@ -84,6 +86,7 @@ def make_configured_loss(cfg):
                 mv_event_dilate_kernel=int(getattr(cfg.loss, "mv_event_dilate_kernel", 3)),
                 mv_event_threshold=float(getattr(cfg.loss, "mv_event_threshold", 0.02)),
                 mv_event_power=float(getattr(cfg.loss, "mv_event_power", 1.0)),
+                mv_event_top_fraction=float(getattr(cfg.loss, "mv_event_top_fraction", 0.0)),
                 mv_event_support_mode=str(getattr(cfg.loss, "mv_event_support_mode", "abs")),
                 mv_hf_kernel=int(getattr(cfg.loss, "mv_hf_kernel", 7)),
                 mv_bidirectional=bool(getattr(cfg.loss, "mv_bidirectional", False)),
@@ -96,6 +99,7 @@ def make_configured_loss(cfg):
                 detail_gt_event_boost=float(getattr(cfg.loss, "detail_gt_event_boost", 0.5)),
                 detail_gt_threshold=float(getattr(cfg.loss, "detail_gt_threshold", 0.03)),
                 detail_gt_weight_power=float(getattr(cfg.loss, "detail_gt_weight_power", 1.0)),
+                detail_gt_normal_source=str(getattr(cfg.loss, "detail_gt_normal_source", "auto")),
                 detail_gt_salient_hf_weight=float(getattr(cfg.loss, "detail_gt_salient_hf_weight", 0.0)),
                 detail_gt_salient_mag_weight=float(getattr(cfg.loss, "detail_gt_salient_mag_weight", 0.0)),
                 detail_gt_salient_presence_weight=float(
@@ -129,7 +133,10 @@ def launch_mul_loss(cfg, *, weights, exp_name):
         f"detail_gt_salient_hf={float(getattr(cfg.loss, 'detail_gt_salient_hf_weight', 0.0)):.4f} "
         f"detail_gt_salient_mag={float(getattr(cfg.loss, 'detail_gt_salient_mag_weight', 0.0)):.4f} "
         f"detail_gt_salient_presence={float(getattr(cfg.loss, 'detail_gt_salient_presence_weight', 0.0)):.4f} "
+        f"detail_gt_event_boost={float(getattr(cfg.loss, 'detail_gt_event_boost', 0.0)):.4f} "
+        f"detail_gt_normal_source={str(getattr(cfg.loss, 'detail_gt_normal_source', 'auto'))} "
         f"event_support_mode={str(getattr(cfg.loss, 'mv_event_support_mode', 'abs'))} "
+        f"event_top_fraction={float(getattr(cfg.loss, 'mv_event_top_fraction', 0.0)):.3f} "
         f"max_pairs={int(getattr(cfg.loss, 'mv_max_pairs', 4))} "
         f"projection_pose={str(getattr(cfg.loss, 'mv_projection_pose', 'gt'))}"
     )

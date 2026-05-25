@@ -22,6 +22,7 @@ def _make_event_support(
     dilate_kernel: int = 3,
     threshold: float = 0.02,
     power: float = 1.0,
+    top_fraction: float = 0.0,
     mode: str = "abs",
 ) -> torch.Tensor:
     if "event_voxel" not in views[0]:
@@ -86,6 +87,14 @@ def _make_event_support(
         ).squeeze(1).view_as(support)
     if power != 1.0:
         support = support.clamp_min(0.0).pow(float(power))
+    if 0.0 < float(top_fraction) < 1.0:
+        # The event stream can be almost dense; retain only its strongest
+        # support so event weighting targets difficult local detail.
+        flat = support.flatten(2)
+        keep = max(1, min(flat.shape[-1], int(round(flat.shape[-1] * float(top_fraction)))))
+        _, top_indices = torch.topk(flat, k=keep, dim=-1, sorted=False)
+        top_mask = torch.zeros_like(flat).scatter_(-1, top_indices, 1.0)
+        support = (flat * top_mask).view_as(support)
     return support.clamp(0.0, 1.0)
 
 
@@ -285,6 +294,7 @@ class EventSupportedMultiViewLoss(nn.Module):
         event_dilate_kernel: int = 3,
         event_threshold: float = 0.02,
         event_power: float = 1.0,
+        event_top_fraction: float = 0.0,
         event_support_mode: str = "abs",
         hf_kernel: int = 7,
         bidirectional: bool = False,
@@ -302,6 +312,7 @@ class EventSupportedMultiViewLoss(nn.Module):
         self.event_dilate_kernel = int(event_dilate_kernel)
         self.event_threshold = float(event_threshold)
         self.event_power = float(event_power)
+        self.event_top_fraction = float(event_top_fraction)
         self.event_support_mode = str(event_support_mode)
         self.hf_kernel = int(hf_kernel)
         self.bidirectional = bool(bidirectional)
@@ -348,6 +359,7 @@ class EventSupportedMultiViewLoss(nn.Module):
             dilate_kernel=self.event_dilate_kernel,
             threshold=self.event_threshold,
             power=self.event_power,
+            top_fraction=self.event_top_fraction,
             mode=self.event_support_mode,
         ).detach()
 
@@ -468,6 +480,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         mv_event_dilate_kernel: int = 3,
         mv_event_threshold: float = 0.02,
         mv_event_power: float = 1.0,
+        mv_event_top_fraction: float = 0.0,
         mv_event_support_mode: str = "abs",
         mv_hf_kernel: int = 7,
         mv_bidirectional: bool = False,
@@ -480,6 +493,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         detail_gt_event_boost: float = 0.5,
         detail_gt_threshold: float = 0.03,
         detail_gt_weight_power: float = 1.0,
+        detail_gt_normal_source: str = "auto",
         detail_gt_salient_hf_weight: float = 0.0,
         detail_gt_salient_mag_weight: float = 0.0,
         detail_gt_salient_presence_weight: float = 0.0,
@@ -496,6 +510,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         self.detail_gt_event_boost = float(detail_gt_event_boost)
         self.detail_gt_threshold = float(detail_gt_threshold)
         self.detail_gt_weight_power = float(detail_gt_weight_power)
+        self.detail_gt_normal_source = str(detail_gt_normal_source).lower()
         self.detail_gt_salient_hf_weight = float(detail_gt_salient_hf_weight)
         self.detail_gt_salient_mag_weight = float(detail_gt_salient_mag_weight)
         self.detail_gt_salient_presence_weight = float(detail_gt_salient_presence_weight)
@@ -513,6 +528,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             event_dilate_kernel=mv_event_dilate_kernel,
             event_threshold=mv_event_threshold,
             event_power=mv_event_power,
+            event_top_fraction=mv_event_top_fraction,
             event_support_mode=mv_event_support_mode,
             hf_kernel=mv_hf_kernel,
             bidirectional=mv_bidirectional,
@@ -779,21 +795,27 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             )
 
         if self.detail_gt_enabled:
-            gt_normals = _gt_normals_from_views(views, device=depth_pred.device, dtype=depth_pred.dtype)
-            if gt_normals is None:
+            gt_normals = None
+            if self.detail_gt_normal_source in {"auto", "rendered", "normal"}:
+                gt_normals = _gt_normals_from_views(views, device=depth_pred.device, dtype=depth_pred.dtype)
+            if gt_normals is None or self.detail_gt_normal_source == "depth":
                 gt_normals = fe.depth_to_normals(depth_gt.clamp_min(self.depth_min), intrinsics_gt)
-            event_support = _make_event_support(
-                views,
-                height=height,
-                width=width,
-                device=depth_pred.device,
-                dtype=depth_pred.dtype,
-                blur_kernel=self.mv_loss.event_blur_kernel,
-                dilate_kernel=self.mv_loss.event_dilate_kernel,
-                threshold=self.mv_loss.event_threshold,
-                power=self.mv_loss.event_power,
-                mode=self.mv_loss.event_support_mode,
-            ).detach()
+            if self.detail_gt_event_boost > 0.0:
+                event_support = _make_event_support(
+                    views,
+                    height=height,
+                    width=width,
+                    device=depth_pred.device,
+                    dtype=depth_pred.dtype,
+                    blur_kernel=self.mv_loss.event_blur_kernel,
+                    dilate_kernel=self.mv_loss.event_dilate_kernel,
+                    threshold=self.mv_loss.event_threshold,
+                    power=self.mv_loss.event_power,
+                    top_fraction=self.mv_loss.event_top_fraction,
+                    mode=self.mv_loss.event_support_mode,
+                ).detach()
+            else:
+                event_support = depth_pred.new_zeros((depth_pred.shape[0], depth_pred.shape[1], height, width))
             detail_gt_loss, detail_gt_details = self._detail_gt_loss(
                 pred_normals=pred_normals,
                 gt_normals=gt_normals,
