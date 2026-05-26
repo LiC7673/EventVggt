@@ -27,7 +27,7 @@ logdir: ${save_dir}/${exp_name}/logs
 output_dir: ${save_dir}/${exp_name}
 
 model:
-  variant: base  # base, antigrid, or temporal_bins
+  variant: base  # base, antigrid, temporal_bins (token ablation), or temporal_detail (recommended event detail)
   img_size: 518
   patch_size: 14
   embed_dim: 1024

@@ -35,6 +35,7 @@ from eventvggt.datasets.my_event_dataset import (
 )
 from eventvggt.models.streamvggt_antigrid import StreamVGGT as EventAntiGridStreamVGGT
 from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
+from eventvggt.models.streamvggt_temporal_detail import StreamVGGT as EventTemporalDetailStreamVGGT
 from eventvggt.models.streamvggt_temporal_bins import StreamVGGT as EventTemporalBinStreamVGGT
 from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
@@ -190,6 +191,15 @@ def build_event_model(cfg) -> nn.Module:
             event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
             event_fusion_scale=float(getattr(cfg.model, "event_fusion_scale", 1.0)),
         )
+    if variant in ("temporal_detail", "temporal_dense", "event_detail"):
+        return EventTemporalDetailStreamVGGT(
+            **common_kwargs,
+            event_num_bins=int(getattr(cfg.model, "event_num_bins", default_event_bins)),
+            event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
+            residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.03)),
+            refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
+            use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
+        )
     raise ValueError(f"Unknown event model variant: {variant}")
 
 
@@ -198,7 +208,7 @@ def configure_trainable_params(model: EventStreamVGGT, cfg) -> None:
         param.requires_grad = False
 
     # Event modules are trained while the pretrained RGB backbone can be selectively unfrozen below.
-    enabled_prefixes = ["event_encoder", "antigrid_refiner"]
+    enabled_prefixes = ["event_encoder", "event_detail_refiner", "antigrid_refiner"]
     for name, param in model.named_parameters():
         if any(token in name for token in enabled_prefixes):
             param.requires_grad = True
