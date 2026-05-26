@@ -15,12 +15,12 @@ OUTPUT_PARENT="${OUTPUT_PARENT:-${ROOT_DIR}/finetune_vaild/results}"
 BASELINE_CKPT="${BASELINE_CKPT:-${ROOT_DIR}/checkpoints/mul_loss_baseline/checkpoint-last.pth}"
 UNIFORM_CKPT="${UNIFORM_CKPT:-${ROOT_DIR}/checkpoints/mul_loss_detail_gt_uniform/checkpoint-last.pth}"
 SELECTIVE_CKPT="${SELECTIVE_CKPT:-${ROOT_DIR}/checkpoints/mul_loss_detail_gt_selective_event/checkpoint-last.pth}"
-TEMPORAL_DETAIL_CKPT="${TEMPORAL_DETAIL_CKPT:-${ROOT_DIR}/checkpoints/mul_loss_detail_gt_temporal_detail/checkpoint-last.pth}"
+TEMPORAL_GATED_CKPT="${TEMPORAL_GATED_CKPT:-${ROOT_DIR}/checkpoints/mul_loss_detail_gt_temporal_gated/checkpoint-last.pth}"
 
 IFS=',' read -r -a GPUS <<< "$GPU_LIST"
-METHODS=("baseline" "detail_gt_uniform" "detail_gt_selective_event" "detail_gt_temporal_detail")
-VARIANTS=("base" "base" "base" "temporal_detail")
-CHECKPOINTS=("$BASELINE_CKPT" "$UNIFORM_CKPT" "$SELECTIVE_CKPT" "$TEMPORAL_DETAIL_CKPT")
+METHODS=("baseline" "detail_gt_uniform" "detail_gt_selective_event" "detail_gt_temporal_gated")
+VARIANTS=("base" "base" "base" "temporal_gated_detail")
+CHECKPOINTS=("$BASELINE_CKPT" "$UNIFORM_CKPT" "$SELECTIVE_CKPT" "$TEMPORAL_GATED_CKPT")
 
 if (( ${#GPUS[@]} < ${#METHODS[@]} )); then
   echo "Need four CUDA device IDs, got GPU_LIST=${GPU_LIST}"
@@ -59,6 +59,8 @@ for idx in "${!METHODS[@]}"; do
       --active-scene-count "$ACTIVE_SCENE_COUNT" \
       --samples-per-scene "$SAMPLES_PER_SCENE" \
       --event-support-mode temporal_polarity \
+      --refiner-residual-scale 0.01 \
+      --event-gate-downsample 4 \
       --num-workers "$NUM_WORKERS" \
       "$@"
   ) >"${LOG_DIR}/${method}_gpu_${gpu}.log" 2>&1 &
@@ -68,7 +70,7 @@ for idx in "${!METHODS[@]}"; do
 done
 
 if (( ${#PIDS[@]} == 0 )); then
-  echo "No checkpoints found. Override BASELINE_CKPT, UNIFORM_CKPT, SELECTIVE_CKPT or TEMPORAL_DETAIL_CKPT."
+  echo "No checkpoints found. Override BASELINE_CKPT, UNIFORM_CKPT, SELECTIVE_CKPT or TEMPORAL_GATED_CKPT."
   exit 1
 fi
 

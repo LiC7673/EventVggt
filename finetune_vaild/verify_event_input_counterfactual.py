@@ -321,6 +321,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-num-bins", type=int, default=10)
     parser.add_argument("--event-count-cmax", type=float, default=3.0)
     parser.add_argument("--event-fusion-scale", type=float, default=1.0)
+    parser.add_argument("--event-gate-downsample", type=int, default=4)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)
     parser.add_argument("--refiner-hidden-dim", type=int, default=16)
     parser.add_argument("--refiner-num-blocks", type=int, default=2)

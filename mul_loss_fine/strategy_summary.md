@@ -48,6 +48,7 @@
 | `finetune_mul_loss_detail_gt_selective_event.py` | 在相同 depth-derived GT 监督上，仅对时序/极性事件支持最强的前 20% 像素增强权重，用来验证事件是否真的帮助困难细节。 |
 | `finetune_mul_loss_detail_gt_temporal_bins.py` | 与 `uniform` 使用同一套 GT-detail loss，但用正确注入 token 的时序 bin 事件模型，专门验证事件输入贡献。 |
 | `finetune_mul_loss_detail_gt_temporal_detail.py` | 推荐的细节模型：保留正负时间 bin，在像素域预测受限深度残差，避开直接事件 patch-token 注入带来的规则网格。 |
+| `finetune_mul_loss_detail_gt_temporal_gated.py` | 防波纹细节模型：事件只产生低通门控，RGB/粗深度决定残差几何形状，并加残差二阶约束。 |
 | `finetune_mul_loss_detail_gt_temporal_adapter.py` | 从已收敛 `uniform` 初始化并冻结 RGB/heads，仅训练时序事件 token 分支；用于检验事件能否提供增量细节修正。 |
 | `finetune_mul_loss_detail_gt_salient.py` | 在 `detail_gt` 基础上进一步聚焦 GT 中最显著的高频几何细节，强化高频形状、幅值和细节存在性。 |
 | `finetune_mul_loss_mv_all_detail_gt.py` | 最强组合：事件支持的多视角约束 + GT detail 辅助监督。 |

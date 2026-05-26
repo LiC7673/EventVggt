@@ -19,6 +19,7 @@ weight for multi-view geometry/detail consistency.
 | `finetune_mul_loss_detail_gt_selective_event.py` | Same depth-derived GT detail, boosted only at top-20% temporal/polarity event support |
 | `finetune_mul_loss_detail_gt_temporal_bins.py` | Same uniform GT detail, with correctly fused polarity-preserving temporal-bin event tokens |
 | `finetune_mul_loss_detail_gt_temporal_detail.py` | Recommended event-detail variant: temporal/polarity voxel CNN predicts dense bounded log-depth residual without patch-token grid injection |
+| `finetune_mul_loss_detail_gt_temporal_gated.py` | Highlight-ripple resistant variant: events provide a low-pass gate, while RGB/coarse depth proposes residual geometry |
 | `finetune_mul_loss_detail_gt_temporal_adapter.py` | Initialize from uniform, freeze RGB/heads, and train only temporal event tokens for incremental detail gain |
 | `finetune_mul_loss_detail_gt_salient.py` | Strong GT detail supervision focused on salient high-frequency geometry |
 | `finetune_mul_loss_mv_all_detail_gt.py` | Cross-view event losses + GT detail supervision |
@@ -101,10 +102,12 @@ bash finetune_vaild/run_temporal_bins_compare_gpus_5678.sh
 
 The `temporal_bins` token-fusion experiment can expose patch-grid patterns in
 depth-derived normals because the same patch-resolution residual enters DPT
-features directly. For fine-detail training, prefer:
+features directly. Dense event-written residuals can instead reproduce moving
+highlight trails as contour-like ripples. For final fine-detail training,
+prefer the gated variant:
 
 ```bash
-bash mul_loss_fine/run_temporal_detail_compare_2gpu_5678.sh
+bash mul_loss_fine/run_temporal_gated_detail_2gpu.sh
 bash finetune_vaild/run_event_counterfactual_gpus_5678.sh
 ```
 

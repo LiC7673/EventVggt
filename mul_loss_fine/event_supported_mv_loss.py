@@ -128,6 +128,57 @@ def _weighted_mean(loss: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return (loss * weight).sum() / weight.sum().clamp_min(1.0)
 
 
+def _stack_output_field(model_output, key: str) -> Optional[torch.Tensor]:
+    ress = getattr(model_output, "ress", None)
+    if not ress or not all(key in res for res in ress):
+        return None
+    value = torch.stack([res[key] for res in ress], dim=1)
+    if value.ndim == 5 and value.shape[-1] == 1:
+        value = value.squeeze(-1)
+    return value
+
+
+def _residual_edge_aware_smoothness(
+    residual: torch.Tensor,
+    views: List[Dict[str, torch.Tensor]],
+    valid_mask: torch.Tensor,
+    edge_alpha: float,
+) -> torch.Tensor:
+    residual = torch.nan_to_num(residual, nan=0.0, posinf=0.0, neginf=0.0)
+    mask = valid_mask.to(device=residual.device).bool()
+    dx = (residual[..., :, 1:] - residual[..., :, :-1]).abs()
+    dy = (residual[..., 1:, :] - residual[..., :-1, :]).abs()
+    mask_x = mask[..., :, 1:] & mask[..., :, :-1]
+    mask_y = mask[..., 1:, :] & mask[..., :-1, :]
+    weight_x = torch.ones_like(dx)
+    weight_y = torch.ones_like(dy)
+    if views and all("img" in view for view in views):
+        rgb = fe.stack_view_field(views, "img").to(device=residual.device, dtype=residual.dtype)
+        rgb_dx = (rgb[..., :, 1:] - rgb[..., :, :-1]).abs().mean(dim=2)
+        rgb_dy = (rgb[..., 1:, :] - rgb[..., :-1, :]).abs().mean(dim=2)
+        weight_x = torch.exp(-float(edge_alpha) * rgb_dx).detach()
+        weight_y = torch.exp(-float(edge_alpha) * rgb_dy).detach()
+    weight_x = weight_x * mask_x.to(dtype=residual.dtype)
+    weight_y = weight_y * mask_y.to(dtype=residual.dtype)
+    return (dx * weight_x).sum() / weight_x.sum().clamp_min(1.0) + (
+        dy * weight_y
+    ).sum() / weight_y.sum().clamp_min(1.0)
+
+
+def _residual_second_order_smoothness(residual: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
+    residual = torch.nan_to_num(residual, nan=0.0, posinf=0.0, neginf=0.0)
+    mask = valid_mask.to(device=residual.device).bool()
+    dxx = (residual[..., :, 2:] - 2.0 * residual[..., :, 1:-1] + residual[..., :, :-2]).abs()
+    dyy = (residual[..., 2:, :] - 2.0 * residual[..., 1:-1, :] + residual[..., :-2, :]).abs()
+    mask_x = mask[..., :, 2:] & mask[..., :, 1:-1] & mask[..., :, :-2]
+    mask_y = mask[..., 2:, :] & mask[..., 1:-1, :] & mask[..., :-2, :]
+    mask_x = mask_x.to(dtype=residual.dtype)
+    mask_y = mask_y.to(dtype=residual.dtype)
+    return (dxx * mask_x).sum() / mask_x.sum().clamp_min(1.0) + (
+        dyy * mask_y
+    ).sum() / mask_y.sum().clamp_min(1.0)
+
+
 def _normalize_detail_support(
     detail: torch.Tensor,
     valid_mask: torch.Tensor,
@@ -501,6 +552,10 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         detail_gt_salient_power: float = 2.0,
         detail_gt_salient_presence_ratio: float = 0.8,
         detail_gt_chunk_size: int = 1,
+        residual_smooth_weight: float = 0.0,
+        residual_second_order_weight: float = 0.0,
+        residual_abs_weight: float = 0.0,
+        residual_smooth_alpha: float = 10.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -518,6 +573,10 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         self.detail_gt_salient_power = float(detail_gt_salient_power)
         self.detail_gt_salient_presence_ratio = float(detail_gt_salient_presence_ratio)
         self.detail_gt_chunk_size = max(1, int(detail_gt_chunk_size))
+        self.residual_smooth_weight = float(residual_smooth_weight)
+        self.residual_second_order_weight = float(residual_second_order_weight)
+        self.residual_abs_weight = float(residual_abs_weight)
+        self.residual_smooth_alpha = float(residual_smooth_alpha)
         self.mv_loss = EventSupportedMultiViewLoss(
             normal_weight=mv_normal_weight,
             presence_weight=mv_presence_weight,
@@ -548,6 +607,17 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                 self.detail_gt_salient_hf_weight,
                 self.detail_gt_salient_mag_weight,
                 self.detail_gt_salient_presence_weight,
+            )
+        )
+
+    @property
+    def residual_regularization_enabled(self) -> bool:
+        return any(
+            weight > 0.0
+            for weight in (
+                self.residual_smooth_weight,
+                self.residual_second_order_weight,
+                self.residual_abs_weight,
             )
         )
 
@@ -726,7 +796,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]):
         base_loss, details, aux = super().forward(model_output, views)
         details["base_supervised_loss"] = float(base_loss.detach())
-        if not self.mv_loss.enabled and not self.detail_gt_enabled:
+        if not self.mv_loss.enabled and not self.detail_gt_enabled and not self.residual_regularization_enabled:
             details.update(
                 {
                     "mv_event_loss": 0.0,
@@ -745,6 +815,11 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "detail_gt_salient_mag_loss": 0.0,
                     "detail_gt_salient_presence_loss": 0.0,
                     "detail_gt_salient_weight_mean": 0.0,
+                    "residual_smooth_loss": 0.0,
+                    "residual_second_order_loss": 0.0,
+                    "depth_residual_abs": 0.0,
+                    "residual_regularization_loss": 0.0,
+                    "event_gate_mean": 0.0,
                     "extra_loss_total": 0.0,
                     "total_loss_with_extra": float(base_loss.detach()),
                 }
@@ -839,6 +914,54 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "detail_gt_salient_weight_mean": 0.0,
                 }
             )
+        depth_coarse = _stack_output_field(model_output, "depth_coarse")
+        if depth_coarse is not None:
+            aux["depth_coarse"] = depth_coarse.to(device=depth_pred.device, dtype=depth_pred.dtype).detach()
+        depth_residual = _stack_output_field(model_output, "depth_residual")
+        residual_smooth_loss = depth_pred.new_tensor(0.0)
+        residual_second_order_loss = depth_pred.new_tensor(0.0)
+        residual_abs = depth_pred.new_tensor(0.0)
+        if depth_residual is not None:
+            depth_residual = depth_residual.to(device=depth_pred.device, dtype=depth_pred.dtype)
+            if self.residual_smooth_weight > 0.0:
+                residual_smooth_loss = _residual_edge_aware_smoothness(
+                    depth_residual,
+                    views,
+                    valid_mask,
+                    edge_alpha=self.residual_smooth_alpha,
+                )
+            if self.residual_second_order_weight > 0.0:
+                residual_second_order_loss = _residual_second_order_smoothness(depth_residual, valid_mask)
+            if self.residual_abs_weight > 0.0:
+                residual_abs = _weighted_mean(
+                    depth_residual.abs().unsqueeze(2),
+                    valid_mask.unsqueeze(2).to(dtype=depth_pred.dtype),
+                )
+            aux["depth_residual"] = depth_residual.detach()
+        residual_regularization_loss = (
+            self.residual_smooth_weight * residual_smooth_loss
+            + self.residual_second_order_weight * residual_second_order_loss
+            + self.residual_abs_weight * residual_abs
+        )
+        total_extra = total_extra + residual_regularization_loss
+        details.update(
+            {
+                "residual_smooth_loss": float(residual_smooth_loss.detach()),
+                "residual_second_order_loss": float(residual_second_order_loss.detach()),
+                "depth_residual_abs": float(residual_abs.detach()),
+                "residual_regularization_loss": float(residual_regularization_loss.detach()),
+            }
+        )
+        event_gate = _stack_output_field(model_output, "event_gate")
+        if event_gate is not None:
+            event_gate = event_gate.to(device=depth_pred.device, dtype=depth_pred.dtype)
+            gate_weight = valid_mask.to(dtype=depth_pred.dtype)
+            details["event_gate_mean"] = float(
+                ((event_gate * gate_weight).sum() / gate_weight.sum().clamp_min(1.0)).detach()
+            )
+            aux["event_gate"] = event_gate.detach()
+        else:
+            details["event_gate_mean"] = 0.0
         total_loss = base_loss + total_extra
         details["extra_loss_total"] = float(total_extra.detach())
         details["total_loss_with_extra"] = float(total_loss.detach())

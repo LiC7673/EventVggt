@@ -36,6 +36,7 @@ from eventvggt.datasets.my_event_dataset import (
 from eventvggt.models.streamvggt_antigrid import StreamVGGT as EventAntiGridStreamVGGT
 from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
 from eventvggt.models.streamvggt_temporal_detail import StreamVGGT as EventTemporalDetailStreamVGGT
+from eventvggt.models.streamvggt_temporal_gated_detail import StreamVGGT as EventTemporalGatedDetailStreamVGGT
 from eventvggt.models.streamvggt_temporal_bins import StreamVGGT as EventTemporalBinStreamVGGT
 from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
@@ -197,6 +198,16 @@ def build_event_model(cfg) -> nn.Module:
             event_num_bins=int(getattr(cfg.model, "event_num_bins", default_event_bins)),
             event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
             residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.03)),
+            refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
+            use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
+        )
+    if variant in ("temporal_gated_detail", "event_gated_detail", "gated_detail"):
+        return EventTemporalGatedDetailStreamVGGT(
+            **common_kwargs,
+            event_num_bins=int(getattr(cfg.model, "event_num_bins", default_event_bins)),
+            event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
+            residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.01)),
+            gate_downsample=int(getattr(cfg.model, "event_gate_downsample", 4)),
             refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
             use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
         )
@@ -1246,6 +1257,13 @@ def save_training_visuals(
                 make_labeled_panel(
                     "event_motion",
                     depth_to_uint8(aux["event_motion_density"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        if "event_gate" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "event_gate",
+                    depth_to_uint8(aux["event_gate"][sample_idx, frame_id], valid_mask),
                 )
             )
         panels.extend(

@@ -42,6 +42,10 @@ DEFAULT_EVENT_LOSS = {
     "detail_gt_salient_power": 2.0,
     "detail_gt_salient_presence_ratio": 0.8,
     "detail_gt_chunk_size": 1,
+    "residual_smooth_weight": 0.0,
+    "residual_second_order_weight": 0.0,
+    "residual_abs_weight": 0.0,
+    "residual_smooth_alpha": 10.0,
 }
 
 
@@ -111,6 +115,10 @@ def make_configured_loss(cfg):
                     getattr(cfg.loss, "detail_gt_salient_presence_ratio", 0.8)
                 ),
                 detail_gt_chunk_size=int(getattr(cfg.loss, "detail_gt_chunk_size", 1)),
+                residual_smooth_weight=float(getattr(cfg.loss, "residual_smooth_weight", 0.0)),
+                residual_second_order_weight=float(getattr(cfg.loss, "residual_second_order_weight", 0.0)),
+                residual_abs_weight=float(getattr(cfg.loss, "residual_abs_weight", 0.0)),
+                residual_smooth_alpha=float(getattr(cfg.loss, "residual_smooth_alpha", 10.0)),
                 **kwargs,
             )
 
@@ -134,6 +142,9 @@ def launch_mul_loss(cfg, *, weights, exp_name):
         f"detail_gt_salient_mag={float(getattr(cfg.loss, 'detail_gt_salient_mag_weight', 0.0)):.4f} "
         f"detail_gt_salient_presence={float(getattr(cfg.loss, 'detail_gt_salient_presence_weight', 0.0)):.4f} "
         f"detail_gt_event_boost={float(getattr(cfg.loss, 'detail_gt_event_boost', 0.0)):.4f} "
+        f"residual_smooth={float(getattr(cfg.loss, 'residual_smooth_weight', 0.0)):.4f} "
+        f"residual_second_order={float(getattr(cfg.loss, 'residual_second_order_weight', 0.0)):.4f} "
+        f"residual_abs={float(getattr(cfg.loss, 'residual_abs_weight', 0.0)):.4f} "
         f"detail_gt_normal_source={str(getattr(cfg.loss, 'detail_gt_normal_source', 'auto'))} "
         f"event_support_mode={str(getattr(cfg.loss, 'mv_event_support_mode', 'abs'))} "
         f"event_top_fraction={float(getattr(cfg.loss, 'mv_event_top_fraction', 0.0)):.3f} "
