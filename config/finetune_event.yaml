@@ -27,11 +27,14 @@ logdir: ${save_dir}/${exp_name}/logs
 output_dir: ${save_dir}/${exp_name}
 
 model:
-  variant: base  # base or antigrid
+  variant: base  # base, antigrid, or temporal_bins
   img_size: 518
   patch_size: 14
   embed_dim: 1024
   event_hidden_dim: 32
+  event_num_bins: 10
+  event_count_cmax: 3.0
+  event_fusion_scale: 1.0
   head_frames_chunk_size: 2
   refiner_hidden_dim: 16
   refiner_num_blocks: 2

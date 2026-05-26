@@ -3,8 +3,9 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ACCELERATE_BIN="${ACCELERATE_BIN:-accelerate}"
-CONTROL_GPUS="${CONTROL_GPUS:-5,6}"
-SELECTIVE_EVENT_GPUS="${SELECTIVE_EVENT_GPUS:-7,8}"
+# CUDA device indices are zero-based: IDs 4,5,6,7 are physical GPUs 5-8.
+CONTROL_GPUS="${CONTROL_GPUS:-4,5}"
+SELECTIVE_EVENT_GPUS="${SELECTIVE_EVENT_GPUS:-6,7}"
 BASE_PORT="${BASE_PORT:-29820}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 PIN_MEM="${PIN_MEM:-false}"
@@ -25,8 +26,8 @@ LOG_DIR="${ROOT_DIR}/ablation_logs/detail_gt_event_pair_${RUN_ID}"
 mkdir -p "$LOG_DIR"
 
 echo "GT detail event-weighting ablation"
-echo "Uniform GT detail: GPUs ${CONTROL_GPUS}"
-echo "Selective event-weighted GT detail: GPUs ${SELECTIVE_EVENT_GPUS}"
+echo "Uniform GT detail: CUDA devices ${CONTROL_GPUS}"
+echo "Selective event-weighted GT detail: CUDA devices ${SELECTIVE_EVENT_GPUS}"
 echo "Logs: ${LOG_DIR}"
 echo "Extra Hydra args: $*"
 

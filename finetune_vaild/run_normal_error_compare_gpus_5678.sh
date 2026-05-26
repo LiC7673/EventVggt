@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-GPU_LIST="${GPU_LIST:-5,6,7,8}"
+# CUDA device indices are zero-based: IDs 4,5,6,7 are physical GPUs 5-8.
+GPU_LIST="${GPU_LIST:-4,5,6,7}"
 DATA_ROOT="${DATA_ROOT:-/data1/lzh/dataset/reflective_raw}"
 SPLIT="${SPLIT:-test}"
 NUM_VIEWS="${NUM_VIEWS:-4}"

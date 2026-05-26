@@ -410,6 +410,9 @@ def build_model(args, device: torch.device):
             patch_size=args.patch_size,
             embed_dim=args.embed_dim,
             event_hidden_dim=args.event_hidden_dim,
+            event_num_bins=args.event_num_bins,
+            event_count_cmax=args.event_count_cmax,
+            event_fusion_scale=args.event_fusion_scale,
             head_frames_chunk_size=args.head_frames_chunk_size,
             refiner_hidden_dim=args.refiner_hidden_dim,
             refiner_num_blocks=args.refiner_num_blocks,
@@ -701,6 +704,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patch-size", type=int, default=14)
     parser.add_argument("--embed-dim", type=int, default=1024)
     parser.add_argument("--event-hidden-dim", type=int, default=32)
+    parser.add_argument("--event-num-bins", type=int, default=10)
+    parser.add_argument("--event-count-cmax", type=float, default=3.0)
+    parser.add_argument("--event-fusion-scale", type=float, default=1.0)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)
     parser.add_argument("--refiner-hidden-dim", type=int, default=16)
     parser.add_argument("--refiner-num-blocks", type=int, default=2)

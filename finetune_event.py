@@ -35,6 +35,7 @@ from eventvggt.datasets.my_event_dataset import (
 )
 from eventvggt.models.streamvggt_antigrid import StreamVGGT as EventAntiGridStreamVGGT
 from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
+from eventvggt.models.streamvggt_temporal_bins import StreamVGGT as EventTemporalBinStreamVGGT
 from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -162,6 +163,8 @@ def build_event_loader(cfg, split="train"):
 
 def build_event_model(cfg) -> nn.Module:
     variant = str(getattr(cfg.model, "variant", "base")).lower()
+    data_cfg = getattr(cfg, "data", None)
+    default_event_bins = int(getattr(data_cfg, "event_resize_bins", 10)) if data_cfg is not None else 10
     common_kwargs = dict(
         img_size=cfg.model.img_size,
         patch_size=cfg.model.patch_size,
@@ -180,6 +183,13 @@ def build_event_model(cfg) -> nn.Module:
             refiner_refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
             refiner_use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
         )
+    if variant in ("temporal_bins", "temporal_bin", "bin_aware", "event_temporal"):
+        return EventTemporalBinStreamVGGT(
+            **common_kwargs,
+            event_num_bins=int(getattr(cfg.model, "event_num_bins", default_event_bins)),
+            event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
+            event_fusion_scale=float(getattr(cfg.model, "event_fusion_scale", 1.0)),
+        )
     raise ValueError(f"Unknown event model variant: {variant}")
 
 
@@ -187,7 +197,7 @@ def configure_trainable_params(model: EventStreamVGGT, cfg) -> None:
     for _, param in model.named_parameters():
         param.requires_grad = False
 
-    # Only train event_encoder (these modules actually exist)
+    # Event modules are trained while the pretrained RGB backbone can be selectively unfrozen below.
     enabled_prefixes = ["event_encoder", "antigrid_refiner"]
     for name, param in model.named_parameters():
         if any(token in name for token in enabled_prefixes):

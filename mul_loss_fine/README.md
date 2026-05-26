@@ -17,6 +17,8 @@ weight for multi-view geometry/detail consistency.
 | `finetune_mul_loss_detail_gt.py` | GT-normal/detail weighted high-frequency supervision |
 | `finetune_mul_loss_detail_gt_uniform.py` | Depth-derived GT-detail control without event reweighting |
 | `finetune_mul_loss_detail_gt_selective_event.py` | Same depth-derived GT detail, boosted only at top-20% temporal/polarity event support |
+| `finetune_mul_loss_detail_gt_temporal_bins.py` | Same uniform GT detail, with correctly fused polarity-preserving temporal-bin event tokens |
+| `finetune_mul_loss_detail_gt_temporal_adapter.py` | Initialize from uniform, freeze RGB/heads, and train only temporal event tokens for incremental detail gain |
 | `finetune_mul_loss_detail_gt_salient.py` | Strong GT detail supervision focused on salient high-frequency geometry |
 | `finetune_mul_loss_mv_all_detail_gt.py` | Cross-view event losses + GT detail supervision |
 
@@ -74,10 +76,35 @@ CUDA_VISIBLE_DEVICES=2,3 accelerate launch --multi_gpu --num_processes 2 \
   mul_loss_fine/finetune_mul_loss_detail_gt_selective_event.py num_workers=0 pin_mem=false
 ```
 
-Run the same pair concurrently on GPUs `5,6` and `7,8`:
+Run the same pair concurrently on physical GPUs 5-8 (CUDA device IDs
+`4,5` and `6,7`):
 
 ```bash
 bash mul_loss_fine/run_detail_gt_event_pair_2gpu_5678.sh
+```
+
+Important diagnostic: the historical `base` event model builds event features,
+but its token fusion checks `[B,S,P,C]` tensors using the wrong axis and an
+incompatible token channel width. As a result, `detail_gt_uniform` is a useful
+RGB + GT-detail control, not proof that event input helped.
+
+To test event input itself, compare that control against the fixed temporal-bin
+event model. Both use identical GT-detail losses:
+
+```bash
+bash mul_loss_fine/run_temporal_bins_compare_2gpu_5678.sh \
+  data.root=/data1/lzh/dataset/reflective_raw data.num_views=4
+
+bash finetune_vaild/run_temporal_bins_compare_gpus_5678.sh
+```
+
+For the strictest event-contribution check, train only the temporal event
+adapter on top of the converged uniform checkpoint:
+
+```bash
+CUDA_VISIBLE_DEVICES=6,7 accelerate launch --multi_gpu --num_processes 2 \
+  mul_loss_fine/finetune_mul_loss_detail_gt_temporal_adapter.py \
+  data.root=/data1/lzh/dataset/reflective_raw data.num_views=4
 ```
 
 Multi-LDR training from `mul_ldr.md`:

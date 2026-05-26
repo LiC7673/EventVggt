@@ -23,6 +23,8 @@ SCRIPTS=(
   "mul_loss_fine/finetune_mul_loss_detail_gt.py"
   "mul_loss_fine/finetune_mul_loss_detail_gt_uniform.py"
   "mul_loss_fine/finetune_mul_loss_detail_gt_selective_event.py"
+  "mul_loss_fine/finetune_mul_loss_detail_gt_temporal_bins.py"
+  "mul_loss_fine/finetune_mul_loss_detail_gt_temporal_adapter.py"
   "mul_loss_fine/finetune_mul_loss_detail_gt_salient.py"
   "mul_loss_fine/finetune_mul_loss_mv_all_detail_gt.py"
 )
