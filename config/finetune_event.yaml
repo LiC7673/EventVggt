@@ -27,7 +27,7 @@ logdir: ${save_dir}/${exp_name}/logs
 output_dir: ${save_dir}/${exp_name}
 
 model:
-  variant: base  # base, antigrid, temporal_bins, temporal_detail, or temporal_gated_detail (recommended)
+  variant: base  # base, temporal_gated_detail, or temporal_exposure_invariant
   img_size: 518
   patch_size: 14
   embed_dim: 1024
@@ -40,6 +40,9 @@ model:
   refiner_num_blocks: 2
   refiner_residual_scale: 0.03
   event_gate_downsample: 4
+  exposure_match_dim: 8
+  exposure_agreement_floor: 0.25
+  exposure_forward_batch_chunk: 1
   refiner_refine_points: true
   refiner_use_checkpoint: true
 

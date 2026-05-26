@@ -20,6 +20,7 @@ TEMPORAL_GATED_CKPT="${TEMPORAL_GATED_CKPT:-${ROOT_DIR}/checkpoints/mul_loss_det
 IFS=',' read -r -a GPUS <<< "$GPU_LIST"
 METHODS=("baseline" "detail_gt_uniform" "detail_gt_selective_event" "detail_gt_temporal_gated")
 VARIANTS=("base" "base" "base" "temporal_gated_detail")
+EVENT_HIDDEN_DIMS=("32" "32" "32" "16")
 CHECKPOINTS=("$BASELINE_CKPT" "$UNIFORM_CKPT" "$SELECTIVE_CKPT" "$TEMPORAL_GATED_CKPT")
 
 if (( ${#GPUS[@]} < ${#METHODS[@]} )); then
@@ -38,6 +39,7 @@ RUN_GPUS=()
 for idx in "${!METHODS[@]}"; do
   method="${METHODS[$idx]}"
   variant="${VARIANTS[$idx]}"
+  event_hidden_dim="${EVENT_HIDDEN_DIMS[$idx]}"
   ckpt="${CHECKPOINTS[$idx]}"
   gpu="${GPUS[$idx]}"
   if [[ ! -f "$ckpt" ]]; then
@@ -53,6 +55,7 @@ for idx in "${!METHODS[@]}"; do
       --root "$DATA_ROOT" \
       --checkpoint "$ckpt" \
       --model-variant "$variant" \
+      --event-hidden-dim "$event_hidden_dim" \
       --output-dir "${RUN_DIR}/${method}" \
       --split test \
       --num-views "$NUM_VIEWS" \

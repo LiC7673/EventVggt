@@ -20,6 +20,7 @@ weight for multi-view geometry/detail consistency.
 | `finetune_mul_loss_detail_gt_temporal_bins.py` | Same uniform GT detail, with correctly fused polarity-preserving temporal-bin event tokens |
 | `finetune_mul_loss_detail_gt_temporal_detail.py` | Recommended event-detail variant: temporal/polarity voxel CNN predicts dense bounded log-depth residual without patch-token grid injection |
 | `finetune_mul_loss_detail_gt_temporal_gated.py` | Highlight-ripple resistant variant: events provide a low-pass gate, while RGB/coarse depth proposes residual geometry |
+| `finetune_mul_loss_detail_gt_temporal_gated_multildr.py` | Exposure-invariant gate: paired LDR training matches stable RGB/event cues; evaluation remains single LDR |
 | `finetune_mul_loss_detail_gt_temporal_adapter.py` | Initialize from uniform, freeze RGB/heads, and train only temporal event tokens for incremental detail gain |
 | `finetune_mul_loss_detail_gt_salient.py` | Strong GT detail supervision focused on salient high-frequency geometry |
 | `finetune_mul_loss_mv_all_detail_gt.py` | Cross-view event losses + GT detail supervision |
@@ -110,6 +111,24 @@ prefer the gated variant:
 bash mul_loss_fine/run_temporal_gated_detail_2gpu.sh
 bash finetune_vaild/run_event_counterfactual_gpus_5678.sh
 ```
+
+To make the gated branch robust to reflective appearance changes across
+exposure, train its exposure-invariant extension. It loads the same frame and
+event voxel at two LDR levels, learns coarse RGB/event agreement, and teaches
+the agreement gate with GT-supported geometry detail. Test inference still
+uses one LDR sequence:
+
+```bash
+bash mul_loss_fine/run_temporal_gated_multildr_2gpu.sh \
+  data.root=/data1/lzh/dataset/reflective_raw
+
+bash finetune_vaild/run_temporal_gated_multildr_counterfactual.sh
+```
+
+The default initialization is
+`checkpoints/mul_loss_detail_gt_temporal_gated/checkpoint-last.pth`. Common
+overrides are `LDR_TRAIN_IDS=ev_2,ev_5,ev_10`, `EVAL_LDR_ID=ev_5`, and
+`NUM_VIEWS=4`.
 
 For the strictest event-contribution check, train only the temporal event
 adapter on top of the converged uniform checkpoint:
