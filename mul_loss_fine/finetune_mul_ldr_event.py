@@ -48,6 +48,9 @@ class MultiLdrBatchSampler:
         self.ldr_event_ids = [_format_ldr(x) for x in ldr_event_ids]
         self.num_views = int(num_views)
         self.exposures_per_sample = max(int(exposures_per_sample), 1)
+        # Accelerate needs a declared, fixed batch size to shard a custom
+        # batch sampler across ranks while preserving each exposure pair.
+        self.batch_size = self.scenes_per_batch * self.exposures_per_sample
         self.shuffle = bool(shuffle)
         self.drop_last = bool(drop_last)
         self.seed = int(seed)
@@ -143,7 +146,7 @@ def build_mul_ldr_loader(cfg, split="train"):
         )
         print(
             f"Mul-LDR train loader: scenes_per_batch={sampler.scenes_per_batch}, "
-            f"actual_batch={sampler.scenes_per_batch * sampler.exposures_per_sample}, "
+            f"actual_batch={sampler.batch_size}, "
             f"ldr_event_ids={ldr_event_ids}"
         )
         return loader
