@@ -818,8 +818,14 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "residual_smooth_loss": 0.0,
                     "residual_second_order_loss": 0.0,
                     "depth_residual_abs": 0.0,
+                    "depth_residual_relative_abs": 0.0,
                     "residual_regularization_loss": 0.0,
                     "event_gate_mean": 0.0,
+                    "coarse_depth_loss": 0.0,
+                    "depth_refinement_gain": 0.0,
+                    "coarse_depth_normal_loss": 0.0,
+                    "final_depth_normal_loss": 0.0,
+                    "normal_refinement_gain": 0.0,
                     "extra_loss_total": 0.0,
                     "total_loss_with_extra": float(base_loss.detach()),
                 }
@@ -916,11 +922,45 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             )
         depth_coarse = _stack_output_field(model_output, "depth_coarse")
         if depth_coarse is not None:
-            aux["depth_coarse"] = depth_coarse.to(device=depth_pred.device, dtype=depth_pred.dtype).detach()
+            depth_coarse = depth_coarse.to(device=depth_pred.device, dtype=depth_pred.dtype)
+            aux["depth_coarse"] = depth_coarse.detach()
+            depth_target = aux.get("depth_gt_aligned", depth_gt).to(device=depth_pred.device, dtype=depth_pred.dtype)
+            coarse_depth_loss = fe.masked_l1(depth_coarse, depth_target, valid_mask)
+            final_depth_loss = fe.masked_l1(depth_pred, depth_target, valid_mask)
+
+            diagnostic_gt_normals = fe.depth_to_normals(depth_gt.clamp_min(self.depth_min), intrinsics_gt)
+            coarse_normals = fe.depth_to_normals(depth_coarse.clamp_min(self.depth_min), intrinsics_gt)
+            diagnostic_mask = valid_mask.clone()
+            diagnostic_mask[..., 0, :] = False
+            diagnostic_mask[..., -1, :] = False
+            diagnostic_mask[..., :, 0] = False
+            diagnostic_mask[..., :, -1] = False
+            coarse_normal_loss = fe.masked_cosine_loss(coarse_normals, diagnostic_gt_normals, diagnostic_mask)
+            final_normal_loss = fe.masked_cosine_loss(pred_normals, diagnostic_gt_normals, diagnostic_mask)
+            details.update(
+                {
+                    "coarse_depth_loss": float(coarse_depth_loss.detach()),
+                    "depth_refinement_gain": float((coarse_depth_loss - final_depth_loss).detach()),
+                    "coarse_depth_normal_loss": float(coarse_normal_loss.detach()),
+                    "final_depth_normal_loss": float(final_normal_loss.detach()),
+                    "normal_refinement_gain": float((coarse_normal_loss - final_normal_loss).detach()),
+                }
+            )
+        else:
+            details.update(
+                {
+                    "coarse_depth_loss": 0.0,
+                    "depth_refinement_gain": 0.0,
+                    "coarse_depth_normal_loss": 0.0,
+                    "final_depth_normal_loss": 0.0,
+                    "normal_refinement_gain": 0.0,
+                }
+            )
         depth_residual = _stack_output_field(model_output, "depth_residual")
         residual_smooth_loss = depth_pred.new_tensor(0.0)
         residual_second_order_loss = depth_pred.new_tensor(0.0)
         residual_abs = depth_pred.new_tensor(0.0)
+        residual_relative_abs = depth_pred.new_tensor(0.0)
         if depth_residual is not None:
             depth_residual = depth_residual.to(device=depth_pred.device, dtype=depth_pred.dtype)
             if self.residual_smooth_weight > 0.0:
@@ -937,6 +977,13 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     depth_residual.abs().unsqueeze(2),
                     valid_mask.unsqueeze(2).to(dtype=depth_pred.dtype),
                 )
+            relative_reference = (
+                depth_coarse.clamp_min(self.depth_min) if depth_coarse is not None else depth_pred.clamp_min(self.depth_min)
+            )
+            residual_relative_abs = _weighted_mean(
+                (depth_residual.abs() / relative_reference).unsqueeze(2),
+                valid_mask.unsqueeze(2).to(dtype=depth_pred.dtype),
+            )
             aux["depth_residual"] = depth_residual.detach()
         residual_regularization_loss = (
             self.residual_smooth_weight * residual_smooth_loss
@@ -949,6 +996,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                 "residual_smooth_loss": float(residual_smooth_loss.detach()),
                 "residual_second_order_loss": float(residual_second_order_loss.detach()),
                 "depth_residual_abs": float(residual_abs.detach()),
+                "depth_residual_relative_abs": float(residual_relative_abs.detach()),
                 "residual_regularization_loss": float(residual_regularization_loss.detach()),
             }
         )
