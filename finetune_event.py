@@ -38,6 +38,7 @@ from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
 from eventvggt.models.streamvggt_temporal_detail import StreamVGGT as EventTemporalDetailStreamVGGT
 from eventvggt.models.streamvggt_temporal_exposure_invariant import StreamVGGT as EventTemporalExposureInvariantStreamVGGT
 from eventvggt.models.streamvggt_temporal_gated_detail import StreamVGGT as EventTemporalGatedDetailStreamVGGT
+from eventvggt.models.streamvggt_temporal_reliability_v2 import StreamVGGT as EventTemporalReliabilityV2StreamVGGT
 from eventvggt.models.streamvggt_temporal_bins import StreamVGGT as EventTemporalBinStreamVGGT
 from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
@@ -221,6 +222,19 @@ def build_event_model(cfg) -> nn.Module:
             gate_downsample=int(getattr(cfg.model, "event_gate_downsample", 4)),
             exposure_match_dim=int(getattr(cfg.model, "exposure_match_dim", 8)),
             exposure_agreement_floor=float(getattr(cfg.model, "exposure_agreement_floor", 0.25)),
+            forward_batch_chunk=int(getattr(cfg.model, "exposure_forward_batch_chunk", 1)),
+            refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
+            use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
+        )
+    if variant in ("temporal_reliability_v2", "specular_reliability_v2", "multi_ldr_reliability_v2"):
+        return EventTemporalReliabilityV2StreamVGGT(
+            **common_kwargs,
+            event_num_bins=int(getattr(cfg.model, "event_num_bins", default_event_bins)),
+            event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
+            residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.015)),
+            gate_downsample=int(getattr(cfg.model, "event_gate_downsample", 4)),
+            event_reliability_floor=float(getattr(cfg.model, "event_reliability_floor", 0.10)),
+            event_reliability_init_bias=float(getattr(cfg.model, "event_reliability_init_bias", 2.0)),
             forward_batch_chunk=int(getattr(cfg.model, "exposure_forward_batch_chunk", 1)),
             refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
             use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
@@ -1285,6 +1299,20 @@ def save_training_visuals(
                 make_labeled_panel(
                     "event_agreement",
                     depth_to_uint8(aux["event_agreement"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        if "event_reliability" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "event_reliability",
+                    depth_to_uint8(aux["event_reliability"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        if "event_persistence" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "event_persistence",
+                    depth_to_uint8(aux["event_persistence"][sample_idx, frame_id], valid_mask),
                 )
             )
         panels.extend(

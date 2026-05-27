@@ -27,7 +27,7 @@ logdir: ${save_dir}/${exp_name}/logs
 output_dir: ${save_dir}/${exp_name}
 
 model:
-  variant: base  # base, temporal_gated_detail, or temporal_exposure_invariant
+  variant: base  # base, temporal_gated_detail, temporal_exposure_invariant, or temporal_reliability_v2
   img_size: 518
   patch_size: 14
   embed_dim: 1024
@@ -43,6 +43,8 @@ model:
   exposure_match_dim: 8
   exposure_agreement_floor: 0.25
   exposure_forward_batch_chunk: 1
+  event_reliability_floor: 0.10
+  event_reliability_init_bias: 2.0
   refiner_refine_points: true
   refiner_use_checkpoint: true
 

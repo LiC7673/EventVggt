@@ -21,6 +21,7 @@ weight for multi-view geometry/detail consistency.
 | `finetune_mul_loss_detail_gt_temporal_detail.py` | Recommended event-detail variant: temporal/polarity voxel CNN predicts dense bounded log-depth residual without patch-token grid injection |
 | `finetune_mul_loss_detail_gt_temporal_gated.py` | Highlight-ripple resistant variant: events provide a low-pass gate, while RGB/coarse depth proposes residual geometry |
 | `finetune_mul_loss_detail_gt_temporal_gated_multildr.py` | Exposure-invariant gate: paired LDR training matches stable RGB/event cues; evaluation remains single LDR |
+| `finetune_mul_loss_detail_gt_temporal_reliability_v2.py` | Reliability V2: temporal event statistics gate GT-taught depth corrections and multi-LDR consistency |
 | `finetune_mul_loss_detail_gt_temporal_adapter.py` | Initialize from uniform, freeze RGB/heads, and train only temporal event tokens for incremental detail gain |
 | `finetune_mul_loss_detail_gt_salient.py` | Strong GT detail supervision focused on salient high-frequency geometry |
 | `finetune_mul_loss_mv_all_detail_gt.py` | Cross-view event losses + GT detail supervision |
@@ -129,6 +130,25 @@ The default initialization is
 `checkpoints/mul_loss_detail_gt_temporal_gated/checkpoint-last.pth`. Common
 overrides are `LDR_TRAIN_IDS=ev_2,ev_5,ev_10`, `EVAL_LDR_ID=ev_5`, and
 `NUM_VIEWS=4`.
+
+For the event-dependence experiment, the V2 gate observes temporal
+persistence, polarity mixture and temporal entropy. The final depth residual
+is multiplied by this event gate, so zeroed events remove the V2 correction.
+The command below trains on two GPUs and automatically runs
+`real/zero/reverse_time/swap_polarity` validation afterward:
+
+```bash
+bash mul_loss_fine/run_temporal_reliability_v2_2gpu.sh \
+  data.root=/data1/lzh/dataset/reflective_raw
+```
+
+During training, `ldr_pair_count` must be greater than zero in train logs,
+while `residual_target_loss` and `gate_reliability_loss` confirm that the new
+adapter receives supervision. After training, check
+`event_output_sensitivity_detected=true` in the generated counterfactual
+`summary.json`; a useful event path should also perform better with `real`
+events than with `zero` or temporally reversed events. The one-click runner
+exits with an error when the counterfactual test cannot detect event influence.
 
 For the strictest event-contribution check, train only the temporal event
 adapter on top of the converged uniform checkpoint:
