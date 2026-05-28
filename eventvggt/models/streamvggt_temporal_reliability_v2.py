@@ -33,8 +33,8 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         count_cmax: float = 3.0,
         residual_scale: float = 0.015,
         gate_downsample: int = 4,
-        reliability_floor: float = 0.10,
-        reliability_init_bias: float = 2.0,
+        reliability_floor: float = 0.0,
+        reliability_init_bias: float = 0.0,
         refine_points: bool = True,
         use_checkpoint: bool = True,
         min_depth: float = 1e-6,
@@ -51,7 +51,7 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         )
         self.reliability_floor = min(max(float(reliability_floor), 0.0), 1.0)
         groups = _group_count(hidden_dim)
-        self.num_temporal_stats = 7
+        self.num_temporal_stats = 8
         self.temporal_reliability = nn.Sequential(
             nn.Conv2d(2 * self.num_bins + self.num_temporal_stats, hidden_dim, kernel_size=3, padding=1),
             nn.GroupNorm(groups, hidden_dim),
@@ -92,7 +92,18 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
             raw_proposal = self.geometry_proposal(proposal_input)
 
         base_gate, event_presence = self._event_confidence(voxel, output_size=(height, width))
-        reliability, persistence, entropy = self._temporal_reliability(voxel, output_size=(height, width))
+        reliability, persistence, entropy, temporal_quality = self._temporal_reliability(
+            voxel,
+            output_size=(height, width),
+        )
+        reverse_reliability, _, _, _ = self._temporal_reliability(
+            self._reverse_time_voxel(voxel),
+            output_size=(height, width),
+        )
+        swap_reliability, _, _, _ = self._temporal_reliability(
+            self._swap_polarity_voxel(voxel),
+            output_size=(height, width),
+        )
         event_gate = base_gate * (
             self.reliability_floor + (1.0 - self.reliability_floor) * reliability
         )
@@ -111,8 +122,11 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         self.last_gate = event_gate.reshape(batch, seq_len, height, width).detach()
         self.last_presence = event_presence.reshape(batch, seq_len, height, width).detach()
         self.last_reliability = reliability.reshape(batch, seq_len, height, width)
+        self.last_reliability_reverse_time = reverse_reliability.reshape(batch, seq_len, height, width)
+        self.last_reliability_swap_polarity = swap_reliability.reshape(batch, seq_len, height, width)
         self.last_persistence = persistence.reshape(batch, seq_len, height, width).detach()
         self.last_entropy = entropy.reshape(batch, seq_len, height, width).detach()
+        self.last_temporal_quality = temporal_quality.reshape(batch, seq_len, height, width).detach()
         self.last_delta_log = delta_log.reshape(batch, seq_len, height, width)
         return refined, refined_points, residual
 
@@ -121,7 +135,7 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         voxel: torch.Tensor,
         *,
         output_size: Tuple[int, int],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         pooled = F.avg_pool2d(
             voxel,
             kernel_size=self.gate_downsample,
@@ -150,7 +164,9 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
 
         pos_sum = pos.sum(dim=1, keepdim=True)
         neg_sum = neg.sum(dim=1, keepdim=True)
-        polarity_mix = 1.0 - (pos_sum - neg_sum).abs() / total.clamp_min(1e-6)
+        polarity_focus = (pos_sum - neg_sum).abs() / total.clamp_min(1e-6)
+        polarity_focus = polarity_focus.clamp(0.0, 1.0) * active
+        polarity_mix = 1.0 - polarity_focus
         polarity_mix = polarity_mix.clamp(0.0, 1.0) * active
 
         time = torch.linspace(-1.0, 1.0, self.num_bins, device=voxel.device, dtype=voxel.dtype).view(
@@ -162,6 +178,9 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         ) * active
         signed_direction = ((pos - neg) * time).sum(dim=1, keepdim=True) / total.clamp_min(1e-6)
         signed_direction = signed_direction * active
+        temporal_focus = (1.0 - entropy).clamp(0.0, 1.0)
+        temporal_quality = temporal_focus * (0.25 + 0.75 * peak) * (0.25 + 0.75 * polarity_focus)
+        temporal_quality = temporal_quality.clamp(0.0, 1.0) * active
         stats = torch.cat(
             [
                 presence,
@@ -171,6 +190,7 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
                 peak,
                 time_spread,
                 signed_direction,
+                temporal_quality,
             ],
             dim=1,
         )
@@ -178,7 +198,18 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         reliability = F.interpolate(reliability_low, size=output_size, mode="bilinear", align_corners=False)
         persistence = F.interpolate(persistence, size=output_size, mode="bilinear", align_corners=False)
         entropy = F.interpolate(entropy, size=output_size, mode="bilinear", align_corners=False)
-        return reliability, persistence, entropy
+        temporal_quality = F.interpolate(temporal_quality, size=output_size, mode="bilinear", align_corners=False)
+        return reliability, persistence, entropy, temporal_quality
+
+    def _reverse_time_voxel(self, voxel: torch.Tensor) -> torch.Tensor:
+        pos = voxel[:, : self.num_bins].flip(1)
+        neg = voxel[:, self.num_bins :].flip(1)
+        return torch.cat([pos, neg], dim=1)
+
+    def _swap_polarity_voxel(self, voxel: torch.Tensor) -> torch.Tensor:
+        pos = voxel[:, : self.num_bins]
+        neg = voxel[:, self.num_bins :]
+        return torch.cat([neg, pos], dim=1)
 
 
 class StreamVGGT(TemporalGatedStreamVGGT):
@@ -192,8 +223,8 @@ class StreamVGGT(TemporalGatedStreamVGGT):
         event_count_cmax: float = 3.0,
         residual_scale: float = 0.015,
         gate_downsample: int = 4,
-        event_reliability_floor: float = 0.10,
-        event_reliability_init_bias: float = 2.0,
+        event_reliability_floor: float = 0.0,
+        event_reliability_init_bias: float = 0.0,
         forward_batch_chunk: int = 1,
         refine_points: bool = True,
         use_checkpoint: bool = True,
@@ -226,15 +257,21 @@ class StreamVGGT(TemporalGatedStreamVGGT):
     def _forward_chunk(self, views, *args, **kwargs):
         output = super().forward(views, *args, **kwargs)
         reliability = getattr(self.event_detail_refiner, "last_reliability", None)
+        reliability_reverse_time = getattr(self.event_detail_refiner, "last_reliability_reverse_time", None)
+        reliability_swap_polarity = getattr(self.event_detail_refiner, "last_reliability_swap_polarity", None)
         delta_log = getattr(self.event_detail_refiner, "last_delta_log", None)
         persistence = getattr(self.event_detail_refiner, "last_persistence", None)
         entropy = getattr(self.event_detail_refiner, "last_entropy", None)
+        temporal_quality = getattr(self.event_detail_refiner, "last_temporal_quality", None)
         if reliability is not None:
             for frame_idx, result in enumerate(output.ress):
                 result["event_reliability"] = reliability[:, frame_idx]
+                result["event_reliability_reverse_time"] = reliability_reverse_time[:, frame_idx]
+                result["event_reliability_swap_polarity"] = reliability_swap_polarity[:, frame_idx]
                 result["depth_delta_log"] = delta_log[:, frame_idx]
                 result["event_persistence"] = persistence[:, frame_idx]
                 result["event_entropy"] = entropy[:, frame_idx]
+                result["event_temporal_quality"] = temporal_quality[:, frame_idx]
         return output
 
     def forward(self, views, query_points: Optional[torch.Tensor] = None, **kwargs):

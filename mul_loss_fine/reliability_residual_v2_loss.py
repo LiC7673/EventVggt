@@ -69,6 +69,9 @@ class TemporalReliabilityV2LossMixin:
         non_detail_smooth_weight: float,
         non_detail_second_order_weight: float,
         target_detail_threshold: float,
+        temporal_quality_floor: float,
+        counterfactual_weight: float,
+        counterfactual_margin: float,
     ):
         self.v2_residual_scale = max(float(residual_scale), 1e-6)
         self.v2_residual_target_weight = float(residual_target_weight)
@@ -82,12 +85,18 @@ class TemporalReliabilityV2LossMixin:
         self.v2_non_detail_smooth_weight = float(non_detail_smooth_weight)
         self.v2_non_detail_second_order_weight = float(non_detail_second_order_weight)
         self.v2_target_detail_threshold = float(target_detail_threshold)
+        self.v2_temporal_quality_floor = min(max(float(temporal_quality_floor), 0.0), 1.0)
+        self.v2_counterfactual_weight = float(counterfactual_weight)
+        self.v2_counterfactual_margin = float(counterfactual_margin)
 
     def forward(self, model_output, views):
         total_loss, details, aux = super().forward(model_output, views)
         depth_coarse = _stack_output_field(model_output, "depth_coarse")
         delta_log = _stack_output_field(model_output, "depth_delta_log")
         reliability = _stack_output_field(model_output, "event_reliability")
+        reliability_reverse = _stack_output_field(model_output, "event_reliability_reverse_time")
+        reliability_swap = _stack_output_field(model_output, "event_reliability_swap_polarity")
+        temporal_quality = _stack_output_field(model_output, "event_temporal_quality")
         presence = _stack_output_field(model_output, "event_presence")
         if depth_coarse is None or delta_log is None or reliability is None or presence is None:
             details.update(
@@ -95,12 +104,16 @@ class TemporalReliabilityV2LossMixin:
                     "v2_extra_loss": 0.0,
                     "residual_target_loss": 0.0,
                     "gate_reliability_loss": 0.0,
+                    "counterfactual_reliability_loss": 0.0,
                     "non_detail_residual_smooth_loss": 0.0,
                     "non_detail_residual_second_order_loss": 0.0,
                     "ldr_final_depth_loss": 0.0,
                     "ldr_final_normal_loss": 0.0,
                     "ldr_correction_consistency_loss": 0.0,
                     "ldr_pair_count": 0.0,
+                    "event_temporal_quality_mean": 0.0,
+                    "event_reverse_reliability_mean": 0.0,
+                    "event_swap_reliability_mean": 0.0,
                 }
             )
             return total_loss, details, aux
@@ -112,6 +125,15 @@ class TemporalReliabilityV2LossMixin:
         depth_coarse = depth_coarse.to(device=device, dtype=dtype)
         delta_log = delta_log.to(device=device, dtype=dtype)
         reliability = reliability.to(device=device, dtype=dtype)
+        reliability_reverse = (
+            reliability_reverse.to(device=device, dtype=dtype) if reliability_reverse is not None else None
+        )
+        reliability_swap = reliability_swap.to(device=device, dtype=dtype) if reliability_swap is not None else None
+        temporal_quality = (
+            temporal_quality.to(device=device, dtype=dtype).detach().clamp(0.0, 1.0)
+            if temporal_quality is not None
+            else torch.ones_like(reliability).detach()
+        )
         presence = presence.to(device=device, dtype=dtype).detach().clamp(0.0, 1.0)
         depth_gt = fe.stack_view_field(views, "depthmap").to(device=device, dtype=dtype)
         intrinsics = fe.stack_view_field(views, "camera_intrinsics").to(device=device, dtype=dtype)
@@ -156,7 +178,10 @@ class TemporalReliabilityV2LossMixin:
             target_weight,
         )
 
-        reliability_target = self.v2_gate_need_floor + (1.0 - self.v2_gate_need_floor) * correction_need
+        quality_gain = self.v2_temporal_quality_floor + (1.0 - self.v2_temporal_quality_floor) * temporal_quality.unsqueeze(2)
+        reliability_target = self.v2_gate_need_floor + (
+            1.0 - self.v2_gate_need_floor
+        ) * correction_need * quality_gain
         reliability_weight = valid_weight * presence.unsqueeze(2) * (
             1.0 + self.v2_gate_positive_boost * correction_need
         )
@@ -173,6 +198,22 @@ class TemporalReliabilityV2LossMixin:
             delta_log,
             valid_mask,
             detail_support,
+        )
+        counterfactual_terms = []
+        contrast_weight = valid_weight * presence.unsqueeze(2) * correction_need.detach()
+        for counterfactual_reliability in (reliability_reverse, reliability_swap):
+            if counterfactual_reliability is None:
+                continue
+            margin_loss = F.relu(
+                self.v2_counterfactual_margin
+                + counterfactual_reliability.unsqueeze(2)
+                - reliability.unsqueeze(2)
+            )
+            counterfactual_terms.append(_weighted_mean(margin_loss, contrast_weight))
+        counterfactual_loss = (
+            torch.stack(counterfactual_terms).mean()
+            if counterfactual_terms
+            else depth_pred.new_tensor(0.0)
         )
 
         groups = {}
@@ -216,6 +257,7 @@ class TemporalReliabilityV2LossMixin:
             + self.v2_gate_reliability_weight * gate_reliability_loss
             + self.v2_non_detail_smooth_weight * residual_smooth_loss
             + self.v2_non_detail_second_order_weight * residual_second_order_loss
+            + self.v2_counterfactual_weight * counterfactual_loss
             + self.v2_ldr_depth_weight * ldr_depth_loss
             + self.v2_ldr_normal_weight * ldr_normal_loss
             + self.v2_ldr_correction_weight * ldr_correction_loss
@@ -226,12 +268,21 @@ class TemporalReliabilityV2LossMixin:
         entropy = _stack_output_field(model_output, "event_entropy")
         aux["event_reliability"] = reliability.detach()
         aux["event_persistence"] = persistence.detach() if persistence is not None else presence.detach()
+        aux["event_temporal_quality"] = temporal_quality.detach()
         details.update(
             {
                 "v2_extra_loss": float(v2_extra.detach()),
                 "residual_target_loss": float(residual_target_loss.detach()),
                 "gate_reliability_loss": float(gate_reliability_loss.detach()),
+                "counterfactual_reliability_loss": float(counterfactual_loss.detach()),
                 "event_reliability_mean": float(_weighted_mean(reliability.unsqueeze(2), valid_weight).detach()),
+                "event_reverse_reliability_mean": float(reliability_reverse.mean().detach())
+                if reliability_reverse is not None
+                else 0.0,
+                "event_swap_reliability_mean": float(reliability_swap.mean().detach())
+                if reliability_swap is not None
+                else 0.0,
+                "event_temporal_quality_mean": float(_weighted_mean(temporal_quality.unsqueeze(2), valid_weight).detach()),
                 "event_persistence_mean": float(persistence.mean().detach()) if persistence is not None else 0.0,
                 "event_entropy_mean": float(entropy.mean().detach()) if entropy is not None else 0.0,
                 "event_conditioned_delta_log_abs": float(
@@ -271,6 +322,9 @@ def make_configured_reliability_v2_loss(cfg):
                     getattr(cfg.loss, "v2_non_detail_second_order_weight", 0.05)
                 ),
                 target_detail_threshold=float(getattr(cfg.loss, "v2_target_detail_threshold", 0.02)),
+                temporal_quality_floor=float(getattr(cfg.loss, "v2_temporal_quality_floor", 0.25)),
+                counterfactual_weight=float(getattr(cfg.loss, "v2_counterfactual_weight", 0.20)),
+                counterfactual_margin=float(getattr(cfg.loss, "v2_counterfactual_margin", 0.08)),
             )
 
     return ConfiguredTemporalReliabilityV2Loss

@@ -53,6 +53,11 @@ def run(cfg: OmegaConf):
             "residual_second_order_weight": 0.20,
             "residual_abs_weight": 0.01,
             "residual_smooth_alpha": 10.0,
+            "final_grid_weight": 0.08,
+            "final_phase_weight": 0.04,
+            "final_grid_patch_size": 14,
+            "final_grid_band": 1,
+            "final_grid_detail_threshold": 0.02,
         },
     )
 

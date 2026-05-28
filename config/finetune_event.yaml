@@ -43,8 +43,8 @@ model:
   exposure_match_dim: 8
   exposure_agreement_floor: 0.25
   exposure_forward_batch_chunk: 1
-  event_reliability_floor: 0.10
-  event_reliability_init_bias: 2.0
+  event_reliability_floor: 0.0
+  event_reliability_init_bias: 0.0
   refiner_refine_points: true
   refiner_use_checkpoint: true
 

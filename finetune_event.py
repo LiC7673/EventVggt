@@ -233,8 +233,8 @@ def build_event_model(cfg) -> nn.Module:
             event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
             residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.015)),
             gate_downsample=int(getattr(cfg.model, "event_gate_downsample", 4)),
-            event_reliability_floor=float(getattr(cfg.model, "event_reliability_floor", 0.10)),
-            event_reliability_init_bias=float(getattr(cfg.model, "event_reliability_init_bias", 2.0)),
+            event_reliability_floor=float(getattr(cfg.model, "event_reliability_floor", 0.0)),
+            event_reliability_init_bias=float(getattr(cfg.model, "event_reliability_init_bias", 0.0)),
             forward_batch_chunk=int(getattr(cfg.model, "exposure_forward_batch_chunk", 1)),
             refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
             use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
@@ -1313,6 +1313,13 @@ def save_training_visuals(
                 make_labeled_panel(
                     "event_persistence",
                     depth_to_uint8(aux["event_persistence"][sample_idx, frame_id], valid_mask),
+                )
+            )
+        if "event_temporal_quality" in aux:
+            panels.append(
+                make_labeled_panel(
+                    "event_quality",
+                    depth_to_uint8(aux["event_temporal_quality"][sample_idx, frame_id], valid_mask),
                 )
             )
         panels.extend(

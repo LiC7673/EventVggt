@@ -46,6 +46,11 @@ DEFAULT_EVENT_LOSS = {
     "residual_second_order_weight": 0.0,
     "residual_abs_weight": 0.0,
     "residual_smooth_alpha": 10.0,
+    "final_grid_weight": 0.0,
+    "final_phase_weight": 0.0,
+    "final_grid_patch_size": 14,
+    "final_grid_band": 1,
+    "final_grid_detail_threshold": 0.02,
 }
 
 
@@ -119,6 +124,11 @@ def make_configured_loss(cfg):
                 residual_second_order_weight=float(getattr(cfg.loss, "residual_second_order_weight", 0.0)),
                 residual_abs_weight=float(getattr(cfg.loss, "residual_abs_weight", 0.0)),
                 residual_smooth_alpha=float(getattr(cfg.loss, "residual_smooth_alpha", 10.0)),
+                final_grid_weight=float(getattr(cfg.loss, "final_grid_weight", 0.0)),
+                final_phase_weight=float(getattr(cfg.loss, "final_phase_weight", 0.0)),
+                final_grid_patch_size=int(getattr(cfg.loss, "final_grid_patch_size", 14)),
+                final_grid_band=int(getattr(cfg.loss, "final_grid_band", 1)),
+                final_grid_detail_threshold=float(getattr(cfg.loss, "final_grid_detail_threshold", 0.02)),
                 **kwargs,
             )
 
@@ -145,6 +155,8 @@ def launch_mul_loss(cfg, *, weights, exp_name):
         f"residual_smooth={float(getattr(cfg.loss, 'residual_smooth_weight', 0.0)):.4f} "
         f"residual_second_order={float(getattr(cfg.loss, 'residual_second_order_weight', 0.0)):.4f} "
         f"residual_abs={float(getattr(cfg.loss, 'residual_abs_weight', 0.0)):.4f} "
+        f"final_grid={float(getattr(cfg.loss, 'final_grid_weight', 0.0)):.4f} "
+        f"final_phase={float(getattr(cfg.loss, 'final_phase_weight', 0.0)):.4f} "
         f"detail_gt_normal_source={str(getattr(cfg.loss, 'detail_gt_normal_source', 'auto'))} "
         f"event_support_mode={str(getattr(cfg.loss, 'mv_event_support_mode', 'abs'))} "
         f"event_top_fraction={float(getattr(cfg.loss, 'mv_event_top_fraction', 0.0)):.3f} "

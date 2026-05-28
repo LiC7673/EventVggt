@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import finetune_event as fe
+from mul_loss_fine.antigrid_loss import final_depth_patch_phase_antigrid_loss
 
 
 def _as_weight_map(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
@@ -556,6 +557,11 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         residual_second_order_weight: float = 0.0,
         residual_abs_weight: float = 0.0,
         residual_smooth_alpha: float = 10.0,
+        final_grid_weight: float = 0.0,
+        final_phase_weight: float = 0.0,
+        final_grid_patch_size: int = 14,
+        final_grid_band: int = 1,
+        final_grid_detail_threshold: float = 0.02,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -577,6 +583,11 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         self.residual_second_order_weight = float(residual_second_order_weight)
         self.residual_abs_weight = float(residual_abs_weight)
         self.residual_smooth_alpha = float(residual_smooth_alpha)
+        self.final_grid_weight = float(final_grid_weight)
+        self.final_phase_weight = float(final_phase_weight)
+        self.final_grid_patch_size = max(2, int(final_grid_patch_size))
+        self.final_grid_band = max(1, int(final_grid_band))
+        self.final_grid_detail_threshold = float(final_grid_detail_threshold)
         self.mv_loss = EventSupportedMultiViewLoss(
             normal_weight=mv_normal_weight,
             presence_weight=mv_presence_weight,
@@ -618,6 +629,8 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                 self.residual_smooth_weight,
                 self.residual_second_order_weight,
                 self.residual_abs_weight,
+                self.final_grid_weight,
+                self.final_phase_weight,
             )
         )
 
@@ -820,6 +833,9 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                     "depth_residual_abs": 0.0,
                     "depth_residual_relative_abs": 0.0,
                     "residual_regularization_loss": 0.0,
+                    "final_grid_suppress_loss": 0.0,
+                    "final_patch_phase_loss": 0.0,
+                    "final_antigrid_loss": 0.0,
                     "event_gate_mean": 0.0,
                     "coarse_depth_loss": 0.0,
                     "depth_refinement_gain": 0.0,
@@ -990,6 +1006,32 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             + self.residual_second_order_weight * residual_second_order_loss
             + self.residual_abs_weight * residual_abs
         )
+        final_grid_loss = depth_pred.new_tensor(0.0)
+        final_phase_loss = depth_pred.new_tensor(0.0)
+        final_antigrid_loss = depth_pred.new_tensor(0.0)
+        if self.final_grid_weight > 0.0 or self.final_phase_weight > 0.0:
+            grid_gt_normals = fe.depth_to_normals(depth_gt.clamp_min(self.depth_min), intrinsics_gt)
+            grid_gt_grad = _normal_gradient_magnitude(grid_gt_normals.flatten(0, 1)).view(
+                depth_pred.shape[0], depth_pred.shape[1], 1, height, width
+            )
+            grid_detail_support = _normalize_detail_support(
+                grid_gt_grad,
+                valid_mask,
+                threshold=self.final_grid_detail_threshold,
+                power=1.0,
+            )
+            final_grid_loss, final_phase_loss = final_depth_patch_phase_antigrid_loss(
+                depth_pred,
+                valid_mask,
+                grid_detail_support,
+                patch_size=self.final_grid_patch_size,
+                band=self.final_grid_band,
+                eps=self.depth_min,
+            )
+            final_antigrid_loss = (
+                self.final_grid_weight * final_grid_loss + self.final_phase_weight * final_phase_loss
+            )
+        residual_regularization_loss = residual_regularization_loss + final_antigrid_loss
         total_extra = total_extra + residual_regularization_loss
         details.update(
             {
@@ -998,6 +1040,9 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                 "depth_residual_abs": float(residual_abs.detach()),
                 "depth_residual_relative_abs": float(residual_relative_abs.detach()),
                 "residual_regularization_loss": float(residual_regularization_loss.detach()),
+                "final_grid_suppress_loss": float(final_grid_loss.detach()),
+                "final_patch_phase_loss": float(final_phase_loss.detach()),
+                "final_antigrid_loss": float(final_antigrid_loss.detach()),
             }
         )
         event_gate = _stack_output_field(model_output, "event_gate")

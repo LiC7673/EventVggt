@@ -35,10 +35,10 @@ def run(cfg: OmegaConf):
     cfg.model.variant = "temporal_reliability_v2"
     cfg.model.event_num_bins = int(getattr(cfg.data, "event_resize_bins", 10))
     cfg.model.event_hidden_dim = 16
-    cfg.model.refiner_residual_scale = 0.015
+    cfg.model.refiner_residual_scale = 0.02
     cfg.model.event_gate_downsample = 4
-    cfg.model.event_reliability_floor = float(getattr(cfg.model, "event_reliability_floor", 0.10))
-    cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", 2.0))
+    cfg.model.event_reliability_floor = float(getattr(cfg.model, "event_reliability_floor", 0.0))
+    cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", 0.0))
     cfg.model.exposure_forward_batch_chunk = int(getattr(cfg.model, "exposure_forward_batch_chunk", 1))
 
     # Keep the strong coarse predictor fixed; the event-conditioned correction
@@ -73,16 +73,24 @@ def run(cfg: OmegaConf):
         "residual_smooth_weight": 0.0,
         "residual_second_order_weight": 0.0,
         "residual_abs_weight": 0.0,
-        "v2_residual_target_weight": 0.40,
-        "v2_gate_reliability_weight": 0.10,
+        "final_grid_weight": 0.08,
+        "final_phase_weight": 0.04,
+        "final_grid_patch_size": 14,
+        "final_grid_band": 1,
+        "final_grid_detail_threshold": 0.02,
+        "v2_residual_target_weight": 0.70,
+        "v2_gate_reliability_weight": 0.20,
         "v2_gate_need_floor": 0.10,
         "v2_gate_positive_boost": 2.0,
+        "v2_temporal_quality_floor": 0.25,
+        "v2_counterfactual_weight": 0.20,
+        "v2_counterfactual_margin": 0.08,
         "v2_ldr_final_depth_weight": 0.10,
         "v2_ldr_final_normal_weight": 0.10,
         "v2_ldr_correction_weight": 0.20,
         "v2_ldr_base_weight": 0.10,
-        "v2_non_detail_smooth_weight": 0.05,
-        "v2_non_detail_second_order_weight": 0.05,
+        "v2_non_detail_smooth_weight": 0.03,
+        "v2_non_detail_second_order_weight": 0.03,
         "v2_target_detail_threshold": 0.02,
     }
     cfg = configure_mul_loss_cfg(
