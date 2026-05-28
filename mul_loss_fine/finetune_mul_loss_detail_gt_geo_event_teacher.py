@@ -1,11 +1,16 @@
 """Train geometry-contributing event reliability with a high-exposure teacher."""
 
 from pathlib import Path
+import sys
 
 import hydra
 import numpy as np
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 import finetune_event as fe
 from eventvggt.datasets.my_event_dataset import event_multiview_collate
