@@ -49,7 +49,10 @@ if [[ "${VERIFY_AFTER_TRAIN}" == "true" ]]; then
     --event-gate-downsample 4 \
     --event-gate-smooth-kernel 9 \
     --proposal-depth-lowpass \
+    --no-proposal-use-depth-hf \
     --event-proposal-weight 0.0 \
+    --final-degrid-strength 0.15 \
+    --final-degrid-kernel 5 \
     --num-views "${NUM_VIEWS}" \
     --ldr-event-id "${EVAL_LDR_ID}" \
     --samples-per-scene 1 \

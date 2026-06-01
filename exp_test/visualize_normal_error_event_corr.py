@@ -416,6 +416,7 @@ def build_model(args, device: torch.device):
             event_gate_downsample=args.event_gate_downsample,
             event_gate_smooth_kernel=getattr(args, "event_gate_smooth_kernel", 5),
             proposal_depth_lowpass=getattr(args, "proposal_depth_lowpass", False),
+            proposal_use_depth_hf=getattr(args, "proposal_use_depth_hf", False),
             head_frames_chunk_size=args.head_frames_chunk_size,
             refiner_hidden_dim=args.refiner_hidden_dim,
             refiner_num_blocks=args.refiner_num_blocks,
@@ -423,6 +424,8 @@ def build_model(args, device: torch.device):
             refiner_refine_points=args.refiner_refine_points,
             refiner_use_checkpoint=False,
             event_proposal_weight=getattr(args, "event_proposal_weight", 0.0),
+            final_degrid_strength=getattr(args, "final_degrid_strength", 0.0),
+            final_degrid_kernel=getattr(args, "final_degrid_kernel", 5),
         )
     )
     model = fe.build_event_model(cfg).to(device)
@@ -713,6 +716,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-fusion-scale", type=float, default=1.0)
     parser.add_argument("--event-gate-downsample", type=int, default=4)
     parser.add_argument("--event-gate-smooth-kernel", type=int, default=5)
+    parser.add_argument("--proposal-depth-lowpass", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--proposal-use-depth-hf", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--event-proposal-weight", type=float, default=0.0)
+    parser.add_argument("--final-degrid-strength", type=float, default=0.0)
+    parser.add_argument("--final-degrid-kernel", type=int, default=5)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)
     parser.add_argument("--refiner-hidden-dim", type=int, default=16)
     parser.add_argument("--refiner-num-blocks", type=int, default=2)

@@ -143,6 +143,11 @@ def apply_checkpoint_config(args) -> Dict:
         "event_gate_smooth_kernel": "event_gate_smooth_kernel",
         "event_reliability_floor": "event_reliability_floor",
         "event_reliability_init_bias": "event_reliability_init_bias",
+        "proposal_depth_lowpass": "proposal_depth_lowpass",
+        "proposal_use_depth_hf": "proposal_use_depth_hf",
+        "event_proposal_weight": "event_proposal_weight",
+        "final_degrid_strength": "final_degrid_strength",
+        "final_degrid_kernel": "final_degrid_kernel",
         "head_frames_chunk_size": "head_frames_chunk_size",
         "refiner_hidden_dim": "refiner_hidden_dim",
         "refiner_num_blocks": "refiner_num_blocks",
@@ -177,7 +182,10 @@ def build_model(args, device: torch.device) -> Tuple[torch.nn.Module, Dict[str, 
             event_reliability_floor=args.event_reliability_floor,
             event_reliability_init_bias=args.event_reliability_init_bias,
             proposal_depth_lowpass=args.proposal_depth_lowpass,
+            proposal_use_depth_hf=args.proposal_use_depth_hf,
             event_proposal_weight=args.event_proposal_weight,
+            final_degrid_strength=args.final_degrid_strength,
+            final_degrid_kernel=args.final_degrid_kernel,
             head_frames_chunk_size=args.head_frames_chunk_size,
             refiner_hidden_dim=args.refiner_hidden_dim,
             refiner_num_blocks=args.refiner_num_blocks,
@@ -652,7 +660,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-reliability-floor", type=float, default=0.30)
     parser.add_argument("--event-reliability-init-bias", type=float, default=0.5)
     parser.add_argument("--proposal-depth-lowpass", action="store_true")
+    parser.add_argument("--proposal-use-depth-hf", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--event-proposal-weight", type=float, default=0.0)
+    parser.add_argument("--final-degrid-strength", type=float, default=0.0)
+    parser.add_argument("--final-degrid-kernel", type=int, default=5)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)
     parser.add_argument("--refiner-hidden-dim", type=int, default=16)
     parser.add_argument("--refiner-num-blocks", type=int, default=2)

@@ -36,8 +36,11 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         reliability_floor: float = 0.0,
         reliability_init_bias: float = 0.0,
         proposal_depth_lowpass: bool = False,
+        proposal_use_depth_hf: bool = False,
         event_proposal_weight: float = 0.0,
         gate_smooth_kernel: int = 5,
+        final_degrid_strength: float = 0.0,
+        final_degrid_kernel: int = 5,
         refine_points: bool = True,
         use_checkpoint: bool = True,
         min_depth: float = 1e-6,
@@ -54,10 +57,15 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         )
         self.reliability_floor = min(max(float(reliability_floor), 0.0), 1.0)
         self.proposal_depth_lowpass = bool(proposal_depth_lowpass)
+        self.proposal_use_depth_hf = bool(proposal_use_depth_hf)
         self.event_proposal_weight = float(event_proposal_weight)
         self.gate_smooth_kernel = max(1, int(gate_smooth_kernel))
         if self.gate_smooth_kernel % 2 == 0:
             self.gate_smooth_kernel += 1
+        self.final_degrid_strength = min(max(float(final_degrid_strength), 0.0), 1.0)
+        self.final_degrid_kernel = max(1, int(final_degrid_kernel))
+        if self.final_degrid_kernel % 2 == 0:
+            self.final_degrid_kernel += 1
         groups = _group_count(hidden_dim)
         self.num_temporal_stats = 8
         self.temporal_reliability = nn.Sequential(
@@ -136,10 +144,15 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         depth_feature = (log_depth - mean) / std
         proposal_depth = depth_feature
         if self.proposal_depth_lowpass:
-            proposal_depth = F.avg_pool2d(depth_feature, kernel_size=5, stride=1, padding=2)
-        depth_dx = F.pad(proposal_depth[..., :, 1:] - proposal_depth[..., :, :-1], (1, 0, 0, 0))
-        depth_dy = F.pad(proposal_depth[..., 1:, :] - proposal_depth[..., :-1, :], (0, 0, 1, 0))
-        depth_hf = proposal_depth - F.avg_pool2d(proposal_depth, kernel_size=7, stride=1, padding=3)
+            proposal_depth = F.avg_pool2d(depth_feature, kernel_size=7, stride=1, padding=3)
+        if self.proposal_use_depth_hf:
+            depth_dx = F.pad(proposal_depth[..., :, 1:] - proposal_depth[..., :, :-1], (1, 0, 0, 0))
+            depth_dy = F.pad(proposal_depth[..., 1:, :] - proposal_depth[..., :-1, :], (0, 0, 1, 0))
+            depth_hf = proposal_depth - F.avg_pool2d(proposal_depth, kernel_size=7, stride=1, padding=3)
+        else:
+            depth_dx = torch.zeros_like(proposal_depth)
+            depth_dy = torch.zeros_like(proposal_depth)
+            depth_hf = torch.zeros_like(proposal_depth)
         proposal_input = torch.cat([image_flat, proposal_depth, depth_dx, depth_dy, depth_hf], dim=1)
 
         if self.use_checkpoint and self.training and torch.is_grad_enabled():
@@ -184,7 +197,15 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
                 * self.event_proposal_weight
             )
         delta_log = rgb_delta_log + event_delta_log
-        refined_flat = depth_flat.to(dtype=delta_log.dtype) * torch.exp(delta_log)
+        final_log_depth = log_depth.to(dtype=delta_log.dtype) + delta_log
+        if self.final_degrid_strength > 0.0:
+            final_log_depth = self._suppress_final_grid(
+                final_log_depth,
+                event_gate=event_gate,
+                strength=self.final_degrid_strength,
+            )
+            delta_log = final_log_depth - log_depth.to(dtype=final_log_depth.dtype)
+        refined_flat = torch.exp(final_log_depth)
         refined = refined_flat.permute(0, 2, 3, 1).reshape(batch, seq_len, height, width, 1)
         refined = refined.to(dtype=depth.dtype).clamp_min(self.min_depth)
         residual = refined - depth
@@ -216,6 +237,26 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
             stride=1,
             padding=self.gate_smooth_kernel // 2,
         )
+
+    def _suppress_final_grid(
+        self,
+        final_log_depth: torch.Tensor,
+        *,
+        event_gate: torch.Tensor,
+        strength: float,
+    ) -> torch.Tensor:
+        if self.final_degrid_kernel <= 1 or strength <= 0.0:
+            return final_log_depth
+        smooth = F.avg_pool2d(
+            final_log_depth,
+            kernel_size=self.final_degrid_kernel,
+            stride=1,
+            padding=self.final_degrid_kernel // 2,
+        )
+        # Preserve event-approved detail while damping unsupported periodic
+        # phase texture inherited from the coarse depth head.
+        damp = (1.0 - event_gate.detach()).clamp(0.0, 1.0)
+        return final_log_depth - float(strength) * damp * (final_log_depth - smooth)
 
     def _temporal_reliability(
         self,
@@ -313,8 +354,11 @@ class StreamVGGT(TemporalGatedStreamVGGT):
         event_reliability_floor: float = 0.0,
         event_reliability_init_bias: float = 0.0,
         proposal_depth_lowpass: bool = False,
+        proposal_use_depth_hf: bool = False,
         event_proposal_weight: float = 0.0,
         event_gate_smooth_kernel: int = 5,
+        final_degrid_strength: float = 0.0,
+        final_degrid_kernel: int = 5,
         forward_batch_chunk: int = 1,
         refine_points: bool = True,
         use_checkpoint: bool = True,
@@ -341,8 +385,11 @@ class StreamVGGT(TemporalGatedStreamVGGT):
             reliability_floor=event_reliability_floor,
             reliability_init_bias=event_reliability_init_bias,
             proposal_depth_lowpass=proposal_depth_lowpass,
+            proposal_use_depth_hf=proposal_use_depth_hf,
             event_proposal_weight=event_proposal_weight,
             gate_smooth_kernel=event_gate_smooth_kernel,
+            final_degrid_strength=final_degrid_strength,
+            final_degrid_kernel=final_degrid_kernel,
             refine_points=refine_points,
             use_checkpoint=use_checkpoint,
         )
