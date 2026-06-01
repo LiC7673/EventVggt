@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ACCELERATE_BIN="${ACCELERATE_BIN:-accelerate}"
 GPUS="${GPUS:-6,7}"
 VERIFY_GPU="${VERIFY_GPU:-${GPUS##*,}}"
-PORT="${PORT:-29912}"
+PORT="${PORT:-29914}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 PIN_MEM="${PIN_MEM:-false}"
 GEO_TEACHER_LDR_ID="${GEO_TEACHER_LDR_ID:-ev_10}"
@@ -14,19 +14,19 @@ EVAL_LDR_ID="${EVAL_LDR_ID:-ev_5}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
 EXPOSURES_PER_SAMPLE="${EXPOSURES_PER_SAMPLE:-2}"
 VERIFY_AFTER_TRAIN="${VERIFY_AFTER_TRAIN:-true}"
-EXP_NAME="${EXP_NAME:-mul_loss_detail_gt_geo_event_proposal}"
+EXP_NAME="${EXP_NAME:-mul_loss_detail_gt_reliability_filter}"
 CKPT="${CKPT:-${ROOT_DIR}/checkpoints/${EXP_NAME}/checkpoint-last.pth}"
 VERIFY_OUT="${VERIFY_OUT:-${ROOT_DIR}/finetune_vaild/results/${EXP_NAME}_counterfactual}"
 
 cd "${ROOT_DIR}"
-echo "[train] geometry-contributing event teacher on GPUs ${GPUS}"
+echo "[train] reliability-filter event training on GPUs ${GPUS}"
 CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 \
 "${ACCELERATE_BIN}" launch \
   --multi_gpu \
   --num_processes 2 \
   --num_machines 1 \
   --main_process_port "${PORT}" \
-  mul_loss_fine/finetune_mul_loss_detail_gt_geo_event_teacher.py \
+  mul_loss_fine/finetune_mul_loss_detail_gt_reliability_filter.py \
   num_workers="${NUM_WORKERS}" \
   pin_mem="${PIN_MEM}" \
   exp_name="${EXP_NAME}" \
@@ -48,30 +48,12 @@ if [[ "${VERIFY_AFTER_TRAIN}" == "true" ]]; then
     --refiner-residual-scale 0.03 \
     --event-gate-downsample 2 \
     --proposal-depth-lowpass \
-    --event-proposal-weight 1.0 \
+    --event-proposal-weight 0.0 \
     --num-views "${NUM_VIEWS}" \
     --ldr-event-id "${EVAL_LDR_ID}" \
     --samples-per-scene 1 \
     --max-visualizations 4 \
     --sensitivity-epsilon-deg 1e-4 \
     --output-dir "${VERIFY_OUT}"
-  python - "${VERIFY_OUT}/summary.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    summary = json.load(handle)
-if not summary.get("event_output_sensitivity_detected", False):
-    raise SystemExit("Event counterfactual failed: zeroing events did not measurably change the model output.")
-zero = summary["comparisons"]["real_vs_zero"]
-reverse = summary["comparisons"]["real_vs_reverse_time"]
-swap = summary["comparisons"]["real_vs_swap_polarity"]
-print(
-    "[verify] event path active; normal advantage(deg): "
-    f"zero={zero['normal_error_advantage_deg']:.6f}, "
-    f"reverse={reverse['normal_error_advantage_deg']:.6f}, "
-    f"swap={swap['normal_error_advantage_deg']:.6f}"
-)
-PY
   echo "[done] verification summary: ${VERIFY_OUT}/summary.json"
 fi

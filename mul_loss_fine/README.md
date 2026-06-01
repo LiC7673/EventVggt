@@ -22,7 +22,7 @@ weight for multi-view geometry/detail consistency.
 | `finetune_mul_loss_detail_gt_temporal_gated.py` | Highlight-ripple resistant variant: events provide a low-pass gate, while RGB/coarse depth proposes residual geometry |
 | `finetune_mul_loss_detail_gt_temporal_gated_multildr.py` | Exposure-invariant gate: paired LDR training matches stable RGB/event cues; evaluation remains single LDR |
 | `finetune_mul_loss_detail_gt_temporal_reliability_v2.py` | Reliability V2: temporal event statistics gate GT-taught depth corrections and multi-LDR consistency |
-| `finetune_mul_loss_detail_gt_geo_event_teacher.py` | High-exposure teacher learns geometry-contributing events; LDR students inherit the reliability filter |
+| `finetune_mul_loss_detail_gt_geo_event_teacher.py` | High-exposure teacher learns geometry-contributing events; LDR students inherit a reliability-filtered event residual proposal |
 | `finetune_mul_loss_detail_gt_temporal_adapter.py` | Initialize from uniform, freeze RGB/heads, and train only temporal event tokens for incremental detail gain |
 | `finetune_mul_loss_detail_gt_salient.py` | Strong GT detail supervision focused on salient high-frequency geometry |
 | `finetune_mul_loss_mv_all_detail_gt.py` | Cross-view event losses + GT detail supervision |
@@ -165,7 +165,9 @@ Useful overrides are `GEO_TEACHER_LDR_ID=ev_10`,
 `GEO_STUDENT_LDR_IDS=ev_2,ev_5`, `EVAL_LDR_ID=ev_5`, and `NUM_VIEWS=4`.
 Watch `geo_event_reliability_pos_mean` become larger than
 `geo_event_reliability_neg_mean`; that gap means non-geometric event support is
-being rejected before it reaches the LDR residual.
+being rejected before it reaches the LDR residual. Also check
+`geo_event_delta_abs` and `geo_event_delta_loss`; if `geo_event_delta_abs` stays
+near zero, the event branch is still not writing geometry.
 
 For the strictest event-contribution check, train only the temporal event
 adapter on top of the converged uniform checkpoint:

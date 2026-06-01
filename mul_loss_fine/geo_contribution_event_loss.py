@@ -51,6 +51,7 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
         geo_target_weight: float,
         geo_reject_weight: float,
         teacher_consistency_weight: float,
+        event_delta_weight: float,
         geo_teacher_boost: float,
         geo_detail_threshold: float,
         geo_positive_floor: float,
@@ -60,6 +61,7 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
         self.geo_target_weight = float(geo_target_weight)
         self.geo_reject_weight = float(geo_reject_weight)
         self.geo_teacher_consistency_weight = float(teacher_consistency_weight)
+        self.geo_event_delta_weight = float(event_delta_weight)
         self.geo_teacher_boost = float(geo_teacher_boost)
         self.geo_detail_threshold = float(geo_detail_threshold)
         self.geo_positive_floor = min(max(float(geo_positive_floor), 0.0), 1.0)
@@ -71,16 +73,21 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
         temporal_quality = _stack_output_field(model_output, "event_temporal_quality")
         presence = _stack_output_field(model_output, "event_presence")
         depth_coarse = _stack_output_field(model_output, "depth_coarse")
+        event_delta = _stack_output_field(model_output, "event_delta_log")
+        rgb_delta = _stack_output_field(model_output, "rgb_delta_log")
         if reliability is None or presence is None or depth_coarse is None:
             details.update(
                 {
                     "geo_event_loss": 0.0,
                     "geo_event_target_loss": 0.0,
                     "geo_event_reject_loss": 0.0,
+                    "geo_event_delta_loss": 0.0,
                     "geo_teacher_consistency_loss": 0.0,
                     "geo_event_target_mean": 0.0,
                     "geo_event_reliability_pos_mean": 0.0,
                     "geo_event_reliability_neg_mean": 0.0,
+                    "geo_event_delta_abs": 0.0,
+                    "geo_rgb_delta_abs": 0.0,
                     "geo_teacher_pair_count": 0.0,
                 }
             )
@@ -96,6 +103,8 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
             temporal_quality = torch.ones_like(reliability)
         temporal_quality = temporal_quality.to(device=device, dtype=dtype).detach().clamp(0.0, 1.0)
         depth_coarse = depth_coarse.to(device=device, dtype=dtype)
+        event_delta = event_delta.to(device=device, dtype=dtype) if event_delta is not None else None
+        rgb_delta = rgb_delta.to(device=device, dtype=dtype) if rgb_delta is not None else None
 
         depth_gt = fe.stack_view_field(views, "depthmap").to(device=device, dtype=dtype)
         intrinsics = fe.stack_view_field(views, "camera_intrinsics").to(device=device, dtype=dtype)
@@ -113,11 +122,11 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
             threshold=self.geo_detail_threshold,
             power=1.0,
         ).detach()
-        target_delta = (
+        signed_target_delta = (
             torch.log(depth_gt.clamp_min(self.depth_min))
             - torch.log(depth_coarse.detach().clamp_min(self.depth_min))
-        ).abs()
-        target_strength = (target_delta / self.v2_residual_scale).unsqueeze(2).clamp(0.0, 1.0)
+        ).clamp(-self.v2_residual_scale, self.v2_residual_scale)
+        target_strength = (signed_target_delta.abs() / self.v2_residual_scale).unsqueeze(2).clamp(0.0, 1.0)
         coarse_cos_error = 1.0 - (
             F.normalize(coarse_normals.detach(), dim=-1, eps=1e-6)
             * F.normalize(gt_normals.detach(), dim=-1, eps=1e-6)
@@ -182,11 +191,30 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
                 )
                 pair_count += 1
         consistency_loss = torch.stack(consistency_terms).mean() if consistency_terms else depth_pred.new_tensor(0.0)
+        event_delta_loss = depth_pred.new_tensor(0.0)
+        event_delta_abs = depth_pred.new_tensor(0.0)
+        rgb_delta_abs = depth_pred.new_tensor(0.0)
+        if event_delta is not None:
+            if rgb_delta is not None:
+                event_target = (signed_target_delta - rgb_delta.detach()).clamp(
+                    -self.v2_residual_scale,
+                    self.v2_residual_scale,
+                )
+                rgb_delta_abs = _weighted_mean(rgb_delta.abs().unsqueeze(2), valid_weight)
+            else:
+                event_target = signed_target_delta
+            event_delta_weight = valid_weight * event_weight * (0.10 + geometry_need)
+            event_delta_loss = _weighted_mean(
+                ((event_delta - event_target).abs() / self.v2_residual_scale).unsqueeze(2),
+                event_delta_weight * sample_boost,
+            )
+            event_delta_abs = _weighted_mean(event_delta.abs().unsqueeze(2), valid_weight)
 
         geo_event_loss = (
             self.geo_target_weight * target_loss
             + self.geo_reject_weight * reject_loss
             + self.geo_teacher_consistency_weight * consistency_loss
+            + self.geo_event_delta_weight * event_delta_loss
         )
         total_loss = total_loss + geo_event_loss
 
@@ -197,6 +225,7 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
                 "geo_event_loss": float(geo_event_loss.detach()),
                 "geo_event_target_loss": float(target_loss.detach()),
                 "geo_event_reject_loss": float(reject_loss.detach()),
+                "geo_event_delta_loss": float(event_delta_loss.detach()),
                 "geo_teacher_consistency_loss": float(consistency_loss.detach()),
                 "geo_event_target_mean": float(_weighted_mean(geo_target, valid_weight).detach()),
                 "geo_event_reliability_pos_mean": float(
@@ -205,6 +234,8 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
                 "geo_event_reliability_neg_mean": float(
                     _weighted_mean(reliability.unsqueeze(2), neg_weight).detach()
                 ),
+                "geo_event_delta_abs": float(event_delta_abs.detach()),
+                "geo_rgb_delta_abs": float(rgb_delta_abs.detach()),
                 "geo_teacher_pair_count": float(pair_count),
                 "extra_loss_total": float(details.get("extra_loss_total", 0.0)) + float(geo_event_loss.detach()),
                 "total_loss_with_extra": float(total_loss.detach()),
@@ -245,6 +276,7 @@ def make_configured_geo_contribution_loss(cfg):
                 teacher_consistency_weight=float(
                     getattr(cfg.loss, "geo_teacher_consistency_weight", 0.15)
                 ),
+                event_delta_weight=float(getattr(cfg.loss, "geo_event_delta_weight", 0.0)),
                 geo_teacher_boost=float(getattr(cfg.loss, "geo_teacher_boost", 1.5)),
                 geo_detail_threshold=float(getattr(cfg.loss, "geo_detail_threshold", 0.02)),
                 geo_positive_floor=float(getattr(cfg.loss, "geo_positive_floor", 0.05)),

@@ -421,6 +421,7 @@ def build_model(args, device: torch.device):
             refiner_residual_scale=args.refiner_residual_scale,
             refiner_refine_points=args.refiner_refine_points,
             refiner_use_checkpoint=False,
+            event_proposal_weight=getattr(args, "event_proposal_weight", 0.0),
         )
     )
     model = fe.build_event_model(cfg).to(device)

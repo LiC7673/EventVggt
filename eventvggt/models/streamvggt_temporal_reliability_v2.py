@@ -36,6 +36,7 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         reliability_floor: float = 0.0,
         reliability_init_bias: float = 0.0,
         proposal_depth_lowpass: bool = False,
+        event_proposal_weight: float = 0.0,
         refine_points: bool = True,
         use_checkpoint: bool = True,
         min_depth: float = 1e-6,
@@ -52,6 +53,7 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         )
         self.reliability_floor = min(max(float(reliability_floor), 0.0), 1.0)
         self.proposal_depth_lowpass = bool(proposal_depth_lowpass)
+        self.event_proposal_weight = float(event_proposal_weight)
         groups = _group_count(hidden_dim)
         self.num_temporal_stats = 8
         self.temporal_reliability = nn.Sequential(
@@ -62,8 +64,19 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
             _ResidualBlock(hidden_dim, dilation=2),
             nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1),
         )
+        self.event_geometry_proposal = nn.Sequential(
+            nn.Conv2d(2 * self.num_bins + 4, hidden_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(groups, hidden_dim),
+            nn.GELU(),
+            _ResidualBlock(hidden_dim, dilation=1),
+            _ResidualBlock(hidden_dim, dilation=2),
+            _ResidualBlock(hidden_dim, dilation=3),
+            nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1),
+        )
         nn.init.zeros_(self.temporal_reliability[-1].weight)
         nn.init.constant_(self.temporal_reliability[-1].bias, float(reliability_init_bias))
+        nn.init.zeros_(self.event_geometry_proposal[-1].weight)
+        nn.init.zeros_(self.event_geometry_proposal[-1].bias)
 
     def _load_from_state_dict(
         self,
@@ -147,7 +160,21 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
             self.reliability_floor + (1.0 - self.reliability_floor) * reliability
         )
 
-        delta_log = torch.tanh(raw_proposal) * event_gate * self.residual_scale
+        rgb_delta_log = torch.tanh(raw_proposal) * event_gate * self.residual_scale
+        event_delta_log = torch.zeros_like(rgb_delta_log)
+        if self.event_proposal_weight != 0.0:
+            event_proposal_input = torch.cat([voxel, image_flat, proposal_depth], dim=1)
+            if self.use_checkpoint and self.training and torch.is_grad_enabled():
+                raw_event_proposal = checkpoint(self.event_geometry_proposal, event_proposal_input, use_reentrant=False)
+            else:
+                raw_event_proposal = self.event_geometry_proposal(event_proposal_input)
+            event_delta_log = (
+                torch.tanh(raw_event_proposal)
+                * event_gate
+                * self.residual_scale
+                * self.event_proposal_weight
+            )
+        delta_log = rgb_delta_log + event_delta_log
         refined_flat = depth_flat.to(dtype=delta_log.dtype) * torch.exp(delta_log)
         refined = refined_flat.permute(0, 2, 3, 1).reshape(batch, seq_len, height, width, 1)
         refined = refined.to(dtype=depth.dtype).clamp_min(self.min_depth)
@@ -167,6 +194,8 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         self.last_entropy = entropy.reshape(batch, seq_len, height, width).detach()
         self.last_temporal_quality = temporal_quality.reshape(batch, seq_len, height, width).detach()
         self.last_delta_log = delta_log.reshape(batch, seq_len, height, width)
+        self.last_rgb_delta_log = rgb_delta_log.reshape(batch, seq_len, height, width)
+        self.last_event_delta_log = event_delta_log.reshape(batch, seq_len, height, width)
         return refined, refined_points, residual
 
     def _temporal_reliability(
@@ -265,6 +294,7 @@ class StreamVGGT(TemporalGatedStreamVGGT):
         event_reliability_floor: float = 0.0,
         event_reliability_init_bias: float = 0.0,
         proposal_depth_lowpass: bool = False,
+        event_proposal_weight: float = 0.0,
         forward_batch_chunk: int = 1,
         refine_points: bool = True,
         use_checkpoint: bool = True,
@@ -291,6 +321,7 @@ class StreamVGGT(TemporalGatedStreamVGGT):
             reliability_floor=event_reliability_floor,
             reliability_init_bias=event_reliability_init_bias,
             proposal_depth_lowpass=proposal_depth_lowpass,
+            event_proposal_weight=event_proposal_weight,
             refine_points=refine_points,
             use_checkpoint=use_checkpoint,
         )
@@ -301,6 +332,8 @@ class StreamVGGT(TemporalGatedStreamVGGT):
         reliability_reverse_time = getattr(self.event_detail_refiner, "last_reliability_reverse_time", None)
         reliability_swap_polarity = getattr(self.event_detail_refiner, "last_reliability_swap_polarity", None)
         delta_log = getattr(self.event_detail_refiner, "last_delta_log", None)
+        rgb_delta_log = getattr(self.event_detail_refiner, "last_rgb_delta_log", None)
+        event_delta_log = getattr(self.event_detail_refiner, "last_event_delta_log", None)
         persistence = getattr(self.event_detail_refiner, "last_persistence", None)
         entropy = getattr(self.event_detail_refiner, "last_entropy", None)
         temporal_quality = getattr(self.event_detail_refiner, "last_temporal_quality", None)
@@ -310,6 +343,8 @@ class StreamVGGT(TemporalGatedStreamVGGT):
                 result["event_reliability_reverse_time"] = reliability_reverse_time[:, frame_idx]
                 result["event_reliability_swap_polarity"] = reliability_swap_polarity[:, frame_idx]
                 result["depth_delta_log"] = delta_log[:, frame_idx]
+                result["rgb_delta_log"] = rgb_delta_log[:, frame_idx]
+                result["event_delta_log"] = event_delta_log[:, frame_idx]
                 result["event_persistence"] = persistence[:, frame_idx]
                 result["event_entropy"] = entropy[:, frame_idx]
                 result["event_temporal_quality"] = temporal_quality[:, frame_idx]

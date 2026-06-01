@@ -194,11 +194,12 @@ def run(cfg: OmegaConf):
     cfg.model.variant = "temporal_reliability_v2"
     cfg.model.event_num_bins = int(getattr(cfg.data, "event_resize_bins", 10))
     cfg.model.event_hidden_dim = 16
-    cfg.model.refiner_residual_scale = 0.025
+    cfg.model.refiner_residual_scale = 0.03
     cfg.model.event_gate_downsample = 2
     cfg.model.event_reliability_floor = float(getattr(cfg.model, "event_reliability_floor", 0.25))
     cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", 0.25))
     cfg.model.proposal_depth_lowpass = bool(getattr(cfg.model, "proposal_depth_lowpass", True))
+    cfg.model.event_proposal_weight = float(getattr(cfg.model, "event_proposal_weight", 1.0))
     cfg.model.exposure_forward_batch_chunk = int(getattr(cfg.model, "exposure_forward_batch_chunk", 1))
 
     cfg.train.unfreeze_heads = False
@@ -254,6 +255,7 @@ def run(cfg: OmegaConf):
         "geo_event_target_weight": 0.20,
         "geo_event_reject_weight": 0.04,
         "geo_teacher_consistency_weight": 0.08,
+        "geo_event_delta_weight": 0.40,
         "geo_teacher_boost": 0.5,
         "geo_detail_threshold": 0.02,
         "geo_positive_floor": 0.20,
@@ -262,7 +264,7 @@ def run(cfg: OmegaConf):
     cfg = configure_mul_loss_cfg(
         cfg,
         weights=weights,
-        exp_name="mul_loss_detail_gt_geo_event_teacher",
+        exp_name="mul_loss_detail_gt_geo_event_proposal",
     )
     fe.build_event_loader = build_geo_teacher_loader
     fe.EventSupervisedLoss = make_configured_geo_contribution_loss(cfg)
