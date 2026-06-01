@@ -62,20 +62,31 @@ def safe_load_state_dict(model: torch.nn.Module, checkpoint_path: str) -> Dict[s
     model_state = model.state_dict()
     compatible = {}
     skipped = []
+    loaded_event_detail = 0
+    skipped_event_detail = 0
     for key, value in raw_state.items():
         if key in model_state and model_state[key].shape == value.shape:
             compatible[key] = value
+            if key.startswith("event_detail_refiner."):
+                loaded_event_detail += 1
         else:
             skipped.append(key)
+            if key.startswith("event_detail_refiner."):
+                skipped_event_detail += 1
     msg = model.load_state_dict(compatible, strict=False)
     print(f"Loaded compatible checkpoint tensors from {checkpoint_path}: {len(compatible)}")
     print(f"Missing keys: {len(msg.missing_keys)}, unexpected keys: {len(msg.unexpected_keys)}, skipped shape keys: {len(skipped)}")
     if skipped[:8]:
         print("Skipped examples:", ", ".join(skipped[:8]))
-    return {"loaded": len(compatible), "skipped": len(skipped)}
+    return {
+        "loaded": len(compatible),
+        "skipped": len(skipped),
+        "loaded_event_detail": loaded_event_detail,
+        "skipped_event_detail": skipped_event_detail,
+    }
 
 
-def build_model(args, device: torch.device) -> torch.nn.Module:
+def build_model(args, device: torch.device) -> Tuple[torch.nn.Module, Dict[str, int]]:
     cfg = SimpleNamespace(
         data=SimpleNamespace(event_resize_bins=args.event_resize_bins),
         model=SimpleNamespace(
@@ -104,9 +115,9 @@ def build_model(args, device: torch.device) -> torch.nn.Module:
         ),
     )
     model = fe.build_event_model(cfg).to(device)
-    safe_load_state_dict(model, args.checkpoint)
+    load_info = safe_load_state_dict(model, args.checkpoint)
     model.eval()
-    return model
+    return model, load_info
 
 
 def build_dataset(args):
@@ -378,6 +389,41 @@ def add_ratio_metrics(metrics: Dict[str, float]) -> None:
     )
 
 
+def add_event_input_metrics(record: Dict[str, float], views: List[Dict]) -> None:
+    voxels = []
+    for view in views:
+        voxel = view.get("event_voxel")
+        if torch.is_tensor(voxel):
+            voxels.append(voxel.detach().float())
+    if not voxels:
+        record["event_voxel_present"] = 0.0
+        record["event_voxel_abs_mean"] = 0.0
+        record["event_voxel_nonzero_ratio"] = 0.0
+        return
+    stacked = torch.stack(voxels, dim=1)
+    record["event_voxel_present"] = 1.0
+    record["event_voxel_abs_mean"] = float(stacked.abs().mean().detach().cpu())
+    record["event_voxel_nonzero_ratio"] = float((stacked.abs() > 0).float().mean().detach().cpu())
+
+
+def add_residual_metrics(
+    record: Dict[str, float],
+    output,
+    depth_final: torch.Tensor,
+    depth_coarse: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> None:
+    diff = (depth_final - depth_coarse).abs()
+    valid = valid_mask.bool() & torch.isfinite(diff)
+    record["final_minus_coarse_depth_abs_mean"] = float(_safe_mean(diff, valid).detach().cpu())
+    depth_residual = stack_output_field(output, "depth_residual")
+    if depth_residual is None:
+        record["output_depth_residual_abs_mean"] = float("nan")
+        return
+    depth_residual = depth_residual.squeeze(-1).float()
+    record["output_depth_residual_abs_mean"] = float(_safe_mean(depth_residual.abs(), valid).detach().cpu())
+
+
 def interpretation(metrics: Dict[str, float]) -> str:
     coarse = metrics.get("coarse_normal_boundary_over_interior", float("nan"))
     final = metrics.get("final_normal_boundary_over_interior", float("nan"))
@@ -413,7 +459,7 @@ def main() -> None:
         pin_memory=args.pin_mem,
         collate_fn=event_multiview_collate,
     )
-    model = build_model(args, device)
+    model, load_info = build_model(args, device)
 
     records: List[Dict[str, float]] = []
     for sample_index, views in enumerate(loader):
@@ -454,6 +500,8 @@ def main() -> None:
         )
         record.update(normal_grid_metrics(coarse_normals, normal_mask, patch_size=args.patch_size, prefix="coarse_normal"))
         record.update(normal_grid_metrics(final_normals, normal_mask, patch_size=args.patch_size, prefix="final_normal"))
+        add_event_input_metrics(record, views)
+        add_residual_metrics(record, output, depth_final, depth_coarse, valid_mask)
         add_ratio_metrics(record)
         records.append(record)
 
@@ -480,6 +528,7 @@ def main() -> None:
         "model_variant": args.model_variant,
         "num_records": len(records),
         "patch_size": args.patch_size,
+        "checkpoint_load": load_info,
         "metrics_mean": metrics,
         "interpretation": interpretation(metrics),
     }
