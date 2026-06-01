@@ -414,6 +414,7 @@ def build_model(args, device: torch.device):
             event_count_cmax=args.event_count_cmax,
             event_fusion_scale=args.event_fusion_scale,
             event_gate_downsample=args.event_gate_downsample,
+            proposal_depth_lowpass=getattr(args, "proposal_depth_lowpass", False),
             head_frames_chunk_size=args.head_frames_chunk_size,
             refiner_hidden_dim=args.refiner_hidden_dim,
             refiner_num_blocks=args.refiner_num_blocks,

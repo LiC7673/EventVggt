@@ -45,8 +45,9 @@ if [[ "${VERIFY_AFTER_TRAIN}" == "true" ]]; then
     --model-variant temporal_reliability_v2 \
     --event-hidden-dim 16 \
     --event-num-bins 10 \
-    --refiner-residual-scale 0.02 \
-    --event-gate-downsample 4 \
+    --refiner-residual-scale 0.025 \
+    --event-gate-downsample 2 \
+    --proposal-depth-lowpass \
     --num-views "${NUM_VIEWS}" \
     --ldr-event-id "${EVAL_LDR_ID}" \
     --samples-per-scene 1 \

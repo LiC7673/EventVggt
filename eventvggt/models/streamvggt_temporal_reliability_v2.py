@@ -35,6 +35,7 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         gate_downsample: int = 4,
         reliability_floor: float = 0.0,
         reliability_init_bias: float = 0.0,
+        proposal_depth_lowpass: bool = False,
         refine_points: bool = True,
         use_checkpoint: bool = True,
         min_depth: float = 1e-6,
@@ -50,6 +51,7 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
             min_depth=min_depth,
         )
         self.reliability_floor = min(max(float(reliability_floor), 0.0), 1.0)
+        self.proposal_depth_lowpass = bool(proposal_depth_lowpass)
         groups = _group_count(hidden_dim)
         self.num_temporal_stats = 8
         self.temporal_reliability = nn.Sequential(
@@ -115,10 +117,13 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         mean = log_depth.mean(dim=(-2, -1), keepdim=True)
         std = log_depth.std(dim=(-2, -1), keepdim=True).clamp_min(1e-4)
         depth_feature = (log_depth - mean) / std
-        depth_dx = F.pad(depth_feature[..., :, 1:] - depth_feature[..., :, :-1], (1, 0, 0, 0))
-        depth_dy = F.pad(depth_feature[..., 1:, :] - depth_feature[..., :-1, :], (0, 0, 1, 0))
-        depth_hf = depth_feature - F.avg_pool2d(depth_feature, kernel_size=5, stride=1, padding=2)
-        proposal_input = torch.cat([image_flat, depth_feature, depth_dx, depth_dy, depth_hf], dim=1)
+        proposal_depth = depth_feature
+        if self.proposal_depth_lowpass:
+            proposal_depth = F.avg_pool2d(depth_feature, kernel_size=5, stride=1, padding=2)
+        depth_dx = F.pad(proposal_depth[..., :, 1:] - proposal_depth[..., :, :-1], (1, 0, 0, 0))
+        depth_dy = F.pad(proposal_depth[..., 1:, :] - proposal_depth[..., :-1, :], (0, 0, 1, 0))
+        depth_hf = proposal_depth - F.avg_pool2d(proposal_depth, kernel_size=7, stride=1, padding=3)
+        proposal_input = torch.cat([image_flat, proposal_depth, depth_dx, depth_dy, depth_hf], dim=1)
 
         if self.use_checkpoint and self.training and torch.is_grad_enabled():
             raw_proposal = checkpoint(self.geometry_proposal, proposal_input, use_reentrant=False)
@@ -259,6 +264,7 @@ class StreamVGGT(TemporalGatedStreamVGGT):
         gate_downsample: int = 4,
         event_reliability_floor: float = 0.0,
         event_reliability_init_bias: float = 0.0,
+        proposal_depth_lowpass: bool = False,
         forward_batch_chunk: int = 1,
         refine_points: bool = True,
         use_checkpoint: bool = True,
@@ -284,6 +290,7 @@ class StreamVGGT(TemporalGatedStreamVGGT):
             gate_downsample=gate_downsample,
             reliability_floor=event_reliability_floor,
             reliability_init_bias=event_reliability_init_bias,
+            proposal_depth_lowpass=proposal_depth_lowpass,
             refine_points=refine_points,
             use_checkpoint=use_checkpoint,
         )
