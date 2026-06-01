@@ -38,6 +38,7 @@ from eventvggt.models.streamvggt import StreamVGGT as EventStreamVGGT
 from eventvggt.models.streamvggt_temporal_detail import StreamVGGT as EventTemporalDetailStreamVGGT
 from eventvggt.models.streamvggt_temporal_exposure_invariant import StreamVGGT as EventTemporalExposureInvariantStreamVGGT
 from eventvggt.models.streamvggt_temporal_gated_detail import StreamVGGT as EventTemporalGatedDetailStreamVGGT
+from eventvggt.models.streamvggt_reliability_filter_detail import StreamVGGT as EventReliabilityFilterDetailStreamVGGT
 from eventvggt.models.streamvggt_temporal_reliability_v2 import StreamVGGT as EventTemporalReliabilityV2StreamVGGT
 from eventvggt.models.streamvggt_temporal_bins import StreamVGGT as EventTemporalBinStreamVGGT
 from eventvggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
@@ -210,6 +211,18 @@ def build_event_model(cfg) -> nn.Module:
             event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
             residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.01)),
             gate_downsample=int(getattr(cfg.model, "event_gate_downsample", 4)),
+            refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
+            use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
+        )
+    if variant in ("reliability_filter_detail", "temporal_reliability_filter_detail", "filtered_temporal_detail"):
+        return EventReliabilityFilterDetailStreamVGGT(
+            **common_kwargs,
+            event_num_bins=int(getattr(cfg.model, "event_num_bins", default_event_bins)),
+            event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
+            residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.03)),
+            gate_downsample=int(getattr(cfg.model, "event_gate_downsample", 2)),
+            event_reliability_floor=float(getattr(cfg.model, "event_reliability_floor", 0.30)),
+            event_reliability_init_bias=float(getattr(cfg.model, "event_reliability_init_bias", 0.5)),
             refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
             use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
         )

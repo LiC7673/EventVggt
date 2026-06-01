@@ -37,21 +37,18 @@ def run(cfg: OmegaConf):
     cfg.vis.test_max_batches = int(getattr(cfg.vis, "test_max_batches", 2))
     cfg.vis.test_num_views = int(getattr(cfg.vis, "test_num_views", cfg.data.num_views))
 
-    cfg.model.variant = "temporal_reliability_v2"
+    cfg.model.variant = "reliability_filter_detail"
     cfg.model.event_num_bins = int(getattr(cfg.data, "event_resize_bins", 10))
     cfg.model.event_hidden_dim = 16
     cfg.model.refiner_residual_scale = 0.03
     cfg.model.event_gate_downsample = 2
-    cfg.model.event_reliability_floor = float(getattr(cfg.model, "event_reliability_floor", 0.25))
-    cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", 0.25))
-    cfg.model.proposal_depth_lowpass = bool(getattr(cfg.model, "proposal_depth_lowpass", True))
-    cfg.model.event_proposal_weight = 0.0
-    cfg.model.exposure_forward_batch_chunk = int(getattr(cfg.model, "exposure_forward_batch_chunk", 1))
+    cfg.model.event_reliability_floor = float(getattr(cfg.model, "event_reliability_floor", 0.30))
+    cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", 0.5))
 
     cfg.train.unfreeze_heads = False
     cfg.train.unfreeze_aggregator_blocks = False
     if str(getattr(cfg, "pretrained", "")) in {"", "./ckpt/model.pt"}:
-        preferred = Path("./checkpoints/mul_loss_detail_gt_temporal_gated/checkpoint-last.pth")
+        preferred = Path("./checkpoints/mul_loss_detail_gt_temporal_detail/checkpoint-last.pth")
         fallback = Path("./checkpoints/mul_loss_detail_gt_uniform/checkpoint-last.pth")
         cfg.pretrained = str(preferred if preferred.exists() else fallback)
 
@@ -85,19 +82,19 @@ def run(cfg: OmegaConf):
         "final_grid_patch_size": 14,
         "final_grid_band": 1,
         "final_grid_detail_threshold": 0.02,
-        "v2_residual_target_weight": 0.70,
-        "v2_gate_reliability_weight": 0.20,
+        "v2_residual_target_weight": 0.0,
+        "v2_gate_reliability_weight": 0.0,
         "v2_gate_need_floor": 0.10,
         "v2_gate_positive_boost": 2.0,
         "v2_temporal_quality_floor": 0.25,
-        "v2_counterfactual_weight": 0.20,
+        "v2_counterfactual_weight": 0.0,
         "v2_counterfactual_margin": 0.08,
-        "v2_ldr_final_depth_weight": 0.05,
-        "v2_ldr_final_normal_weight": 0.05,
-        "v2_ldr_correction_weight": 0.10,
+        "v2_ldr_final_depth_weight": 0.0,
+        "v2_ldr_final_normal_weight": 0.0,
+        "v2_ldr_correction_weight": 0.0,
         "v2_ldr_base_weight": 0.10,
-        "v2_non_detail_smooth_weight": 0.03,
-        "v2_non_detail_second_order_weight": 0.03,
+        "v2_non_detail_smooth_weight": 0.0,
+        "v2_non_detail_second_order_weight": 0.0,
         "v2_target_detail_threshold": 0.02,
         "geo_teacher_ldr_id": cfg.data.geo_teacher_ldr_id,
         "geo_event_target_weight": 0.30,

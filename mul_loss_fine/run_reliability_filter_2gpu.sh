@@ -42,13 +42,11 @@ if [[ "${VERIFY_AFTER_TRAIN}" == "true" ]]; then
   echo "[verify] real/zero/reverse/swap events on GPU ${VERIFY_GPU}"
   CUDA_VISIBLE_DEVICES="${VERIFY_GPU}" python finetune_vaild/verify_event_input_counterfactual.py \
     --checkpoint "${CKPT}" \
-    --model-variant temporal_reliability_v2 \
+    --model-variant reliability_filter_detail \
     --event-hidden-dim 16 \
     --event-num-bins 10 \
     --refiner-residual-scale 0.03 \
     --event-gate-downsample 2 \
-    --proposal-depth-lowpass \
-    --event-proposal-weight 0.0 \
     --num-views "${NUM_VIEWS}" \
     --ldr-event-id "${EVAL_LDR_ID}" \
     --samples-per-scene 1 \

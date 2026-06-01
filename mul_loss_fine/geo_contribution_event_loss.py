@@ -220,6 +220,9 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
 
         pos_weight = valid_weight * event_weight * (geometry_need > 0.5).to(dtype=dtype)
         neg_weight = reject_weight
+        aux["event_reliability"] = reliability.detach()
+        aux["event_presence"] = presence.detach()
+        aux["event_temporal_quality"] = temporal_quality.detach()
         details.update(
             {
                 "geo_event_loss": float(geo_event_loss.detach()),
