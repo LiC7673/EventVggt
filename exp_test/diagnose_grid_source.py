@@ -76,6 +76,12 @@ def safe_load_state_dict(model: torch.nn.Module, checkpoint_path: str) -> Dict[s
     msg = model.load_state_dict(compatible, strict=False)
     print(f"Loaded compatible checkpoint tensors from {checkpoint_path}: {len(compatible)}")
     print(f"Missing keys: {len(msg.missing_keys)}, unexpected keys: {len(msg.unexpected_keys)}, skipped shape keys: {len(skipped)}")
+    if skipped_event_detail > 0:
+        print(
+            "WARNING: event_detail_refiner checkpoint tensors were skipped. "
+            "The diagnostic residual may be zero because the refiner was reinitialized. "
+            "Check --event-hidden-dim, --event-num-bins, and model variant."
+        )
     if skipped[:8]:
         print("Skipped examples:", ", ".join(skipped[:8]))
     return {
@@ -566,7 +572,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--img-size", type=int, default=518)
     parser.add_argument("--patch-size", type=int, default=14)
     parser.add_argument("--embed-dim", type=int, default=1024)
-    parser.add_argument("--event-hidden-dim", type=int, default=32)
+    parser.add_argument("--event-hidden-dim", type=int, default=16)
     parser.add_argument("--event-num-bins", type=int, default=10)
     parser.add_argument("--event-count-cmax", type=float, default=3.0)
     parser.add_argument("--event-fusion-scale", type=float, default=1.0)
