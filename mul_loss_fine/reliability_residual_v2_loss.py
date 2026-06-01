@@ -72,6 +72,7 @@ class TemporalReliabilityV2LossMixin:
         temporal_quality_floor: float,
         counterfactual_weight: float,
         counterfactual_margin: float,
+        counterfactual_negative_weight: float,
     ):
         self.v2_residual_scale = max(float(residual_scale), 1e-6)
         self.v2_residual_target_weight = float(residual_target_weight)
@@ -88,6 +89,7 @@ class TemporalReliabilityV2LossMixin:
         self.v2_temporal_quality_floor = min(max(float(temporal_quality_floor), 0.0), 1.0)
         self.v2_counterfactual_weight = float(counterfactual_weight)
         self.v2_counterfactual_margin = float(counterfactual_margin)
+        self.v2_counterfactual_negative_weight = float(counterfactual_negative_weight)
 
     def forward(self, model_output, views):
         total_loss, details, aux = super().forward(model_output, views)
@@ -200,7 +202,9 @@ class TemporalReliabilityV2LossMixin:
             detail_support,
         )
         counterfactual_terms = []
+        counterfactual_negative_terms = []
         contrast_weight = valid_weight * presence.unsqueeze(2) * correction_need.detach()
+        negative_weight = valid_weight * presence.unsqueeze(2) * (0.10 + correction_need.detach())
         for counterfactual_reliability in (reliability_reverse, reliability_swap):
             if counterfactual_reliability is None:
                 continue
@@ -210,10 +214,22 @@ class TemporalReliabilityV2LossMixin:
                 - reliability.unsqueeze(2)
             )
             counterfactual_terms.append(_weighted_mean(margin_loss, contrast_weight))
-        counterfactual_loss = (
+            counterfactual_negative_terms.append(
+                _weighted_mean(counterfactual_reliability.unsqueeze(2), negative_weight)
+            )
+        counterfactual_margin_loss = (
             torch.stack(counterfactual_terms).mean()
             if counterfactual_terms
             else depth_pred.new_tensor(0.0)
+        )
+        counterfactual_negative_loss = (
+            torch.stack(counterfactual_negative_terms).mean()
+            if counterfactual_negative_terms
+            else depth_pred.new_tensor(0.0)
+        )
+        counterfactual_loss = (
+            counterfactual_margin_loss
+            + self.v2_counterfactual_negative_weight * counterfactual_negative_loss
         )
 
         groups = {}
@@ -275,6 +291,8 @@ class TemporalReliabilityV2LossMixin:
                 "residual_target_loss": float(residual_target_loss.detach()),
                 "gate_reliability_loss": float(gate_reliability_loss.detach()),
                 "counterfactual_reliability_loss": float(counterfactual_loss.detach()),
+                "counterfactual_margin_loss": float(counterfactual_margin_loss.detach()),
+                "counterfactual_negative_loss": float(counterfactual_negative_loss.detach()),
                 "event_reliability_mean": float(_weighted_mean(reliability.unsqueeze(2), valid_weight).detach()),
                 "event_reverse_reliability_mean": float(reliability_reverse.mean().detach())
                 if reliability_reverse is not None
@@ -325,6 +343,9 @@ def make_configured_reliability_v2_loss(cfg):
                 temporal_quality_floor=float(getattr(cfg.loss, "v2_temporal_quality_floor", 0.25)),
                 counterfactual_weight=float(getattr(cfg.loss, "v2_counterfactual_weight", 0.20)),
                 counterfactual_margin=float(getattr(cfg.loss, "v2_counterfactual_margin", 0.08)),
+                counterfactual_negative_weight=float(
+                    getattr(cfg.loss, "v2_counterfactual_negative_weight", 0.50)
+                ),
             )
 
     return ConfiguredTemporalReliabilityV2Loss

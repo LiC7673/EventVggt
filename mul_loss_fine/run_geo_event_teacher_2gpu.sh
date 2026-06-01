@@ -46,8 +46,8 @@ if [[ "${VERIFY_AFTER_TRAIN}" == "true" ]]; then
     --event-hidden-dim 16 \
     --event-num-bins 10 \
     --refiner-residual-scale 0.03 \
-    --event-gate-downsample 2 \
-    --event-gate-smooth-kernel 5 \
+    --event-gate-downsample 4 \
+    --event-gate-smooth-kernel 9 \
     --proposal-depth-lowpass \
     --event-proposal-weight 0.0 \
     --num-views "${NUM_VIEWS}" \

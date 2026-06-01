@@ -195,10 +195,10 @@ def run(cfg: OmegaConf):
     cfg.model.event_num_bins = int(getattr(cfg.data, "event_resize_bins", 10))
     cfg.model.event_hidden_dim = 16
     cfg.model.refiner_residual_scale = 0.03
-    cfg.model.event_gate_downsample = 2
-    cfg.model.event_gate_smooth_kernel = int(getattr(cfg.model, "event_gate_smooth_kernel", 5))
-    cfg.model.event_reliability_floor = float(getattr(cfg.model, "event_reliability_floor", 0.25))
-    cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", 0.25))
+    cfg.model.event_gate_downsample = int(getattr(cfg.model, "event_gate_downsample", 4))
+    cfg.model.event_gate_smooth_kernel = int(getattr(cfg.model, "event_gate_smooth_kernel", 9))
+    cfg.model.event_reliability_floor = float(getattr(cfg.model, "event_reliability_floor", 0.05))
+    cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", -1.0))
     cfg.model.proposal_depth_lowpass = bool(getattr(cfg.model, "proposal_depth_lowpass", True))
     # Events should decide reliability, not directly write depth residuals.
     # Direct event residual prediction tends to learn highlight/noise texture.
@@ -247,6 +247,7 @@ def run(cfg: OmegaConf):
         "v2_temporal_quality_floor": 0.25,
         "v2_counterfactual_weight": 0.50,
         "v2_counterfactual_margin": 0.15,
+        "v2_counterfactual_negative_weight": 0.75,
         "v2_ldr_final_depth_weight": 0.10,
         "v2_ldr_final_normal_weight": 0.10,
         "v2_ldr_correction_weight": 0.20,
