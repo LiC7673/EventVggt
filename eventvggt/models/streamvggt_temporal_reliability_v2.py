@@ -63,6 +63,40 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         nn.init.zeros_(self.temporal_reliability[-1].weight)
         nn.init.constant_(self.temporal_reliability[-1].bias, float(reliability_init_bias))
 
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        first_weight_key = prefix + "temporal_reliability.0.weight"
+        checkpoint_weight = state_dict.get(first_weight_key)
+        target_weight = self.temporal_reliability[0].weight
+        if checkpoint_weight is not None and checkpoint_weight.shape != target_weight.shape:
+            adapted = torch.zeros_like(target_weight)
+            out_channels = min(adapted.shape[0], checkpoint_weight.shape[0])
+            in_channels = min(adapted.shape[1], checkpoint_weight.shape[1])
+            kernel_h = min(adapted.shape[2], checkpoint_weight.shape[2])
+            kernel_w = min(adapted.shape[3], checkpoint_weight.shape[3])
+            adapted[:out_channels, :in_channels, :kernel_h, :kernel_w] = checkpoint_weight[
+                :out_channels, :in_channels, :kernel_h, :kernel_w
+            ].to(dtype=adapted.dtype)
+            state_dict[first_weight_key] = adapted
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
     def forward(
         self,
         *,
