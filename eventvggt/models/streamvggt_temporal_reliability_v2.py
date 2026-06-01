@@ -37,6 +37,7 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         reliability_init_bias: float = 0.0,
         proposal_depth_lowpass: bool = False,
         event_proposal_weight: float = 0.0,
+        gate_smooth_kernel: int = 5,
         refine_points: bool = True,
         use_checkpoint: bool = True,
         min_depth: float = 1e-6,
@@ -54,6 +55,9 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         self.reliability_floor = min(max(float(reliability_floor), 0.0), 1.0)
         self.proposal_depth_lowpass = bool(proposal_depth_lowpass)
         self.event_proposal_weight = float(event_proposal_weight)
+        self.gate_smooth_kernel = max(1, int(gate_smooth_kernel))
+        if self.gate_smooth_kernel % 2 == 0:
+            self.gate_smooth_kernel += 1
         groups = _group_count(hidden_dim)
         self.num_temporal_stats = 8
         self.temporal_reliability = nn.Sequential(
@@ -156,9 +160,14 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
             self._swap_polarity_voxel(voxel),
             output_size=(height, width),
         )
+        base_gate = self._smooth_gate_map(base_gate)
+        reliability = self._smooth_gate_map(reliability)
+        reverse_reliability = self._smooth_gate_map(reverse_reliability)
+        swap_reliability = self._smooth_gate_map(swap_reliability)
         event_gate = base_gate * (
             self.reliability_floor + (1.0 - self.reliability_floor) * reliability
         )
+        event_gate = self._smooth_gate_map(event_gate).clamp(0.0, 1.0)
 
         rgb_delta_log = torch.tanh(raw_proposal) * event_gate * self.residual_scale
         event_delta_log = torch.zeros_like(rgb_delta_log)
@@ -197,6 +206,16 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         self.last_rgb_delta_log = rgb_delta_log.reshape(batch, seq_len, height, width)
         self.last_event_delta_log = event_delta_log.reshape(batch, seq_len, height, width)
         return refined, refined_points, residual
+
+    def _smooth_gate_map(self, value: torch.Tensor) -> torch.Tensor:
+        if self.gate_smooth_kernel <= 1:
+            return value
+        return F.avg_pool2d(
+            value,
+            kernel_size=self.gate_smooth_kernel,
+            stride=1,
+            padding=self.gate_smooth_kernel // 2,
+        )
 
     def _temporal_reliability(
         self,
@@ -295,6 +314,7 @@ class StreamVGGT(TemporalGatedStreamVGGT):
         event_reliability_init_bias: float = 0.0,
         proposal_depth_lowpass: bool = False,
         event_proposal_weight: float = 0.0,
+        event_gate_smooth_kernel: int = 5,
         forward_batch_chunk: int = 1,
         refine_points: bool = True,
         use_checkpoint: bool = True,
@@ -322,6 +342,7 @@ class StreamVGGT(TemporalGatedStreamVGGT):
             reliability_init_bias=event_reliability_init_bias,
             proposal_depth_lowpass=proposal_depth_lowpass,
             event_proposal_weight=event_proposal_weight,
+            gate_smooth_kernel=event_gate_smooth_kernel,
             refine_points=refine_points,
             use_checkpoint=use_checkpoint,
         )
@@ -337,8 +358,10 @@ class StreamVGGT(TemporalGatedStreamVGGT):
         persistence = getattr(self.event_detail_refiner, "last_persistence", None)
         entropy = getattr(self.event_detail_refiner, "last_entropy", None)
         temporal_quality = getattr(self.event_detail_refiner, "last_temporal_quality", None)
+        gate = getattr(self.event_detail_refiner, "last_gate", None)
         if reliability is not None:
             for frame_idx, result in enumerate(output.ress):
+                result["event_gate"] = gate[:, frame_idx]
                 result["event_reliability"] = reliability[:, frame_idx]
                 result["event_reliability_reverse_time"] = reliability_reverse_time[:, frame_idx]
                 result["event_reliability_swap_polarity"] = reliability_swap_polarity[:, frame_idx]

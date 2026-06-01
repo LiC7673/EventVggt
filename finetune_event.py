@@ -250,6 +250,7 @@ def build_event_model(cfg) -> nn.Module:
             event_reliability_init_bias=float(getattr(cfg.model, "event_reliability_init_bias", 0.0)),
             proposal_depth_lowpass=bool(getattr(cfg.model, "proposal_depth_lowpass", False)),
             event_proposal_weight=float(getattr(cfg.model, "event_proposal_weight", 0.0)),
+            event_gate_smooth_kernel=int(getattr(cfg.model, "event_gate_smooth_kernel", 5)),
             forward_batch_chunk=int(getattr(cfg.model, "exposure_forward_batch_chunk", 1)),
             refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
             use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),

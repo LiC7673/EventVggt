@@ -56,12 +56,13 @@ def stack_output_field(model_output, key: str) -> Optional[torch.Tensor]:
     return torch.stack(values, dim=1)
 
 
-def safe_load_state_dict(model: torch.nn.Module, checkpoint_path: str) -> Dict[str, int]:
+def safe_load_state_dict(model: torch.nn.Module, checkpoint_path: str) -> Dict:
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     raw_state = fe.unwrap_state_dict(ckpt)
     model_state = model.state_dict()
     compatible = {}
     skipped = []
+    skipped_event_detail_examples = []
     loaded_event_detail = 0
     skipped_event_detail = 0
     for key, value in raw_state.items():
@@ -73,6 +74,15 @@ def safe_load_state_dict(model: torch.nn.Module, checkpoint_path: str) -> Dict[s
             skipped.append(key)
             if key.startswith("event_detail_refiner."):
                 skipped_event_detail += 1
+                if len(skipped_event_detail_examples) < 12:
+                    model_shape = tuple(model_state[key].shape) if key in model_state else None
+                    skipped_event_detail_examples.append(
+                        {
+                            "key": key,
+                            "checkpoint_shape": tuple(value.shape),
+                            "model_shape": model_shape,
+                        }
+                    )
     msg = model.load_state_dict(compatible, strict=False)
     print(f"Loaded compatible checkpoint tensors from {checkpoint_path}: {len(compatible)}")
     print(f"Missing keys: {len(msg.missing_keys)}, unexpected keys: {len(msg.unexpected_keys)}, skipped shape keys: {len(skipped)}")
@@ -82,6 +92,15 @@ def safe_load_state_dict(model: torch.nn.Module, checkpoint_path: str) -> Dict[s
             "The diagnostic residual may be zero because the refiner was reinitialized. "
             "Check --event-hidden-dim, --event-num-bins, and model variant."
         )
+        for example in skipped_event_detail_examples:
+            print(
+                "  skipped",
+                example["key"],
+                "ckpt=",
+                example["checkpoint_shape"],
+                "model=",
+                example["model_shape"],
+            )
     if skipped[:8]:
         print("Skipped examples:", ", ".join(skipped[:8]))
     return {
@@ -89,7 +108,56 @@ def safe_load_state_dict(model: torch.nn.Module, checkpoint_path: str) -> Dict[s
         "skipped": len(skipped),
         "loaded_event_detail": loaded_event_detail,
         "skipped_event_detail": skipped_event_detail,
+        "skipped_event_detail_examples": skipped_event_detail_examples,
     }
+
+
+def _cfg_section(cfg: object, name: str) -> Dict:
+    if isinstance(cfg, dict):
+        value = cfg.get(name, {})
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
+def apply_checkpoint_config(args) -> Dict:
+    if not args.use_checkpoint_config:
+        return {}
+    ckpt = torch.load(args.checkpoint, map_location="cpu")
+    if not isinstance(ckpt, dict) or not isinstance(ckpt.get("cfg"), dict):
+        return {}
+
+    ckpt_cfg = ckpt["cfg"]
+    model_cfg = _cfg_section(ckpt_cfg, "model")
+    data_cfg = _cfg_section(ckpt_cfg, "data")
+    applied = {}
+    mapping = {
+        "model_variant": "variant",
+        "img_size": "img_size",
+        "patch_size": "patch_size",
+        "embed_dim": "embed_dim",
+        "event_hidden_dim": "event_hidden_dim",
+        "event_num_bins": "event_num_bins",
+        "event_count_cmax": "event_count_cmax",
+        "event_fusion_scale": "event_fusion_scale",
+        "event_gate_downsample": "event_gate_downsample",
+        "event_gate_smooth_kernel": "event_gate_smooth_kernel",
+        "event_reliability_floor": "event_reliability_floor",
+        "event_reliability_init_bias": "event_reliability_init_bias",
+        "head_frames_chunk_size": "head_frames_chunk_size",
+        "refiner_hidden_dim": "refiner_hidden_dim",
+        "refiner_num_blocks": "refiner_num_blocks",
+        "refiner_residual_scale": "refiner_residual_scale",
+        "refiner_refine_points": "refiner_refine_points",
+    }
+    for arg_name, cfg_name in mapping.items():
+        if cfg_name in model_cfg:
+            setattr(args, arg_name, model_cfg[cfg_name])
+            applied[arg_name] = model_cfg[cfg_name]
+    if "event_resize_bins" in data_cfg:
+        args.event_resize_bins = int(data_cfg["event_resize_bins"])
+        applied["event_resize_bins"] = args.event_resize_bins
+    print("Applied checkpoint model config:", applied)
+    return applied
 
 
 def build_model(args, device: torch.device) -> Tuple[torch.nn.Module, Dict[str, int]]:
@@ -105,6 +173,7 @@ def build_model(args, device: torch.device) -> Tuple[torch.nn.Module, Dict[str, 
             event_count_cmax=args.event_count_cmax,
             event_fusion_scale=args.event_fusion_scale,
             event_gate_downsample=args.event_gate_downsample,
+            event_gate_smooth_kernel=args.event_gate_smooth_kernel,
             event_reliability_floor=args.event_reliability_floor,
             event_reliability_init_bias=args.event_reliability_init_bias,
             proposal_depth_lowpass=args.proposal_depth_lowpass,
@@ -456,6 +525,7 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    applied_checkpoint_config = apply_checkpoint_config(args)
     dataset = build_dataset(args)
     loader = DataLoader(
         dataset,
@@ -534,6 +604,7 @@ def main() -> None:
         "model_variant": args.model_variant,
         "num_records": len(records),
         "patch_size": args.patch_size,
+        "checkpoint_config_applied": applied_checkpoint_config,
         "checkpoint_load": load_info,
         "metrics_mean": metrics,
         "interpretation": interpretation(metrics),
@@ -577,6 +648,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-count-cmax", type=float, default=3.0)
     parser.add_argument("--event-fusion-scale", type=float, default=1.0)
     parser.add_argument("--event-gate-downsample", type=int, default=2)
+    parser.add_argument("--event-gate-smooth-kernel", type=int, default=5)
     parser.add_argument("--event-reliability-floor", type=float, default=0.30)
     parser.add_argument("--event-reliability-init-bias", type=float, default=0.5)
     parser.add_argument("--proposal-depth-lowpass", action="store_true")
@@ -586,6 +658,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--refiner-num-blocks", type=int, default=2)
     parser.add_argument("--refiner-residual-scale", type=float, default=0.03)
     parser.add_argument("--refiner-refine-points", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--use-checkpoint-config",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Build the model with the model/data config saved inside the checkpoint.",
+    )
     return parser.parse_args()
 
 

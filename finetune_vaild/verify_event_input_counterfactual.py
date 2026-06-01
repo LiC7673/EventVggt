@@ -322,6 +322,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-count-cmax", type=float, default=3.0)
     parser.add_argument("--event-fusion-scale", type=float, default=1.0)
     parser.add_argument("--event-gate-downsample", type=int, default=4)
+    parser.add_argument("--event-gate-smooth-kernel", type=int, default=5)
     parser.add_argument("--proposal-depth-lowpass", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--event-proposal-weight", type=float, default=0.0)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)

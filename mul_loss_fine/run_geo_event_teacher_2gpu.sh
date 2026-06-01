@@ -14,7 +14,7 @@ EVAL_LDR_ID="${EVAL_LDR_ID:-ev_5}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
 EXPOSURES_PER_SAMPLE="${EXPOSURES_PER_SAMPLE:-2}"
 VERIFY_AFTER_TRAIN="${VERIFY_AFTER_TRAIN:-true}"
-EXP_NAME="${EXP_NAME:-mul_loss_detail_gt_geo_event_proposal}"
+EXP_NAME="${EXP_NAME:-mul_loss_detail_gt_geo_event_filter}"
 CKPT="${CKPT:-${ROOT_DIR}/checkpoints/${EXP_NAME}/checkpoint-last.pth}"
 VERIFY_OUT="${VERIFY_OUT:-${ROOT_DIR}/finetune_vaild/results/${EXP_NAME}_counterfactual}"
 
@@ -47,8 +47,9 @@ if [[ "${VERIFY_AFTER_TRAIN}" == "true" ]]; then
     --event-num-bins 10 \
     --refiner-residual-scale 0.03 \
     --event-gate-downsample 2 \
+    --event-gate-smooth-kernel 5 \
     --proposal-depth-lowpass \
-    --event-proposal-weight 1.0 \
+    --event-proposal-weight 0.0 \
     --num-views "${NUM_VIEWS}" \
     --ldr-event-id "${EVAL_LDR_ID}" \
     --samples-per-scene 1 \

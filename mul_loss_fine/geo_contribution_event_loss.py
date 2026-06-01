@@ -140,7 +140,14 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
         geometry_need = torch.maximum(target_strength, normal_need)
         geometry_need = (geometry_need * (0.20 + 0.80 * detail_support)).detach().clamp(0.0, 1.0)
 
-        event_weight = presence.unsqueeze(2) * temporal_quality.unsqueeze(2)
+        # Temporal quality is itself a learned/heuristic event statistic and can
+        # be very small at the beginning of training.  If we multiply the geo
+        # teacher target by it directly, the teacher supervision almost vanishes
+        # exactly in the cases where we need to learn a better reliability map.
+        quality_weight = self.v2_temporal_quality_floor + (
+            1.0 - self.v2_temporal_quality_floor
+        ) * temporal_quality
+        event_weight = presence.unsqueeze(2) * quality_weight.unsqueeze(2)
         geo_target = (self.geo_positive_floor + (1.0 - self.geo_positive_floor) * geometry_need).detach()
         target_weight = valid_weight * event_weight * (0.10 + geometry_need)
 
@@ -161,7 +168,7 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
         )
 
         non_geometry = (1.0 - geometry_need).detach()
-        reject_weight = valid_weight * presence.unsqueeze(2) * temporal_quality.unsqueeze(2) * non_geometry.square()
+        reject_weight = valid_weight * presence.unsqueeze(2) * quality_weight.unsqueeze(2) * non_geometry.square()
         reject_map = F.relu(reliability.unsqueeze(2) - self.geo_negative_margin)
         reject_loss = _weighted_mean(reject_map, reject_weight)
 
@@ -231,6 +238,10 @@ class GeometryContributionEventLossMixin(TemporalReliabilityV2LossMixin):
                 "geo_event_delta_loss": float(event_delta_loss.detach()),
                 "geo_teacher_consistency_loss": float(consistency_loss.detach()),
                 "geo_event_target_mean": float(_weighted_mean(geo_target, valid_weight).detach()),
+                "geo_event_weight_mean": float(_weighted_mean(event_weight, valid_weight).detach()),
+                "geo_temporal_quality_weight_mean": float(
+                    _weighted_mean(quality_weight.unsqueeze(2), valid_weight).detach()
+                ),
                 "geo_event_reliability_pos_mean": float(
                     _weighted_mean(reliability.unsqueeze(2), pos_weight).detach()
                 ),

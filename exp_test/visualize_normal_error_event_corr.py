@@ -414,6 +414,7 @@ def build_model(args, device: torch.device):
             event_count_cmax=args.event_count_cmax,
             event_fusion_scale=args.event_fusion_scale,
             event_gate_downsample=args.event_gate_downsample,
+            event_gate_smooth_kernel=getattr(args, "event_gate_smooth_kernel", 5),
             proposal_depth_lowpass=getattr(args, "proposal_depth_lowpass", False),
             head_frames_chunk_size=args.head_frames_chunk_size,
             refiner_hidden_dim=args.refiner_hidden_dim,
@@ -711,6 +712,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-count-cmax", type=float, default=3.0)
     parser.add_argument("--event-fusion-scale", type=float, default=1.0)
     parser.add_argument("--event-gate-downsample", type=int, default=4)
+    parser.add_argument("--event-gate-smooth-kernel", type=int, default=5)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)
     parser.add_argument("--refiner-hidden-dim", type=int, default=16)
     parser.add_argument("--refiner-num-blocks", type=int, default=2)

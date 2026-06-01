@@ -196,10 +196,13 @@ def run(cfg: OmegaConf):
     cfg.model.event_hidden_dim = 16
     cfg.model.refiner_residual_scale = 0.03
     cfg.model.event_gate_downsample = 2
+    cfg.model.event_gate_smooth_kernel = int(getattr(cfg.model, "event_gate_smooth_kernel", 5))
     cfg.model.event_reliability_floor = float(getattr(cfg.model, "event_reliability_floor", 0.25))
     cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", 0.25))
     cfg.model.proposal_depth_lowpass = bool(getattr(cfg.model, "proposal_depth_lowpass", True))
-    cfg.model.event_proposal_weight = float(getattr(cfg.model, "event_proposal_weight", 1.0))
+    # Events should decide reliability, not directly write depth residuals.
+    # Direct event residual prediction tends to learn highlight/noise texture.
+    cfg.model.event_proposal_weight = float(getattr(cfg.model, "event_proposal_weight", 0.0))
     cfg.model.exposure_forward_batch_chunk = int(getattr(cfg.model, "exposure_forward_batch_chunk", 1))
 
     cfg.train.unfreeze_heads = False
@@ -238,12 +241,12 @@ def run(cfg: OmegaConf):
         "final_grid_band": 1,
         "final_grid_detail_threshold": 0.02,
         "v2_residual_target_weight": 0.70,
-        "v2_gate_reliability_weight": 0.10,
+        "v2_gate_reliability_weight": 0.20,
         "v2_gate_need_floor": 0.10,
         "v2_gate_positive_boost": 2.0,
         "v2_temporal_quality_floor": 0.25,
-        "v2_counterfactual_weight": 0.20,
-        "v2_counterfactual_margin": 0.08,
+        "v2_counterfactual_weight": 0.50,
+        "v2_counterfactual_margin": 0.15,
         "v2_ldr_final_depth_weight": 0.10,
         "v2_ldr_final_normal_weight": 0.10,
         "v2_ldr_correction_weight": 0.20,
@@ -252,10 +255,10 @@ def run(cfg: OmegaConf):
         "v2_non_detail_second_order_weight": 0.03,
         "v2_target_detail_threshold": 0.02,
         "geo_teacher_ldr_id": cfg.data.geo_teacher_ldr_id,
-        "geo_event_target_weight": 0.20,
-        "geo_event_reject_weight": 0.04,
-        "geo_teacher_consistency_weight": 0.08,
-        "geo_event_delta_weight": 0.40,
+        "geo_event_target_weight": 0.45,
+        "geo_event_reject_weight": 0.08,
+        "geo_teacher_consistency_weight": 0.12,
+        "geo_event_delta_weight": 0.0,
         "geo_teacher_boost": 0.5,
         "geo_detail_threshold": 0.02,
         "geo_positive_floor": 0.20,
@@ -264,7 +267,7 @@ def run(cfg: OmegaConf):
     cfg = configure_mul_loss_cfg(
         cfg,
         weights=weights,
-        exp_name="mul_loss_detail_gt_geo_event_proposal",
+        exp_name="mul_loss_detail_gt_geo_event_filter",
     )
     fe.build_event_loader = build_geo_teacher_loader
     fe.EventSupervisedLoss = make_configured_geo_contribution_loss(cfg)
