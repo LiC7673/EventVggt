@@ -979,6 +979,10 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         residual_relative_abs = depth_pred.new_tensor(0.0)
         if depth_residual is not None:
             depth_residual = depth_residual.to(device=depth_pred.device, dtype=depth_pred.dtype)
+            residual_abs = _weighted_mean(
+                depth_residual.abs().unsqueeze(2),
+                valid_mask.unsqueeze(2).to(dtype=depth_pred.dtype),
+            )
             if self.residual_smooth_weight > 0.0:
                 residual_smooth_loss = _residual_edge_aware_smoothness(
                     depth_residual,
@@ -988,11 +992,6 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
                 )
             if self.residual_second_order_weight > 0.0:
                 residual_second_order_loss = _residual_second_order_smoothness(depth_residual, valid_mask)
-            if self.residual_abs_weight > 0.0:
-                residual_abs = _weighted_mean(
-                    depth_residual.abs().unsqueeze(2),
-                    valid_mask.unsqueeze(2).to(dtype=depth_pred.dtype),
-                )
             relative_reference = (
                 depth_coarse.clamp_min(self.depth_min) if depth_coarse is not None else depth_pred.clamp_min(self.depth_min)
             )

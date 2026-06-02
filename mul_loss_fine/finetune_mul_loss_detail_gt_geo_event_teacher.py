@@ -201,8 +201,8 @@ def run(cfg: OmegaConf):
     cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "event_reliability_init_bias", -1.0))
     cfg.model.proposal_depth_lowpass = bool(getattr(cfg.model, "proposal_depth_lowpass", True))
     cfg.model.proposal_use_depth_hf = bool(getattr(cfg.model, "proposal_use_depth_hf", False))
-    cfg.model.final_degrid_strength = float(getattr(cfg.model, "final_degrid_strength", 0.15))
-    cfg.model.final_degrid_kernel = int(getattr(cfg.model, "final_degrid_kernel", 5))
+    cfg.model.final_degrid_strength = float(getattr(cfg.model, "final_degrid_strength", 0.35))
+    cfg.model.final_degrid_kernel = int(getattr(cfg.model, "final_degrid_kernel", 15))
     # Events should decide reliability, not directly write depth residuals.
     # Direct event residual prediction tends to learn highlight/noise texture.
     cfg.model.event_proposal_weight = float(getattr(cfg.model, "event_proposal_weight", 0.0))
@@ -211,9 +211,15 @@ def run(cfg: OmegaConf):
     cfg.train.unfreeze_heads = False
     cfg.train.unfreeze_aggregator_blocks = False
     if str(getattr(cfg, "pretrained", "")) in {"", "./ckpt/model.pt"}:
-        preferred = Path("./checkpoints/mul_loss_detail_gt_temporal_reliability_v2/checkpoint-last.pth")
-        fallback = Path("./checkpoints/mul_loss_detail_gt_temporal_gated/checkpoint-last.pth")
-        cfg.pretrained = str(preferred if preferred.exists() else fallback)
+        # Do not initialize from the old reliability_v2 branch here: that model
+        # already learned noisy/reversed event reliability in earlier ablations.
+        # Start from the cleaner RGB/coarse-proposal gated branch instead.
+        candidates = [
+            Path("./checkpoints/mul_loss_detail_gt_temporal_gated/checkpoint-last.pth"),
+            Path("./checkpoints/mul_loss_detail_gt_temporal_detail/checkpoint-last.pth"),
+            Path("./checkpoints/mul_loss_detail_gt_uniform/checkpoint-last.pth"),
+        ]
+        cfg.pretrained = str(next((path for path in candidates if path.exists()), candidates[-1]))
 
     weights = {
         "mv_normal_weight": 0.0,
