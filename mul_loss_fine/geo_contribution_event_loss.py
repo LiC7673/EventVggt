@@ -282,6 +282,9 @@ def make_configured_geo_contribution_loss(cfg):
                 temporal_quality_floor=float(getattr(cfg.loss, "v2_temporal_quality_floor", 0.25)),
                 counterfactual_weight=float(getattr(cfg.loss, "v2_counterfactual_weight", 0.20)),
                 counterfactual_margin=float(getattr(cfg.loss, "v2_counterfactual_margin", 0.08)),
+                counterfactual_negative_weight=float(
+                    getattr(cfg.loss, "v2_counterfactual_negative_weight", 0.50)
+                ),
             )
             self._init_geo_contribution_loss(
                 teacher_ldr_id=str(getattr(cfg.loss, "geo_teacher_ldr_id", "ev_10")),
