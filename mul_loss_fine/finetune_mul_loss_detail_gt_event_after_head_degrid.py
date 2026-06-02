@@ -6,6 +6,7 @@ This experiment separates two failure modes:
    residual writer.
 """
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -27,8 +28,22 @@ from mul_loss_fine.launcher import configure_mul_loss_cfg  # noqa: E402
 
 class EventBatchAccelerator(HFAccelerator):
     def __init__(self, *args, **kwargs):
-        kwargs.setdefault("even_batches", False)
-        super().__init__(*args, **kwargs)
+        signature = inspect.signature(HFAccelerator.__init__)
+        if "even_batches" in signature.parameters:
+            kwargs.setdefault("even_batches", False)
+            super().__init__(*args, **kwargs)
+        else:
+            super().__init__(*args, **kwargs)
+            # Older accelerate versions do not expose even_batches in the
+            # constructor, but prepare_data_loader still checks the instance
+            # attribute when a custom batch_sampler has no batch_size.
+            try:
+                self.even_batches = False
+            except Exception:
+                pass
+            dataloader_config = getattr(self, "dataloader_config", None)
+            if dataloader_config is not None and hasattr(dataloader_config, "even_batches"):
+                dataloader_config.even_batches = False
 
 
 def _configure_event_plus_heads(model, cfg) -> None:
