@@ -52,14 +52,17 @@ if [[ "${VERIFY_AFTER_TRAIN}" == "true" ]]; then
     --model-variant temporal_reliability_v2 \
     --event-hidden-dim 32 \
     --event-num-bins 10 \
-    --refiner-residual-scale 0.025 \
-    --event-gate-downsample 2 \
-    --event-gate-smooth-kernel 5 \
-    --event-reliability-floor 0.05 \
-    --event-reliability-init-bias -1.0 \
+    --refiner-residual-scale 0.035 \
+    --event-gate-downsample 1 \
+    --event-gate-smooth-kernel 3 \
+    --event-reliability-floor 0.18 \
+    --event-reliability-init-bias -0.5 \
     --proposal-depth-lowpass \
     --no-proposal-use-depth-hf \
-    --event-proposal-weight 0.0 \
+    --event-proposal-weight 0.65 \
+    --event-delta-highpass-kernel 9 \
+    --event-delta-patch-zero-mean \
+    --event-delta-patch-size 14 \
     --final-degrid-strength 0.0 \
     --final-degrid-kernel 9 \
     --num-views "${NUM_VIEWS}" \
@@ -74,14 +77,17 @@ if [[ "${VERIFY_AFTER_TRAIN}" == "true" ]]; then
     --model-variant temporal_reliability_v2 \
     --event-hidden-dim 32 \
     --event-num-bins 10 \
-    --refiner-residual-scale 0.025 \
-    --event-gate-downsample 2 \
-    --event-gate-smooth-kernel 5 \
-    --event-reliability-floor 0.05 \
-    --event-reliability-init-bias -1.0 \
+    --refiner-residual-scale 0.035 \
+    --event-gate-downsample 1 \
+    --event-gate-smooth-kernel 3 \
+    --event-reliability-floor 0.18 \
+    --event-reliability-init-bias -0.5 \
     --proposal-depth-lowpass \
     --no-proposal-use-depth-hf \
-    --event-proposal-weight 0.0 \
+    --event-proposal-weight 0.65 \
+    --event-delta-highpass-kernel 9 \
+    --event-delta-patch-zero-mean \
+    --event-delta-patch-size 14 \
     --final-degrid-strength 0.0 \
     --final-degrid-kernel 9 \
     --num-views "${NUM_VIEWS}" \

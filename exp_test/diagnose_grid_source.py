@@ -146,6 +146,9 @@ def apply_checkpoint_config(args) -> Dict:
         "proposal_depth_lowpass": "proposal_depth_lowpass",
         "proposal_use_depth_hf": "proposal_use_depth_hf",
         "event_proposal_weight": "event_proposal_weight",
+        "event_delta_highpass_kernel": "event_delta_highpass_kernel",
+        "event_delta_patch_zero_mean": "event_delta_patch_zero_mean",
+        "event_delta_patch_size": "event_delta_patch_size",
         "final_degrid_strength": "final_degrid_strength",
         "final_degrid_kernel": "final_degrid_kernel",
         "head_frames_chunk_size": "head_frames_chunk_size",
@@ -184,6 +187,9 @@ def build_model(args, device: torch.device) -> Tuple[torch.nn.Module, Dict[str, 
             proposal_depth_lowpass=args.proposal_depth_lowpass,
             proposal_use_depth_hf=args.proposal_use_depth_hf,
             event_proposal_weight=args.event_proposal_weight,
+            event_delta_highpass_kernel=args.event_delta_highpass_kernel,
+            event_delta_patch_zero_mean=args.event_delta_patch_zero_mean,
+            event_delta_patch_size=args.event_delta_patch_size,
             final_degrid_strength=args.final_degrid_strength,
             final_degrid_kernel=args.final_degrid_kernel,
             head_frames_chunk_size=args.head_frames_chunk_size,
@@ -662,6 +668,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--proposal-depth-lowpass", action="store_true")
     parser.add_argument("--proposal-use-depth-hf", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--event-proposal-weight", type=float, default=0.0)
+    parser.add_argument("--event-delta-highpass-kernel", type=int, default=0)
+    parser.add_argument("--event-delta-patch-zero-mean", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--event-delta-patch-size", type=int, default=14)
     parser.add_argument("--final-degrid-strength", type=float, default=0.0)
     parser.add_argument("--final-degrid-kernel", type=int, default=5)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)

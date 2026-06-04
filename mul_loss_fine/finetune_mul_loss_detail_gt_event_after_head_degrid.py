@@ -100,14 +100,17 @@ def _prepare_cfg(cfg):
     cfg.model.variant = "temporal_reliability_v2"
     cfg.model.event_num_bins = int(getattr(cfg.data, "event_resize_bins", 10))
     cfg.model.event_hidden_dim = int(getattr(cfg.model, "after_head_event_hidden_dim", 32))
-    cfg.model.refiner_residual_scale = float(getattr(cfg.model, "after_head_residual_scale", 0.025))
-    cfg.model.event_gate_downsample = int(getattr(cfg.model, "after_head_event_gate_downsample", 2))
-    cfg.model.event_gate_smooth_kernel = int(getattr(cfg.model, "after_head_event_gate_smooth_kernel", 5))
-    cfg.model.event_reliability_floor = float(getattr(cfg.model, "after_head_event_reliability_floor", 0.05))
-    cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "after_head_event_reliability_init_bias", -1.0))
+    cfg.model.refiner_residual_scale = float(getattr(cfg.model, "after_head_residual_scale", 0.035))
+    cfg.model.event_gate_downsample = int(getattr(cfg.model, "after_head_event_gate_downsample", 1))
+    cfg.model.event_gate_smooth_kernel = int(getattr(cfg.model, "after_head_event_gate_smooth_kernel", 3))
+    cfg.model.event_reliability_floor = float(getattr(cfg.model, "after_head_event_reliability_floor", 0.18))
+    cfg.model.event_reliability_init_bias = float(getattr(cfg.model, "after_head_event_reliability_init_bias", -0.5))
     cfg.model.proposal_depth_lowpass = bool(getattr(cfg.model, "after_head_proposal_depth_lowpass", True))
     cfg.model.proposal_use_depth_hf = bool(getattr(cfg.model, "after_head_proposal_use_depth_hf", False))
-    cfg.model.event_proposal_weight = float(getattr(cfg.model, "after_head_event_proposal_weight", 0.0))
+    cfg.model.event_proposal_weight = float(getattr(cfg.model, "after_head_event_proposal_weight", 0.65))
+    cfg.model.event_delta_highpass_kernel = int(getattr(cfg.model, "after_head_event_delta_highpass_kernel", 9))
+    cfg.model.event_delta_patch_zero_mean = bool(getattr(cfg.model, "after_head_event_delta_patch_zero_mean", True))
+    cfg.model.event_delta_patch_size = int(getattr(cfg.model, "after_head_event_delta_patch_size", 14))
     cfg.model.final_degrid_strength = float(getattr(cfg.model, "after_head_final_degrid_strength", 0.0))
     cfg.model.final_degrid_kernel = int(getattr(cfg.model, "after_head_final_degrid_kernel", 9))
     cfg.model.exposure_forward_batch_chunk = int(getattr(cfg.model, "after_head_forward_batch_chunk", 1))
@@ -138,7 +141,7 @@ def run(cfg: OmegaConf):
         "detail_gt_normal_weight": 0.25,
         "detail_gt_hf_weight": 1.00,
         "detail_gt_grad_weight": 1.00,
-        "detail_gt_event_boost": 0.75,
+        "detail_gt_event_boost": 1.50,
         "detail_gt_threshold": 0.02,
         "detail_gt_weight_power": 1.0,
         "detail_gt_normal_source": "depth",
@@ -160,11 +163,11 @@ def run(cfg: OmegaConf):
         "final_grid_patch_size": 14,
         "final_grid_band": 1,
         "final_grid_detail_threshold": 0.02,
-        "v2_residual_target_weight": 0.35,
+        "v2_residual_target_weight": 0.20,
         "v2_gate_reliability_weight": 0.25,
         "v2_gate_need_floor": 0.08,
         "v2_gate_positive_boost": 2.5,
-        "v2_temporal_quality_floor": 0.35,
+        "v2_temporal_quality_floor": 0.50,
         "v2_counterfactual_weight": 0.30,
         "v2_counterfactual_margin": 0.12,
         "v2_counterfactual_negative_weight": 0.40,
@@ -176,14 +179,14 @@ def run(cfg: OmegaConf):
         "v2_non_detail_second_order_weight": 0.04,
         "v2_target_detail_threshold": 0.02,
         "geo_teacher_ldr_id": getattr(cfg.data, "geo_teacher_ldr_id", "ev_10"),
-        "geo_event_target_weight": 0.35,
+        "geo_event_target_weight": 0.30,
         "geo_event_reject_weight": 0.15,
         "geo_teacher_consistency_weight": 0.10,
-        "geo_event_delta_weight": 0.0,
+        "geo_event_delta_weight": 0.40,
         "geo_teacher_boost": 0.8,
         "geo_detail_threshold": 0.02,
-        "geo_positive_floor": 0.12,
-        "geo_negative_margin": 0.18,
+        "geo_positive_floor": 0.18,
+        "geo_negative_margin": 0.20,
     }
 
     cfg = configure_mul_loss_cfg(
@@ -199,7 +202,7 @@ def run(cfg: OmegaConf):
     print(
         "Event-after-head-degrid training: initialize from de-gridded heads; "
         "train event_encoder/event_detail_refiner plus depth_head/point_head; "
-        "events gate reliable detail, direct event residual is disabled."
+        "events write high-pass zero-mean detail residuals through reliability gates."
     )
     print(
         f"teacher={cfg.data.geo_teacher_ldr_id}, students={cfg.data.geo_student_ldr_ids}, "

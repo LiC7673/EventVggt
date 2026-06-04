@@ -38,6 +38,9 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         proposal_depth_lowpass: bool = False,
         proposal_use_depth_hf: bool = False,
         event_proposal_weight: float = 0.0,
+        event_delta_highpass_kernel: int = 0,
+        event_delta_patch_zero_mean: bool = False,
+        event_delta_patch_size: int = 14,
         gate_smooth_kernel: int = 5,
         final_degrid_strength: float = 0.0,
         final_degrid_kernel: int = 5,
@@ -59,6 +62,11 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         self.proposal_depth_lowpass = bool(proposal_depth_lowpass)
         self.proposal_use_depth_hf = bool(proposal_use_depth_hf)
         self.event_proposal_weight = float(event_proposal_weight)
+        self.event_delta_highpass_kernel = max(0, int(event_delta_highpass_kernel))
+        if self.event_delta_highpass_kernel > 1 and self.event_delta_highpass_kernel % 2 == 0:
+            self.event_delta_highpass_kernel += 1
+        self.event_delta_patch_zero_mean = bool(event_delta_patch_zero_mean)
+        self.event_delta_patch_size = max(1, int(event_delta_patch_size))
         self.gate_smooth_kernel = max(1, int(gate_smooth_kernel))
         if self.gate_smooth_kernel % 2 == 0:
             self.gate_smooth_kernel += 1
@@ -190,8 +198,10 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
                 raw_event_proposal = checkpoint(self.event_geometry_proposal, event_proposal_input, use_reentrant=False)
             else:
                 raw_event_proposal = self.event_geometry_proposal(event_proposal_input)
+            event_proposal = torch.tanh(raw_event_proposal)
+            event_proposal = self._filter_event_delta(event_proposal)
             event_delta_log = (
-                torch.tanh(raw_event_proposal)
+                event_proposal
                 * event_gate
                 * self.residual_scale
                 * self.event_proposal_weight
@@ -227,6 +237,29 @@ class TemporalReliabilityDetailRefinerV2(TemporalEventGatedDetailRefiner):
         self.last_rgb_delta_log = rgb_delta_log.reshape(batch, seq_len, height, width)
         self.last_event_delta_log = event_delta_log.reshape(batch, seq_len, height, width)
         return refined, refined_points, residual
+
+    def _filter_event_delta(self, delta: torch.Tensor) -> torch.Tensor:
+        if self.event_delta_highpass_kernel > 1:
+            smooth = F.avg_pool2d(
+                delta,
+                kernel_size=self.event_delta_highpass_kernel,
+                stride=1,
+                padding=self.event_delta_highpass_kernel // 2,
+            )
+            delta = delta - smooth
+        if self.event_delta_patch_zero_mean and self.event_delta_patch_size > 1:
+            height, width = delta.shape[-2:]
+            pad_h = (-height) % self.event_delta_patch_size
+            pad_w = (-width) % self.event_delta_patch_size
+            padded = F.pad(delta, (0, pad_w, 0, pad_h), mode="replicate")
+            patch_mean = F.avg_pool2d(
+                padded,
+                kernel_size=self.event_delta_patch_size,
+                stride=self.event_delta_patch_size,
+            )
+            patch_mean = F.interpolate(patch_mean, size=padded.shape[-2:], mode="nearest")
+            delta = (padded - patch_mean)[..., :height, :width]
+        return delta
 
     def _smooth_gate_map(self, value: torch.Tensor) -> torch.Tensor:
         if self.gate_smooth_kernel <= 1:
@@ -356,6 +389,9 @@ class StreamVGGT(TemporalGatedStreamVGGT):
         proposal_depth_lowpass: bool = False,
         proposal_use_depth_hf: bool = False,
         event_proposal_weight: float = 0.0,
+        event_delta_highpass_kernel: int = 0,
+        event_delta_patch_zero_mean: bool = False,
+        event_delta_patch_size: int = 14,
         event_gate_smooth_kernel: int = 5,
         final_degrid_strength: float = 0.0,
         final_degrid_kernel: int = 5,
@@ -387,6 +423,9 @@ class StreamVGGT(TemporalGatedStreamVGGT):
             proposal_depth_lowpass=proposal_depth_lowpass,
             proposal_use_depth_hf=proposal_use_depth_hf,
             event_proposal_weight=event_proposal_weight,
+            event_delta_highpass_kernel=event_delta_highpass_kernel,
+            event_delta_patch_zero_mean=event_delta_patch_zero_mean,
+            event_delta_patch_size=event_delta_patch_size,
             gate_smooth_kernel=event_gate_smooth_kernel,
             final_degrid_strength=final_degrid_strength,
             final_degrid_kernel=final_degrid_kernel,
