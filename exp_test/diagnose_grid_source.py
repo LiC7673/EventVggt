@@ -149,6 +149,7 @@ def apply_checkpoint_config(args) -> Dict:
         "event_delta_highpass_kernel": "event_delta_highpass_kernel",
         "event_delta_patch_zero_mean": "event_delta_patch_zero_mean",
         "event_delta_patch_size": "event_delta_patch_size",
+        "event_delta_abs_limit": "event_delta_abs_limit",
         "final_degrid_strength": "final_degrid_strength",
         "final_degrid_kernel": "final_degrid_kernel",
         "head_frames_chunk_size": "head_frames_chunk_size",
@@ -190,6 +191,7 @@ def build_model(args, device: torch.device) -> Tuple[torch.nn.Module, Dict[str, 
             event_delta_highpass_kernel=args.event_delta_highpass_kernel,
             event_delta_patch_zero_mean=args.event_delta_patch_zero_mean,
             event_delta_patch_size=args.event_delta_patch_size,
+            event_delta_abs_limit=args.event_delta_abs_limit,
             final_degrid_strength=args.final_degrid_strength,
             final_degrid_kernel=args.final_degrid_kernel,
             head_frames_chunk_size=args.head_frames_chunk_size,
@@ -671,6 +673,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-delta-highpass-kernel", type=int, default=0)
     parser.add_argument("--event-delta-patch-zero-mean", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--event-delta-patch-size", type=int, default=14)
+    parser.add_argument("--event-delta-abs-limit", type=float, default=0.0)
     parser.add_argument("--final-degrid-strength", type=float, default=0.0)
     parser.add_argument("--final-degrid-kernel", type=int, default=5)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)

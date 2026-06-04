@@ -62,6 +62,10 @@ class TemporalVoxelDetailRefiner(nn.Module):
         hidden_dim: int = 16,
         count_cmax: float = 3.0,
         residual_scale: float = 0.03,
+        residual_highpass_kernel: int = 0,
+        residual_patch_zero_mean: bool = False,
+        residual_patch_size: int = 14,
+        residual_abs_limit: float = 0.0,
         refine_points: bool = True,
         use_checkpoint: bool = True,
         min_depth: float = 1e-6,
@@ -70,6 +74,12 @@ class TemporalVoxelDetailRefiner(nn.Module):
         self.num_bins = max(1, int(num_bins))
         self.count_cmax = max(1.0, float(count_cmax))
         self.residual_scale = float(residual_scale)
+        self.residual_highpass_kernel = max(0, int(residual_highpass_kernel))
+        if self.residual_highpass_kernel > 1 and self.residual_highpass_kernel % 2 == 0:
+            self.residual_highpass_kernel += 1
+        self.residual_patch_zero_mean = bool(residual_patch_zero_mean)
+        self.residual_patch_size = max(1, int(residual_patch_size))
+        self.residual_abs_limit = float(residual_abs_limit)
         self.refine_points = bool(refine_points)
         self.use_checkpoint = bool(use_checkpoint)
         self.min_depth = float(min_depth)
@@ -136,6 +146,7 @@ class TemporalVoxelDetailRefiner(nn.Module):
             raw_residual = self.fine_head(fine_input)
 
         delta_log = torch.tanh(raw_residual) * self.residual_scale
+        delta_log = self._filter_delta_log(delta_log)
         refined_depth_flat = depth_flat.to(dtype=delta_log.dtype) * torch.exp(delta_log)
         refined_depth = refined_depth_flat.permute(0, 2, 3, 1).reshape(batch, seq_len, height, width, 1)
         refined_depth = refined_depth.to(dtype=depth.dtype).clamp_min(self.min_depth)
@@ -146,6 +157,32 @@ class TemporalVoxelDetailRefiner(nn.Module):
             ratio = refined_depth / depth.clamp_min(self.min_depth)
             refined_points = points * ratio.to(dtype=points.dtype)
         return refined_depth, refined_points, depth_residual
+
+    def _filter_delta_log(self, delta_log: torch.Tensor) -> torch.Tensor:
+        if self.residual_highpass_kernel > 1:
+            smooth = F.avg_pool2d(
+                delta_log,
+                kernel_size=self.residual_highpass_kernel,
+                stride=1,
+                padding=self.residual_highpass_kernel // 2,
+            )
+            delta_log = delta_log - smooth
+        if self.residual_patch_zero_mean and self.residual_patch_size > 1:
+            height, width = delta_log.shape[-2:]
+            pad_h = (-height) % self.residual_patch_size
+            pad_w = (-width) % self.residual_patch_size
+            padded = F.pad(delta_log, (0, pad_w, 0, pad_h), mode="replicate")
+            patch_mean = F.avg_pool2d(
+                padded,
+                kernel_size=self.residual_patch_size,
+                stride=self.residual_patch_size,
+            )
+            patch_mean = F.interpolate(patch_mean, size=padded.shape[-2:], mode="nearest")
+            delta_log = (padded - patch_mean)[..., :height, :width]
+        limit = self.residual_abs_limit if self.residual_abs_limit > 0.0 else self.residual_scale
+        if limit > 0.0:
+            delta_log = delta_log.clamp(-limit, limit)
+        return delta_log
 
     def _prepare_voxels(self, voxel: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         batch, seq_len, channels, height, width = voxel.shape
@@ -206,6 +243,10 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         event_num_bins: int = 10,
         event_count_cmax: float = 3.0,
         residual_scale: float = 0.03,
+        residual_highpass_kernel: int = 0,
+        residual_patch_zero_mean: bool = False,
+        residual_patch_size: int = 14,
+        residual_abs_limit: float = 0.0,
         refine_points: bool = True,
         use_checkpoint: bool = True,
     ) -> None:
@@ -216,6 +257,10 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             hidden_dim=event_hidden_dim,
             count_cmax=event_count_cmax,
             residual_scale=residual_scale,
+            residual_highpass_kernel=residual_highpass_kernel,
+            residual_patch_zero_mean=residual_patch_zero_mean,
+            residual_patch_size=residual_patch_size,
+            residual_abs_limit=residual_abs_limit,
             refine_points=refine_points,
             use_checkpoint=use_checkpoint,
         )

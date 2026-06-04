@@ -427,6 +427,7 @@ def build_model(args, device: torch.device):
             event_delta_highpass_kernel=getattr(args, "event_delta_highpass_kernel", 0),
             event_delta_patch_zero_mean=getattr(args, "event_delta_patch_zero_mean", False),
             event_delta_patch_size=getattr(args, "event_delta_patch_size", args.patch_size),
+            event_delta_abs_limit=getattr(args, "event_delta_abs_limit", 0.0),
             final_degrid_strength=getattr(args, "final_degrid_strength", 0.0),
             final_degrid_kernel=getattr(args, "final_degrid_kernel", 5),
         )
@@ -725,6 +726,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-delta-highpass-kernel", type=int, default=0)
     parser.add_argument("--event-delta-patch-zero-mean", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--event-delta-patch-size", type=int, default=14)
+    parser.add_argument("--event-delta-abs-limit", type=float, default=0.0)
     parser.add_argument("--final-degrid-strength", type=float, default=0.0)
     parser.add_argument("--final-degrid-kernel", type=int, default=5)
     parser.add_argument("--head-frames-chunk-size", type=int, default=2)

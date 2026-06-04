@@ -201,6 +201,10 @@ def build_event_model(cfg) -> nn.Module:
             event_num_bins=int(getattr(cfg.model, "event_num_bins", default_event_bins)),
             event_count_cmax=float(getattr(cfg.model, "event_count_cmax", 3.0)),
             residual_scale=float(getattr(cfg.model, "refiner_residual_scale", 0.03)),
+            residual_highpass_kernel=int(getattr(cfg.model, "event_delta_highpass_kernel", 0)),
+            residual_patch_zero_mean=bool(getattr(cfg.model, "event_delta_patch_zero_mean", False)),
+            residual_patch_size=int(getattr(cfg.model, "event_delta_patch_size", getattr(cfg.model, "patch_size", 14))),
+            residual_abs_limit=float(getattr(cfg.model, "event_delta_abs_limit", 0.0)),
             refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
             use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
         )
