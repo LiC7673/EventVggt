@@ -66,6 +66,9 @@ class TemporalVoxelDetailRefiner(nn.Module):
         residual_patch_zero_mean: bool = False,
         residual_patch_size: int = 14,
         residual_abs_limit: float = 0.0,
+        reliability_gate_enabled: bool = False,
+        reliability_gate_floor: float = 0.10,
+        reliability_init_bias: float = 0.0,
         refine_points: bool = True,
         use_checkpoint: bool = True,
         min_depth: float = 1e-6,
@@ -80,6 +83,8 @@ class TemporalVoxelDetailRefiner(nn.Module):
         self.residual_patch_zero_mean = bool(residual_patch_zero_mean)
         self.residual_patch_size = max(1, int(residual_patch_size))
         self.residual_abs_limit = float(residual_abs_limit)
+        self.reliability_gate_enabled = bool(reliability_gate_enabled)
+        self.reliability_gate_floor = min(max(float(reliability_gate_floor), 0.0), 1.0)
         self.refine_points = bool(refine_points)
         self.use_checkpoint = bool(use_checkpoint)
         self.min_depth = float(min_depth)
@@ -110,8 +115,17 @@ class TemporalVoxelDetailRefiner(nn.Module):
             _ResidualBlock(hidden_dim, dilation=1),
             nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1),
         )
+        self.reliability_head = nn.Sequential(
+            nn.Conv2d(hidden_dim + 8, hidden_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(groups, hidden_dim),
+            nn.GELU(),
+            _ResidualBlock(hidden_dim, dilation=1),
+            nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1),
+        )
         nn.init.zeros_(self.fine_head[-1].weight)
         nn.init.zeros_(self.fine_head[-1].bias)
+        nn.init.zeros_(self.reliability_head[-1].weight)
+        nn.init.constant_(self.reliability_head[-1].bias, float(reliability_init_bias))
 
     def forward(
         self,
@@ -144,8 +158,13 @@ class TemporalVoxelDetailRefiner(nn.Module):
             raw_residual = checkpoint(self.fine_head, fine_input, use_reentrant=False)
         else:
             raw_residual = self.fine_head(fine_input)
+        raw_reliability = self.reliability_head(fine_input)
+        reliability = torch.sigmoid(raw_reliability)
 
         delta_log = torch.tanh(raw_residual) * self.residual_scale
+        if self.reliability_gate_enabled:
+            gate = self.reliability_gate_floor + (1.0 - self.reliability_gate_floor) * reliability
+            delta_log = delta_log * gate
         delta_log = self._filter_delta_log(delta_log)
         refined_depth_flat = depth_flat.to(dtype=delta_log.dtype) * torch.exp(delta_log)
         refined_depth = refined_depth_flat.permute(0, 2, 3, 1).reshape(batch, seq_len, height, width, 1)
@@ -156,6 +175,12 @@ class TemporalVoxelDetailRefiner(nn.Module):
         if self.refine_points and points is not None:
             ratio = refined_depth / depth.clamp_min(self.min_depth)
             refined_points = points * ratio.to(dtype=points.dtype)
+        self.last_reliability = reliability.reshape(batch, seq_len, height, width)
+        self.last_gate = (
+            (self.reliability_gate_floor + (1.0 - self.reliability_gate_floor) * reliability)
+            if self.reliability_gate_enabled
+            else reliability
+        ).reshape(batch, seq_len, height, width)
         return refined_depth, refined_points, depth_residual
 
     def _filter_delta_log(self, delta_log: torch.Tensor) -> torch.Tensor:
@@ -247,6 +272,9 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
         residual_patch_zero_mean: bool = False,
         residual_patch_size: int = 14,
         residual_abs_limit: float = 0.0,
+        reliability_gate_enabled: bool = False,
+        reliability_gate_floor: float = 0.10,
+        reliability_init_bias: float = 0.0,
         refine_points: bool = True,
         use_checkpoint: bool = True,
     ) -> None:
@@ -261,6 +289,9 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
             residual_patch_zero_mean=residual_patch_zero_mean,
             residual_patch_size=residual_patch_size,
             residual_abs_limit=residual_abs_limit,
+            reliability_gate_enabled=reliability_gate_enabled,
+            reliability_gate_floor=reliability_gate_floor,
+            reliability_init_bias=reliability_init_bias,
             refine_points=refine_points,
             use_checkpoint=use_checkpoint,
         )
@@ -318,6 +349,8 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
                     depth=depth_coarse,
                     points=points_coarse,
                 )
+        reliability = getattr(self.event_detail_refiner, "last_reliability", None)
+        gate = getattr(self.event_detail_refiner, "last_gate", None)
 
         ress = []
         for frame_idx in range(images.shape[1]):
@@ -331,6 +364,9 @@ class StreamVGGT(nn.Module, PyTorchModelHubMixin):
                 "camera_pose": predictions["pose_enc"][:, frame_idx, :],
                 **({"valid_mask": views[frame_idx]["valid_mask"]} if "valid_mask" in views[frame_idx] else {}),
             }
+            if reliability is not None:
+                result["event_reliability"] = reliability[:, frame_idx]
+                result["event_gate"] = gate[:, frame_idx]
             if "track" in predictions:
                 result.update(
                     {

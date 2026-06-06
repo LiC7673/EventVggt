@@ -205,6 +205,9 @@ def build_event_model(cfg) -> nn.Module:
             residual_patch_zero_mean=bool(getattr(cfg.model, "event_delta_patch_zero_mean", False)),
             residual_patch_size=int(getattr(cfg.model, "event_delta_patch_size", getattr(cfg.model, "patch_size", 14))),
             residual_abs_limit=float(getattr(cfg.model, "event_delta_abs_limit", 0.0)),
+            reliability_gate_enabled=bool(getattr(cfg.model, "event_reliability_gate_enabled", False)),
+            reliability_gate_floor=float(getattr(cfg.model, "event_reliability_gate_floor", 0.10)),
+            reliability_init_bias=float(getattr(cfg.model, "event_reliability_init_bias", 0.0)),
             refine_points=bool(getattr(cfg.model, "refiner_refine_points", True)),
             use_checkpoint=bool(getattr(cfg.model, "refiner_use_checkpoint", True)),
         )
