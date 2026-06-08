@@ -280,7 +280,7 @@ Temporal persistence + polarity + entropy
 
 回答：
 
-> GT detail 建立了强监督基线，最新 V2 专门解决事件贡献可验证性问题。V2 的最终 residual 乘以 event-derived gate，事件置零后事件修正严格归零；同时已经准备 real / zero / reverse / polarity-swap 的反事实测试来量化输出变化和误差差异。
+> GT detail 建立了强监督基线，最新 V2 专门解决事件贡献可验证性问题。V2 的最终 residual 乘以 event-derived gate，事件置零后事件修正严格归零；同时已经准备 real / zer.o / reverse / polarity-swap 的反事实测试来量化输出变化和误差差异。
 
 ### Q2：为什么重点报告 normal，而不是 depth loss？
 

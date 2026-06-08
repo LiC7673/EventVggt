@@ -44,17 +44,10 @@ def _resolve_pretrained(cfg) -> None:
     if current not in {"", "./ckpt/model.pt", "ckpt/model.pt"}:
         return
 
-    candidates = [
-        ROOT_DIR / "checkpoints" / "mul_loss_detail_gt_head_degrid" / "checkpoint-last.pth",
-        ROOT_DIR / "checkpoints" / "mul_loss_detail_gt_temporal_detail_hf" / "checkpoint-last.pth",
-        ROOT_DIR / "checkpoints" / "mul_loss_detail_gt_temporal_detail" / "checkpoint-last.pth",
-        ROOT_DIR / "checkpoints" / "mul_loss_detail_gt_uniform" / "checkpoint-last.pth",
-        ROOT_DIR / "ckpt" / "model.pt",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            cfg.pretrained = str(candidate)
-            return
+    # Start clean from the original VGGT initialization. Previous event/detail
+    # checkpoints can already contain failed reliability or residual biases.
+    original = ROOT_DIR / "ckpt" / "model.pt"
+    cfg.pretrained = str(original) if original.exists() else "./ckpt/model.pt"
 
 
 def _prepare_cfg(cfg):
