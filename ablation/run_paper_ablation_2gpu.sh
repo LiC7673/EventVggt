@@ -38,7 +38,7 @@ for variant in "${VARIANT_LIST[@]}"; do
     --num_machines 1 \
     --main_process_port "${port}" \
     ablation/finetune_paper_ablation.py \
-    ablation_variant="${variant}" \
+    +ablation_variant="${variant}" \
     exp_name="${exp_name}" \
     epochs="${EPOCHS}" \
     num_workers="${NUM_WORKERS}" \

@@ -19,6 +19,13 @@ GPUS=0,1 EPOCHS=20 NUM_VIEWS=4 LDR_ID=ev_5 bash ablation/run_paper_ablation_2gpu
 VARIANTS=rgb_baseline,raw_event,full_img_reliability bash ablation/run_paper_ablation_2gpu.sh
 ```
 
+When launching `finetune_paper_ablation.py` manually, use Hydra's append
+syntax for the variant field:
+
+```bash
+accelerate launch --multi_gpu --num_processes 2 ablation/finetune_paper_ablation.py +ablation_variant=full_img_reliability exp_name=ablation_full_img_reliability
+```
+
 Default variants:
 
 | Variant | Purpose |
