@@ -12,6 +12,8 @@ LDR_ID="${LDR_ID:-ev_5}"
 EPOCHS="${EPOCHS:-20}"
 ACTIVE_SCENE_COUNT="${ACTIVE_SCENE_COUNT:-3}"
 TEST_FRAME_COUNT="${TEST_FRAME_COUNT:-10}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-0}"
+SKIP_FINAL_EVAL="${SKIP_FINAL_EVAL:-true}"
 VARIANTS="${VARIANTS:-rgb_baseline,rgb_detail_gt,raw_event,raw_event_detail_gt,multildr,multildr_detail_gt,full_img_reliability}"
 
 IFS=',' read -r -a VARIANT_LIST <<< "${VARIANTS}"
@@ -41,6 +43,8 @@ for variant in "${VARIANT_LIST[@]}"; do
     +ablation_variant="${variant}" \
     exp_name="${exp_name}" \
     epochs="${EPOCHS}" \
+    eval_every_steps="${EVAL_EVERY_STEPS}" \
+    +skip_final_eval="${SKIP_FINAL_EVAL}" \
     num_workers="${NUM_WORKERS}" \
     pin_mem="${PIN_MEM}" \
     data.num_views="${NUM_VIEWS}" \

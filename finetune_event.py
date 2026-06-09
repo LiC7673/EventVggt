@@ -1587,8 +1587,11 @@ def train(cfg):
     total_time = time.time() - start_time
     printer.info("Training finished in %.2f minutes", total_time / 60.0)
 
-    # Final test evaluation and plots
-    if test_samples_count > 0:
+    # Final test evaluation and plots.  Long in-training evaluation can make
+    # other DDP ranks wait in collectives; ablation sweeps usually run the
+    # separate metric script instead.
+    skip_final_eval = bool(getattr(cfg, "skip_final_eval", False))
+    if test_samples_count > 0 and not skip_final_eval:
         if accelerator.is_main_process:
             printer.info("Running final test evaluation")
         test_stats, _ = evaluate_on_test_set(
@@ -1603,6 +1606,8 @@ def train(cfg):
         if accelerator.is_main_process:
             save_test_summary(cfg, epoch, global_step, test_stats)
             save_metrics_json(cfg, epoch, global_step, {}, test_stats)  # Save final test stats
+    elif accelerator.is_main_process and skip_final_eval:
+        printer.info("Skipping final test evaluation because skip_final_eval=true")
     if accelerator.is_main_process:
         generate_loss_plots(cfg)
 

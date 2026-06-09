@@ -19,6 +19,10 @@ GPUS=0,1 EPOCHS=20 NUM_VIEWS=4 LDR_ID=ev_5 bash ablation/run_paper_ablation_2gpu
 VARIANTS=rgb_baseline,raw_event,full_img_reliability bash ablation/run_paper_ablation_2gpu.sh
 ```
 
+The ablation runner disables in-training test evaluation by default
+(`EVAL_EVERY_STEPS=0`, `SKIP_FINAL_EVAL=true`) to avoid long DDP waits.  Run
+the EAG3R-style metric script after training for paper numbers.
+
 When launching `finetune_paper_ablation.py` manually, use Hydra's append
 syntax for the variant field:
 
