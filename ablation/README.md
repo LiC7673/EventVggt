@@ -6,7 +6,9 @@ image-guided event reliability.
 
 ## Train
 
-Run all default ablations, one two-GPU job at a time:
+Run the default ablations in parallel.  By default the runner uses GPU groups
+`1,4`, `5,6`, and `7`, skips checkpoints that already have
+`checkpoint-last.pth`, and excludes the completed `rgb_baseline` variant:
 
 ```bash
 bash ablation/run_paper_ablation_2gpu.sh
@@ -15,9 +17,14 @@ bash ablation/run_paper_ablation_2gpu.sh
 Useful environment variables:
 
 ```bash
-GPUS=0,1 EPOCHS=20 NUM_VIEWS=4 LDR_ID=ev_5 bash ablation/run_paper_ablation_2gpu.sh
+GPU_GROUPS="1,4 5,6 7" EPOCHS=20 NUM_VIEWS=4 LDR_ID=ev_5 bash ablation/run_paper_ablation_2gpu.sh
 VARIANTS=rgb_baseline,raw_event,full_img_reliability bash ablation/run_paper_ablation_2gpu.sh
 ```
+
+`GPU_GROUPS` is space-separated.  A group like `1,4` launches one two-GPU DDP
+job, while a single-card group like `7` launches a one-GPU job with
+`SINGLE_GPU_ACCUM_ITER=2` by default to keep the effective batch closer to the
+two-GPU jobs.  Logs are written to `ablation_logs/paper_ablation_parallel_*`.
 
 The ablation runner disables in-training test evaluation by default
 (`EVAL_EVERY_STEPS=0`, `SKIP_FINAL_EVAL=true`) to avoid long DDP waits.  Run
@@ -30,7 +37,7 @@ syntax for the variant field:
 accelerate launch --multi_gpu --num_processes 2 ablation/finetune_paper_ablation.py +ablation_variant=full_img_reliability exp_name=ablation_full_img_reliability
 ```
 
-Default variants:
+Available variants:
 
 | Variant | Purpose |
 | --- | --- |
