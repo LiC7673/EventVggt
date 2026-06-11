@@ -57,6 +57,21 @@ Evaluate the default manifest with EAG3R-style metrics:
 python ablation/eag3r_metrics_eval.py --manifest ablation/eag3r_eval_manifest.json --device cuda:0
 ```
 
+Evaluate on held-out scenes that were not used by the default ablation training
+(`initial_scene_idx=0`, `active_scene_count=3`).  This starts from scene index
+3 by default and evaluates all frames from those scenes:
+
+```bash
+bash ablation/run_eag3r_metrics_heldout_scenes.sh
+```
+
+Useful held-out overrides:
+
+```bash
+GPU=7 HELDOUT_INITIAL_SCENE_IDX=3 HELDOUT_ACTIVE_SCENE_COUNT=3 SPLIT=all bash ablation/run_eag3r_metrics_heldout_scenes.sh
+SPLIT=test bash ablation/run_eag3r_metrics_heldout_scenes.sh
+```
+
 Main reported metrics follow the EAG3R table style:
 
 - Depth: `AbsRel`, `delta1`, `RMSElog`

@@ -347,6 +347,7 @@ def evaluate_experiment(spec: Dict, args, out_dir: Path) -> Dict[str, float]:
     family = str(spec.get("family", "event")).lower()
     model = build_model(family, cfg, ckpt, device)
     dataset = build_dataset(cfg, args)
+    active_scenes = dataset.get_active_scenes() if hasattr(dataset, "get_active_scenes") else []
     loader = DataLoader(
         dataset,
         batch_size=int(args.batch_size),
@@ -356,7 +357,10 @@ def evaluate_experiment(spec: Dict, args, out_dir: Path) -> Dict[str, float]:
         drop_last=False,
         collate_fn=event_multiview_collate,
     )
-    print(f"[eval] {spec['name']}: samples={len(dataset)}, batches={len(loader)}, checkpoint={checkpoint}")
+    print(
+        f"[eval] {spec['name']}: samples={len(dataset)}, batches={len(loader)}, "
+        f"split={args.split}, scenes={active_scenes}, checkpoint={checkpoint}"
+    )
 
     depth_metrics = DepthMetrics()
     depth_metrics_aligned = DepthMetrics()
@@ -425,6 +429,10 @@ def evaluate_experiment(spec: Dict, args, out_dir: Path) -> Dict[str, float]:
         "family": family,
         "variant": str(getattr(cfg.model, "variant", "base")),
         "checkpoint": str(checkpoint),
+        "split": args.split,
+        "initial_scene_idx": int(args.initial_scene_idx if args.initial_scene_idx is not None else getattr(cfg.data, "initial_scene_idx", 0)),
+        "active_scene_count": int(args.active_scene_count if args.active_scene_count is not None else getattr(cfg.data, "active_scene_count", 3)),
+        "active_scenes": ";".join(active_scenes),
         **raw_depth,
         **aligned_depth,
         **{key: acc.compute() for key, acc in pose_acc.items()},
@@ -492,6 +500,10 @@ def write_outputs(rows: List[Dict], out_dir: Path) -> None:
         "num_samples",
         "evaluated_batches",
         "checkpoint",
+        "split",
+        "initial_scene_idx",
+        "active_scene_count",
+        "active_scenes",
     ]
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
@@ -523,7 +535,7 @@ def parse_args():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--amp", default="bf16", choices=["none", "fp16", "bf16"])
     parser.add_argument("--root", default=None)
-    parser.add_argument("--split", default="test", choices=["train", "test"])
+    parser.add_argument("--split", default="test", choices=["train", "test", "all"])
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--pin-memory", action="store_true")
