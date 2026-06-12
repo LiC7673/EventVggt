@@ -1,0 +1,57 @@
+[
+  {
+    "name": "rgb_baseline_scene12",
+    "family": "rgb",
+    "checkpoint": "checkpoints/ablation_rgb_baseline_scene12/checkpoint-last.pth"
+  },
+  {
+    "name": "rgb_detail_gt_scene12",
+    "family": "rgb",
+    "checkpoint": "checkpoints/ablation_rgb_detail_gt_scene12/checkpoint-last.pth"
+  },
+  {
+    "name": "raw_event_detail_gt_scene12",
+    "family": "event",
+    "checkpoint": "checkpoints/ablation_raw_event_detail_gt_scene12/checkpoint-last.pth"
+  },
+  {
+    "name": "multildr_scene12",
+    "family": "event",
+    "checkpoint": "checkpoints/ablation_multildr_scene12/checkpoint-last.pth"
+  },
+  {
+    "name": "multildr_detail_gt_scene12",
+    "family": "event",
+    "checkpoint": "checkpoints/ablation_multildr_detail_gt_scene12/checkpoint-last.pth"
+  },
+  {
+    "name": "full_img_reliability_scene12",
+    "family": "event",
+    "checkpoint": "checkpoints/ablation_full_img_reliability_scene12/checkpoint-last.pth",
+    "model_variant": "temporal_detail",
+    "event_hidden_dim": 16,
+    "refiner_residual_scale": 0.035,
+    "event_delta_highpass_kernel": 9,
+    "event_delta_patch_zero_mean": true,
+    "event_delta_patch_size": 14,
+    "event_delta_abs_limit": 0.025,
+    "event_reliability_gate_enabled": true,
+    "event_reliability_gate_floor": 0.20,
+    "event_reliability_init_bias": 0.0
+  },
+  {
+    "name": "combined_scene12",
+    "family": "event",
+    "checkpoint": "checkpoints/multildr_detail_then_reliability_scene12/checkpoint-last.pth",
+    "model_variant": "temporal_detail",
+    "event_hidden_dim": 16,
+    "refiner_residual_scale": 0.020,
+    "event_delta_highpass_kernel": 9,
+    "event_delta_patch_zero_mean": true,
+    "event_delta_patch_size": 14,
+    "event_delta_abs_limit": 0.015,
+    "event_reliability_gate_enabled": true,
+    "event_reliability_gate_floor": 0.10,
+    "event_reliability_init_bias": -0.5
+  }
+]

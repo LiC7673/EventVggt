@@ -80,7 +80,7 @@ def _prepare_cfg(cfg):
     for branch_name in ("model", "train", "loss", "data"):
         OmegaConf.set_struct(getattr(cfg, branch_name), False)
 
-    teacher = ROOT_DIR / "checkpoints" / "ablation_multildr_detail_gt" / "checkpoint-last.pth"
+    teacher = ROOT_DIR / "checkpoints" / "ablation_multildr_detail_gt_scene12" / "checkpoint-last.pth"
     configured_pretrained = str(getattr(cfg, "pretrained", "") or "")
     if configured_pretrained in {"", "./ckpt/model.pt", "ckpt/model.pt"}:
         cfg.pretrained = str(teacher)

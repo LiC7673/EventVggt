@@ -105,3 +105,25 @@ bash ablation/run_eag3r_metrics_heldout_scenes.sh
 The intended success condition is that held-out `AbsRel` and `RMSElog` remain
 close to `multildr_detail_gt`, while normal angular error approaches or
 improves upon `full_img_reliability`.
+
+## Twelve-scene Paper Run
+
+The paper-scale split uses 12 training scenes and 6 entirely held-out scenes.
+GPUs 2-7 are divided into three two-GPU groups:
+
+```bash
+bash ablation/run_scene12_paper_ablation_gpus_234567.sh
+```
+
+Phase 1 trains `rgb_baseline`, `rgb_detail_gt`, `raw_event_detail_gt`,
+`multildr`, `multildr_detail_gt`, and `full_img_reliability`, all with
+identical scene selection. Phase 2 automatically trains the frozen-coarse
+combined model from the resulting `multildr_detail_gt_scene12` checkpoint.
+
+Evaluate scene indices 12-17, which are disjoint from training indices 0-11:
+
+```bash
+GPU=7 bash ablation/run_scene12_heldout_eval.sh
+```
+
+Results are saved under `ablation/results/scene12_heldout6`.

@@ -9,9 +9,12 @@ PORT="${PORT:-29928}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 PIN_MEM="${PIN_MEM:-false}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
+INITIAL_SCENE_IDX="${INITIAL_SCENE_IDX:-0}"
+ACTIVE_SCENE_COUNT="${ACTIVE_SCENE_COUNT:-12}"
+TEST_FRAME_COUNT="${TEST_FRAME_COUNT:-10}"
 LDR_ID="${LDR_ID:-ev_5}"
 EPOCHS="${EPOCHS:-20}"
-EXP_NAME="${EXP_NAME:-mul_loss_detail_gt_temporal_detail_img_reliability}"
+EXP_NAME="${EXP_NAME:-mul_loss_detail_gt_temporal_detail_img_reliability_scene12}"
 CKPT="${CKPT:-${ROOT_DIR}/checkpoints/${EXP_NAME}/checkpoint-last.pth}"
 VERIFY_AFTER_TRAIN="${VERIFY_AFTER_TRAIN:-true}"
 VERIFY_OUT="${VERIFY_OUT:-${ROOT_DIR}/finetune_vaild/results/${EXP_NAME}_counterfactual}"
@@ -24,6 +27,7 @@ fi
 
 cd "${ROOT_DIR}"
 echo "[train] temporal-detail image-guided reliability on GPUs ${GPUS}, epochs=${EPOCHS}"
+echo "[train] scenes=[${INITIAL_SCENE_IDX}, $((INITIAL_SCENE_IDX + ACTIVE_SCENE_COUNT - 1))], count=${ACTIVE_SCENE_COUNT}"
 CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 \
 "${ACCELERATE_BIN}" launch \
   --multi_gpu \
@@ -36,6 +40,9 @@ CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 \
   epochs="${EPOCHS}" \
   exp_name="${EXP_NAME}" \
   data.num_views="${NUM_VIEWS}" \
+  data.initial_scene_idx="${INITIAL_SCENE_IDX}" \
+  data.active_scene_count="${ACTIVE_SCENE_COUNT}" \
+  data.test_frame_count="${TEST_FRAME_COUNT}" \
   data.ldr_event_id="${LDR_ID}" \
   "${PRETRAINED_ARGS[@]}" \
   "$@"
