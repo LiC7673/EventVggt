@@ -80,3 +80,28 @@ Main reported metrics follow the EAG3R table style:
 The evaluator also reports normal/detail diagnostics for our geometry-detail
 story: normal angular error, high-event/low-event normal error, and event-detail
 correlation.
+
+## Combined Best Route
+
+To combine the global-depth advantage of `multildr_detail_gt` with the normal
+detail advantage of `full_img_reliability`, run a frozen-coarse second stage:
+
+```bash
+bash mul_loss_fine/run_multildr_detail_then_reliability_2gpu.sh
+```
+
+This initializes from
+`checkpoints/ablation_multildr_detail_gt/checkpoint-last.pth`, freezes the
+VGGT backbone and all coarse heads, and trains only the temporal event detail
+and reliability branch. Scale, low-frequency, and non-detail no-regression
+constraints prevent the local residual from damaging the coarse prediction.
+
+After training, rerun:
+
+```bash
+bash ablation/run_eag3r_metrics_heldout_scenes.sh
+```
+
+The intended success condition is that held-out `AbsRel` and `RMSElog` remain
+close to `multildr_detail_gt`, while normal angular error approaches or
+improves upon `full_img_reliability`.
