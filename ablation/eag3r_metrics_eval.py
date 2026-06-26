@@ -287,6 +287,15 @@ def apply_spec_overrides(cfg, spec: Dict) -> None:
         if source in spec and spec[source] is not None:
             setattr(cfg.model, target, spec[source])
 
+    data_key_map = {
+        "additive_event_branch": "additive_event_branch",
+        "additive_event_root": "additive_event_root",
+        "geometry_event_mask_dilate_kernel": "geometry_event_mask_dilate_kernel",
+    }
+    for source, target in data_key_map.items():
+        if source in spec and spec[source] is not None:
+            setattr(cfg.data, target, spec[source])
+
 
 def build_dataset(cfg, args):
     ldr_event_id = args.ldr_event_id
@@ -297,7 +306,7 @@ def build_dataset(cfg, args):
     if str(ldr_event_id).lower() in {"random", "any", "all", "multi", "*"}:
         ldr_event_id = "ev_5"
 
-    return get_combined_dataset(
+    dataset = get_combined_dataset(
         root=str(getattr(args, "root", None) or cfg.data.root),
         num_views=int(args.num_views or cfg.data.num_views),
         resolution=tuple(args.resolution or cfg.data.resolution),
@@ -315,6 +324,16 @@ def build_dataset(cfg, args):
         return_normal_gt=True,
         return_debug_event_fields=False,
     )
+    additive_branch = getattr(cfg.data, "additive_event_branch", None)
+    if additive_branch:
+        from diffuse_event_ablation.geometry_event_loader import _switch_dataset_event_branch
+
+        _switch_dataset_event_branch(
+            dataset,
+            branch=str(additive_branch),
+            root_name=str(getattr(cfg.data, "additive_event_root", "events_additive")),
+        )
+    return dataset
 
 
 def build_model(family: str, cfg, ckpt, device: torch.device):
@@ -348,6 +367,16 @@ def evaluate_experiment(spec: Dict, args, out_dir: Path) -> Dict[str, float]:
     model = build_model(family, cfg, ckpt, device)
     dataset = build_dataset(cfg, args)
     active_scenes = dataset.get_active_scenes() if hasattr(dataset, "get_active_scenes") else []
+    collate_fn = event_multiview_collate
+    mask_dilate_kernel = int(getattr(cfg.data, "geometry_event_mask_dilate_kernel", 1))
+    if mask_dilate_kernel > 1:
+        from diffuse_event_ablation.geometry_event_loader import _collate_with_dilated_event_mask
+
+        collate_fn = lambda batch: _collate_with_dilated_event_mask(  # noqa: E731
+            batch,
+            mask_dilate_kernel=mask_dilate_kernel,
+        )
+
     loader = DataLoader(
         dataset,
         batch_size=int(args.batch_size),
@@ -355,7 +384,7 @@ def evaluate_experiment(spec: Dict, args, out_dir: Path) -> Dict[str, float]:
         num_workers=int(args.num_workers),
         pin_memory=bool(args.pin_memory),
         drop_last=False,
-        collate_fn=event_multiview_collate,
+        collate_fn=collate_fn,
     )
     print(
         f"[eval] {spec['name']}: samples={len(dataset)}, batches={len(loader)}, "

@@ -40,6 +40,24 @@
     "event_reliability_init_bias": 0.0
   },
   {
+    "name": "geometry_event_oracle_scene12",
+    "family": "event",
+    "checkpoint": "checkpoints/geometry_event_temporal_detail_img_reliability_scene12/checkpoint-last.pth",
+    "model_variant": "temporal_detail",
+    "event_hidden_dim": 16,
+    "refiner_residual_scale": 0.035,
+    "event_delta_highpass_kernel": 9,
+    "event_delta_patch_zero_mean": true,
+    "event_delta_patch_size": 14,
+    "event_delta_abs_limit": 0.025,
+    "event_reliability_gate_enabled": true,
+    "event_reliability_gate_floor": 0.20,
+    "event_reliability_init_bias": 0.0,
+    "additive_event_root": "events_additive",
+    "additive_event_branch": "geometry_motion",
+    "geometry_event_mask_dilate_kernel": 5
+  },
+  {
     "name": "combined_scene12",
     "family": "event",
     "checkpoint": "checkpoints/multildr_detail_then_reliability_scene12/checkpoint-last.pth",
