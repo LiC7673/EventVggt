@@ -36,8 +36,9 @@ CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 \
   data.active_scene_count="${ACTIVE_SCENE_COUNT}" \
   data.test_frame_count="${TEST_FRAME_COUNT}" \
   data.ldr_event_id="${LDR_ID}" \
-  data.additive_event_branch=geometry_motion \
-  data.geometry_event_mask_dilate_kernel="${GEOMETRY_EVENT_DILATE}" \
+  +data.additive_event_branch=geometry_motion \
+  +data.additive_event_root=events_additive \
+  +data.geometry_event_mask_dilate_kernel="${GEOMETRY_EVENT_DILATE}" \
   "$@"
 
 echo "[done] checkpoints/${EXP_NAME}/checkpoint-last.pth"
