@@ -28,10 +28,14 @@ mkdir -p "${LOG_DIR}"
 
 if [[ ! -f "${STAGE1_CKPT}" ]]; then
   echo "[stage1] ReliabilityNet checkpoint missing; training on physical GPU 2"
-  GPU=2 DATA_ROOT="${DATA_ROOT}" OUT_DIR="${STAGE1_DIR}" \
+  if ! env GPU=2 DATA_ROOT="${DATA_ROOT}" OUT_DIR="${STAGE1_DIR}" \
     ACTIVE_SCENE_COUNT="${SCENE_COUNT}" EPOCHS="${STAGE1_EPOCHS}" \
+    PYTHONUNBUFFERED=1 \
     bash reliability_pretrain/run_stage1_reliability_net.sh \
-    > "${LOG_DIR}/stage1_reliability.log" 2>&1
+    2>&1 | tee "${LOG_DIR}/stage1_reliability.log"; then
+    echo "[error] Stage 1 failed; log: ${LOG_DIR}/stage1_reliability.log" >&2
+    exit 1
+  fi
 else
   echo "[stage1] reuse ${STAGE1_CKPT}"
 fi
@@ -45,7 +49,7 @@ if [[ "${SKIP_EXISTING}" == "true" && -f "${STAGE2_CKPT}" ]]; then
   echo "[stage2] reuse ${STAGE2_CKPT}"
 else
   echo "[stage2] frozen ReliabilityNet, GPUs ${GPUS}"
-  CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 \
+  if ! env CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 PYTHONUNBUFFERED=1 \
   "${ACCELERATE_BIN}" launch \
     --multi_gpu --num_processes "${NUM_PROCESSES}" --num_machines 1 \
     --main_process_port "${PORT_STAGE2}" --mixed_precision bf16 --dynamo_backend no \
@@ -57,7 +61,10 @@ else
     data.active_scene_count="${SCENE_COUNT}" num_workers="${NUM_WORKERS}" pin_mem=false \
     +data.additive_event_root=events_additive \
     +model.stage1_reliability_checkpoint="${STAGE1_CKPT}" \
-    > "${LOG_DIR}/stage2_frozen.log" 2>&1
+    2>&1 | tee "${LOG_DIR}/stage2_frozen.log"; then
+    echo "[error] Stage 2 failed; log: ${LOG_DIR}/stage2_frozen.log" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -f "${STAGE2_CKPT}" ]]; then
@@ -69,7 +76,7 @@ if [[ "${SKIP_EXISTING}" == "true" && -f "${ROOT_DIR}/checkpoints/${STAGE3_EXP}/
   echo "[stage3] already complete"
 else
   echo "[stage3] joint low-LR finetuning, GPUs ${GPUS}"
-  CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 \
+  if ! env CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 PYTHONUNBUFFERED=1 \
   "${ACCELERATE_BIN}" launch \
     --multi_gpu --num_processes "${NUM_PROCESSES}" --num_machines 1 \
     --main_process_port "${PORT_STAGE3}" --mixed_precision bf16 --dynamo_backend no \
@@ -83,10 +90,12 @@ else
     +model.stage1_reliability_checkpoint="${STAGE1_CKPT}" \
     +train.reliability_lr_scale=0.25 \
     +loss.joint_reliability_weight=0.30 \
-    > "${LOG_DIR}/stage3_joint.log" 2>&1
+    2>&1 | tee "${LOG_DIR}/stage3_joint.log"; then
+    echo "[error] Stage 3 failed; log: ${LOG_DIR}/stage3_joint.log" >&2
+    exit 1
+  fi
 fi
 
 echo "[done] stage2=${STAGE2_CKPT}"
 echo "[done] stage3=${ROOT_DIR}/checkpoints/${STAGE3_EXP}/checkpoint-last.pth"
 echo "[logs] ${LOG_DIR}"
-
