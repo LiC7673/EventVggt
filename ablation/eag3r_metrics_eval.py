@@ -339,6 +339,10 @@ def build_dataset(cfg, args):
 def build_model(family: str, cfg, ckpt, device: torch.device):
     if family == "rgb":
         model = nf.build_rgb_model(cfg)
+    elif str(getattr(cfg.model, "variant", "")).lower() == "staged_reliability_temporal_detail":
+        from reliability_staged_finetune.training import _build_model
+
+        model = _build_model(cfg)
     else:
         model = fe.build_event_model(cfg)
     state = strip_module_prefix(fe.unwrap_state_dict(ckpt))

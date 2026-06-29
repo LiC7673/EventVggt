@@ -127,3 +127,20 @@ GPU=7 bash ablation/run_scene12_heldout_eval.sh
 ```
 
 Results are saved under `ablation/results/scene12_heldout6`.
+
+## Staged Reliability Ablations
+
+The independently supervised reliability route adds two paper ablations:
+
+```bash
+bash reliability_staged_finetune/run_stages_123_gpus_234567.sh
+```
+
+- `staged_reliability_stage2_frozen_scene12`: freezes the Stage-1
+  ReliabilityNet and trains geometry/detail heads with
+  `R_geo.detach() * V_full`.
+- `staged_reliability_stage3_joint_scene12`: resumes Stage 2, unfreezes the
+  ReliabilityNet with a lower LR, and retains the additive reliability loss.
+
+Both checkpoints are included in `eag3r_eval_manifest_scene12.json` for the
+same held-out-scene depth, pose, and normal evaluation.

@@ -58,6 +58,22 @@
     "geometry_event_mask_dilate_kernel": 5
   },
   {
+    "name": "staged_reliability_stage2_frozen_scene12",
+    "family": "event",
+    "checkpoint": "checkpoints/staged_reliability_stage2_frozen_scene12/checkpoint-last.pth",
+    "model_variant": "staged_reliability_temporal_detail",
+    "additive_event_root": "events_additive",
+    "additive_event_branch": "full"
+  },
+  {
+    "name": "staged_reliability_stage3_joint_scene12",
+    "family": "event",
+    "checkpoint": "checkpoints/staged_reliability_stage3_joint_scene12/checkpoint-last.pth",
+    "model_variant": "staged_reliability_temporal_detail",
+    "additive_event_root": "events_additive",
+    "additive_event_branch": "full"
+  },
+  {
     "name": "combined_scene12",
     "family": "event",
     "checkpoint": "checkpoints/multildr_detail_then_reliability_scene12/checkpoint-last.pth",
