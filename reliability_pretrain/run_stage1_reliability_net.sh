@@ -7,7 +7,7 @@ DATA_ROOT="${DATA_ROOT:-/data1/lzh/dataset/reflective_raw}"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/checkpoints/reliability_net_stage1_scene12}"
 
 cd "${ROOT_DIR}"
-CUDA_VISIBLE_DEVICES="${GPU}" python reliability_pretrain/train_reliability_net.py \
+CUDA_VISIBLE_DEVICES="${GPU}" python -m reliability_pretrain.train_reliability_net \
   --root "${DATA_ROOT}" \
   --out-dir "${OUT_DIR}" \
   --initial-scene-idx "${INITIAL_SCENE_IDX:-0}" \
