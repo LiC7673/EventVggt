@@ -37,8 +37,8 @@ def weighted_l1(pred: torch.Tensor, target: torch.Tensor, weight: torch.Tensor) 
     return ((pred - target).abs() * weight).sum() / weight.sum().clamp_min(1.0)
 
 
-def weighted_bce(pred: torch.Tensor, target: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-    loss = F.binary_cross_entropy(pred.clamp(1e-5, 1.0 - 1e-5), target, reduction="none")
+def weighted_bce_logits(logits: torch.Tensor, target: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
     return (loss * weight).sum() / weight.sum().clamp_min(1.0)
 
 
@@ -69,9 +69,10 @@ def run_epoch(model, loader, optimizer, scaler, device, args, train: bool):
         weight = args.empty_weight + (1.0 - args.empty_weight) * presence
 
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=args.amp and device.type == "cuda"):
-            pred = model(event_full, rgb)
+            logits = model.forward_logits(event_full, rgb)
+            pred = torch.sigmoid(logits)
             l1 = weighted_l1(pred, target, weight)
-            bce = weighted_bce(pred, target, weight)
+            bce = weighted_bce_logits(logits, target, weight)
             smooth = smoothness_loss(pred, weight)
             loss = args.l1_weight * l1 + args.bce_weight * bce + args.smooth_weight * smooth
 

@@ -43,7 +43,7 @@ class ReliabilityUNet(nn.Module):
         self.dec1 = ConvBlock(3 * c, c)
         self.out = nn.Conv2d(c, 1, kernel_size=1)
 
-    def forward(self, event_voxel: torch.Tensor, rgb: torch.Tensor) -> torch.Tensor:
+    def forward_logits(self, event_voxel: torch.Tensor, rgb: torch.Tensor) -> torch.Tensor:
         x = torch.cat([event_voxel, rgb], dim=1)
         e1 = self.enc1(x)
         e2 = self.enc2(F.avg_pool2d(e1, 2, ceil_mode=True))
@@ -53,4 +53,7 @@ class ReliabilityUNet(nn.Module):
         d2 = self.dec2(torch.cat([d2, e2], dim=1))
         d1 = F.interpolate(d2, size=e1.shape[-2:], mode="bilinear", align_corners=False)
         d1 = self.dec1(torch.cat([d1, e1], dim=1))
-        return torch.sigmoid(self.out(d1))
+        return self.out(d1)
+
+    def forward(self, event_voxel: torch.Tensor, rgb: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(self.forward_logits(event_voxel, rgb))
