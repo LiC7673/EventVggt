@@ -23,7 +23,6 @@ if str(ROOT_DIR) not in sys.path:
 
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -192,7 +191,10 @@ def main():
 
     model = ReliabilityUNet(event_channels=2 * args.num_bins, base_channels=args.base_channels).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scaler = GradScaler(enabled=args.amp and device.type == "cuda")
+    scaler = torch.amp.GradScaler(
+        device.type,
+        enabled=args.amp and device.type == "cuda",
+    )
     writer = SummaryWriter(str(out_dir / "tb")) if SummaryWriter is not None else None
     best_val = float("inf")
     for epoch in range(args.epochs):

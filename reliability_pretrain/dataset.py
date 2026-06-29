@@ -173,11 +173,11 @@ class AdditiveEventReliabilityDataset(Dataset):
         geometry = branch_voxels["geometry_motion"]
         material = branch_voxels["material_reflection"]
         noise = branch_voxels["noise"]
-        full_abs = full.abs().sum(axis=0, keepdims=True)
-        geo_abs = geometry.abs().sum(axis=0, keepdims=True)
+        full_abs = np.abs(full).sum(axis=0, keepdims=True)
+        geo_abs = np.abs(geometry).sum(axis=0, keepdims=True)
         target = np.clip(geo_abs / (full_abs + self.eps), 0.0, 1.0).astype(np.float32)
         event_presence = (full_abs > 0).astype(np.float32)
-        additive_error = (full - (geometry + material + noise)).abs().mean(dtype=np.float64)
+        additive_error = np.abs(full - (geometry + material + noise)).mean(dtype=np.float64)
 
         return {
             "rgb": torch.from_numpy(rgb),
