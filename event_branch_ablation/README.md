@@ -51,7 +51,17 @@ bash event_branch_ablation/run_two_ablation_gpus_234567.sh
 Default outputs:
 
 ```text
-abl_event_exp/geometry_motion_full_img_reliability_scene12/
-abl_event_exp/full_to_additive_tokens_img_reliability_scene12/
+abl_event_exp/geometry_motion_full_img_reliability_v3_scene12/
+abl_event_exp/full_to_additive_tokens_img_reliability_v2_scene12/
 ```
 
+Before retraining, verify that all four branches remain additive after fixed
+time-window voxelization:
+
+```bash
+python event_branch_ablation/diagnose_additive_alignment.py
+```
+
+`mean_additive_relative_l1` should be close to zero. The script also saves
+full/geometry/material/noise event panels under
+`abl_event_exp/additive_alignment_debug/`.

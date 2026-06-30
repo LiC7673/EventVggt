@@ -139,6 +139,9 @@ def _prepare_cfg(cfg, *, exp_name: str, variant: str):
     )
     cfg.data.ldr_event_id = "random"
     cfg.data.additive_event_root = str(getattr(cfg.data, "additive_event_root", "events_additive"))
+    cfg.data.additive_mask_dilate_kernel = int(
+        getattr(cfg.data, "additive_mask_dilate_kernel", 5)
+    )
     cfg.epochs = max(int(getattr(cfg, "epochs", 10)), 20)
     cfg.lr = min(float(getattr(cfg, "lr", 1.0e-4)), 4.0e-5)
     return configure_mul_loss_cfg(cfg, weights=FULL_RELIABILITY_WEIGHTS, exp_name=exp_name)
@@ -195,9 +198,14 @@ def _experiment_name(cfg, default: str) -> str:
 def train_geometry_motion(cfg) -> None:
     cfg = _prepare_cfg(
         cfg,
-        exp_name=_experiment_name(cfg, "geometry_motion_full_img_reliability"),
+        exp_name=_experiment_name(cfg, "geometry_motion_full_img_reliability_v3"),
         variant="geometry_motion_full_img_reliability",
     )
+    # geometry_motion is already the clean diffuse/geometry oracle branch.
+    # Re-applying saturation-based reflection rejection would incorrectly
+    # suppress useful events on the highly exposed object surface.
+    cfg.loss.img_event_reject_weight = 0.0
+    cfg.loss.img_event_saturation_reject_boost = 0.0
     fe.build_event_loader = build_geometry_motion_loader
     fe.build_event_model = _build_geometry_model
     fe.configure_trainable_params = _configure_trainable
@@ -210,7 +218,7 @@ def train_geometry_motion(cfg) -> None:
 def train_full_decomposition(cfg) -> None:
     cfg = _prepare_cfg(
         cfg,
-        exp_name=_experiment_name(cfg, "full_to_additive_tokens_img_reliability"),
+        exp_name=_experiment_name(cfg, "full_to_additive_tokens_img_reliability_v2"),
         variant="full_to_additive_tokens_img_reliability",
     )
     cfg.loss.branch_token_weight = float(getattr(cfg.loss, "branch_token_weight", 0.50))

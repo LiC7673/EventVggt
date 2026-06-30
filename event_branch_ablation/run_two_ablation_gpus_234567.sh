@@ -27,8 +27,8 @@ env CUDA_VISIBLE_DEVICES="${GEOMETRY_GPUS}" HYDRA_FULL_ERROR=1 PYTHONUNBUFFERED=
   --num_processes "${GEOMETRY_PROCESSES}" --num_machines 1 \
   --main_process_port "${PORT_GEOMETRY}" --mixed_precision bf16 --dynamo_backend no \
   event_branch_ablation/finetune_geometry_motion_full_reliability.py \
-  exp_name=geometry_motion_full_img_reliability_scene12 epochs="${EPOCHS}" \
-  hydra.run.dir="${ROOT_DIR}/abl_event_exp/geometry_motion_full_img_reliability_scene12" \
+  exp_name=geometry_motion_full_img_reliability_v3_scene12 epochs="${EPOCHS}" \
+  hydra.run.dir="${ROOT_DIR}/abl_event_exp/geometry_motion_full_img_reliability_v3_scene12" \
   data.root="${DATA_ROOT}" data.num_views="${NUM_VIEWS}" data.ldr_event_id="${LDR_ID}" \
   data.initial_scene_idx=0 data.active_scene_count="${ACTIVE_SCENE_COUNT}" \
   num_workers="${NUM_WORKERS}" pin_mem=false \
@@ -42,8 +42,8 @@ env CUDA_VISIBLE_DEVICES="${DECOMPOSE_GPUS}" HYDRA_FULL_ERROR=1 PYTHONUNBUFFERED
   --num_processes "${DECOMPOSE_PROCESSES}" --num_machines 1 \
   --main_process_port "${PORT_DECOMPOSE}" --mixed_precision bf16 --dynamo_backend no \
   event_branch_ablation/finetune_full_to_additive_tokens.py \
-  exp_name=full_to_additive_tokens_img_reliability_scene12 epochs="${EPOCHS}" \
-  hydra.run.dir="${ROOT_DIR}/abl_event_exp/full_to_additive_tokens_img_reliability_scene12" \
+  exp_name=full_to_additive_tokens_img_reliability_v2_scene12 epochs="${EPOCHS}" \
+  hydra.run.dir="${ROOT_DIR}/abl_event_exp/full_to_additive_tokens_img_reliability_v2_scene12" \
   data.root="${DATA_ROOT}" data.num_views="${NUM_VIEWS}" data.ldr_event_id="${LDR_ID}" \
   data.initial_scene_idx=0 data.active_scene_count="${ACTIVE_SCENE_COUNT}" \
   num_workers="${NUM_WORKERS}" pin_mem=false \

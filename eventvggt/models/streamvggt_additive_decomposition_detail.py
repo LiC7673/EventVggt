@@ -45,10 +45,13 @@ class AdditiveEventTokenDecomposer(nn.Module):
             _ResidualBlock(hidden_dim, dilation=2),
             _ResidualBlock(hidden_dim, dilation=1),
         )
+        # Full-resolution event/RGB skips prevent the half-resolution encoder
+        # from turning thin event traces into smooth masks.
         self.partition_head = nn.Sequential(
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.Conv2d(hidden_dim + self.event_channels + 3, hidden_dim, kernel_size=3, padding=1),
             nn.GroupNorm(groups, hidden_dim),
             nn.GELU(),
+            _ResidualBlock(hidden_dim, dilation=1),
             nn.Conv2d(hidden_dim, 3 * self.event_channels, kernel_size=1),
         )
         # Uniform decomposition is a neutral initialization.
@@ -86,8 +89,8 @@ class AdditiveEventTokenDecomposer(nn.Module):
             flat_full.new_tensor(self.count_cmax)
         )
         features = self.encoder(torch.cat([norm, flat_rgb], dim=1))
-        logits = self.partition_head(features)
-        logits = F.interpolate(logits, size=(height, width), mode="bilinear", align_corners=False)
+        features = F.interpolate(features, size=(height, width), mode="bilinear", align_corners=False)
+        logits = self.partition_head(torch.cat([features, norm, flat_rgb], dim=1))
         logits = logits.view(batch * seq_len, 3, channels, height, width)
         probabilities = torch.softmax(logits, dim=1)
         branch_voxels = probabilities * flat_full.unsqueeze(1)
@@ -145,4 +148,3 @@ class StreamVGGT(TemporalDetailStreamVGGT):
 
 
 __all__ = ["StreamVGGT", "AdditiveEventTokenDecomposer"]
-
