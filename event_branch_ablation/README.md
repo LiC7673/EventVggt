@@ -51,9 +51,15 @@ bash event_branch_ablation/run_two_ablation_gpus_234567.sh
 Default outputs:
 
 ```text
-abl_event_exp/geometry_motion_full_img_reliability_v3_scene12/
-abl_event_exp/full_to_additive_tokens_img_reliability_v2_scene12/
+abl_event_exp/geometry_motion_full_img_reliability_v5_stable_scene12/
+abl_event_exp/full_to_additive_tokens_img_reliability_v4_stable_scene12/
 ```
+
+Both controlled variants initialize from
+`checkpoints/ablation_full_img_reliability_scene12/checkpoint-last.pth` and
+freeze coarse VGGT/depth/point/camera parameters. Only the event detail branch
+and, when present, the additive decomposer are trained. This keeps coarse
+geometry fixed so differences measure event-stream quality.
 
 Before retraining, verify that all four branches remain additive after fixed
 time-window voxelization:

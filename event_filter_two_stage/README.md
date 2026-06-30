@@ -49,7 +49,7 @@ Outputs:
 
 ```text
 abl_event_exp/additive_decomposer_stage1_v2_scene12/
-abl_event_exp/two_stage_frozen_geometry_full_img_reliability_v2_scene12/
+abl_event_exp/two_stage_frozen_geometry_full_img_reliability_v4_stable_scene12/
 ```
 
 Recommended comparison:

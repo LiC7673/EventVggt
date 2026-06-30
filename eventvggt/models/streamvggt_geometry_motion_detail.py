@@ -5,16 +5,15 @@ ablation cannot silently change the existing temporal-detail implementation.
 The event source replacement is handled by its dedicated dataloader.
 """
 
-from eventvggt.models.streamvggt_temporal_detail import (
+from eventvggt.models.streamvggt_stable_temporal_detail import (
     StreamVGGT as _TemporalDetailStreamVGGT,
-    StreamVGGTOutput,
-    TemporalVoxelDetailRefiner,
+    StableTemporalVoxelDetailRefiner,
 )
+from eventvggt.models.streamvggt_temporal_detail import StreamVGGTOutput
 
 
 class StreamVGGT(_TemporalDetailStreamVGGT):
     pass
 
 
-__all__ = ["StreamVGGT", "StreamVGGTOutput", "TemporalVoxelDetailRefiner"]
-
+__all__ = ["StreamVGGT", "StreamVGGTOutput", "StableTemporalVoxelDetailRefiner"]

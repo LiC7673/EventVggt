@@ -65,9 +65,6 @@ def _configure_trainable(model, cfg):
     for name, parameter in model.named_parameters():
         if name.startswith("event_detail_refiner."):
             parameter.requires_grad = True
-    for module_name in ("depth_head", "point_head"):
-        for parameter in getattr(model, module_name).parameters():
-            parameter.requires_grad = True
 
 
 @hydra.main(
@@ -87,9 +84,19 @@ def run(cfg: OmegaConf):
     cfg.save_dir = str(output_root)
     cfg.output_dir = str(output_root / exp_name)
     cfg.logdir = str(output_root / exp_name / "logs")
-    original = ROOT_DIR / "ckpt" / "model.pt"
+    reference = (
+        ROOT_DIR
+        / "checkpoints"
+        / "ablation_full_img_reliability_scene12"
+        / "checkpoint-last.pth"
+    )
     if str(getattr(cfg, "pretrained", "") or "") in {"", "./ckpt/model.pt", "ckpt/model.pt"}:
-        cfg.pretrained = str(original) if original.exists() else "./ckpt/model.pt"
+        if not reference.is_file():
+            raise FileNotFoundError(
+                "Stage 2 requires the trained full_img_reliability checkpoint: "
+                f"{reference}. Override pretrained if stored elsewhere."
+            )
+        cfg.pretrained = str(reference)
 
     cfg.model.variant = "frozen_additive_geometry_full_img_reliability"
     cfg.model.event_num_bins = int(getattr(cfg.data, "event_resize_bins", 10))

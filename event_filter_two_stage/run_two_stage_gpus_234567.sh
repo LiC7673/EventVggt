@@ -16,7 +16,7 @@ EVENT_FLOOR="${EVENT_FLOOR:-0.0}"
 PORT="${PORT:-30420}"
 STAGE1_DIR="${STAGE1_DIR:-${ROOT_DIR}/abl_event_exp/additive_decomposer_stage1_v2_scene12}"
 STAGE1_CKPT="${STAGE1_CKPT:-${STAGE1_DIR}/checkpoint-best.pth}"
-STAGE2_EXP="${STAGE2_EXP:-two_stage_frozen_geometry_full_img_reliability_v2_scene12}"
+STAGE2_EXP="${STAGE2_EXP:-two_stage_frozen_geometry_full_img_reliability_v4_stable_scene12}"
 STAGE2_DIR="${ROOT_DIR}/abl_event_exp/${STAGE2_EXP}"
 LOG_DIR="${LOG_DIR:-${ROOT_DIR}/abl_event_exp/two_stage_logs_$(date +%Y%m%d_%H%M%S)}"
 

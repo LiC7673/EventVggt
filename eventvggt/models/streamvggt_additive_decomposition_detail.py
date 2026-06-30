@@ -15,11 +15,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from eventvggt.models.streamvggt_temporal_detail import (
+from eventvggt.models.streamvggt_stable_temporal_detail import (
     StreamVGGT as TemporalDetailStreamVGGT,
-    _ResidualBlock,
-    _group_count,
 )
+from eventvggt.models.streamvggt_temporal_detail import _ResidualBlock, _group_count
 
 
 class AdditiveEventTokenDecomposer(nn.Module):

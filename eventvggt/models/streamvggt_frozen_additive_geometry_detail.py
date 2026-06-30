@@ -15,7 +15,9 @@ import torch
 from eventvggt.models.streamvggt_additive_decomposition_detail import (
     AdditiveEventTokenDecomposer,
 )
-from eventvggt.models.streamvggt_temporal_detail import StreamVGGT as TemporalDetailStreamVGGT
+from eventvggt.models.streamvggt_stable_temporal_detail import (
+    StreamVGGT as TemporalDetailStreamVGGT,
+)
 
 
 class StreamVGGT(TemporalDetailStreamVGGT):

@@ -113,10 +113,20 @@ def _prepare_cfg(cfg, *, exp_name: str, variant: str):
     for branch_name in ("model", "train", "loss", "data"):
         OmegaConf.set_struct(getattr(cfg, branch_name), False)
     _set_paths(cfg, exp_name)
-    original = ROOT_DIR / "ckpt" / "model.pt"
+    reference = (
+        ROOT_DIR
+        / "checkpoints"
+        / "ablation_full_img_reliability_scene12"
+        / "checkpoint-last.pth"
+    )
     current = str(getattr(cfg, "pretrained", "") or "")
     if current in {"", "./ckpt/model.pt", "ckpt/model.pt"}:
-        cfg.pretrained = str(original) if original.exists() else "./ckpt/model.pt"
+        if not reference.is_file():
+            raise FileNotFoundError(
+                "Controlled event ablation requires the trained full_img_reliability checkpoint: "
+                f"{reference}. Override pretrained=/path/to/checkpoint if stored elsewhere."
+            )
+        cfg.pretrained = str(reference)
 
     cfg.model.variant = variant
     cfg.model.event_num_bins = int(getattr(cfg.data, "event_resize_bins", 10))
@@ -190,15 +200,12 @@ def _configure_trainable(model, cfg) -> None:
 def _experiment_name(cfg, default: str) -> str:
     current = str(getattr(cfg, "exp_name", "") or "")
     return default if current in {"", "event_finetune_LDR5"} else current
-    for module_name in ("depth_head", "point_head"):
-        for parameter in getattr(model, module_name).parameters():
-            parameter.requires_grad = True
 
 
 def train_geometry_motion(cfg) -> None:
     cfg = _prepare_cfg(
         cfg,
-        exp_name=_experiment_name(cfg, "geometry_motion_full_img_reliability_v3"),
+        exp_name=_experiment_name(cfg, "geometry_motion_full_img_reliability_v5_stable"),
         variant="geometry_motion_full_img_reliability",
     )
     # geometry_motion is already the clean diffuse/geometry oracle branch.
@@ -218,7 +225,7 @@ def train_geometry_motion(cfg) -> None:
 def train_full_decomposition(cfg) -> None:
     cfg = _prepare_cfg(
         cfg,
-        exp_name=_experiment_name(cfg, "full_to_additive_tokens_img_reliability_v2"),
+        exp_name=_experiment_name(cfg, "full_to_additive_tokens_img_reliability_v4_stable"),
         variant="full_to_additive_tokens_img_reliability",
     )
     cfg.loss.branch_token_weight = float(getattr(cfg.loss, "branch_token_weight", 0.50))
