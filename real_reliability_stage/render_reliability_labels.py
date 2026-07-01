@@ -160,10 +160,31 @@ def _make_target(view: Dict, args) -> Dict[str, np.ndarray]:
         raw_geo = depth_detail
     else:
         raw_geo = args.normal_detail_weight * normal_detail + args.depth_detail_weight * depth_detail
-    geo = _percentile_normalize(raw_geo, mask, percentile=args.geometry_percentile)
+    mask_u8 = mask.astype(np.uint8)
+    if args.geometry_interior_erode > 1:
+        erode_kernel = np.ones(
+            (args.geometry_interior_erode, args.geometry_interior_erode), dtype=np.uint8
+        )
+        interior_mask = cv2.erode(mask_u8, erode_kernel, iterations=1).astype(bool)
+    else:
+        interior_mask = mask
+
+    # Keep smooth-surface detail separate from the foreground/background jump;
+    # otherwise the silhouette dominates percentile normalization.
+    geo_core = _percentile_normalize(raw_geo, interior_mask, percentile=args.geometry_percentile)
+    geo_core = geo_core * interior_mask.astype(np.float32)
+
+    contour_kernel = np.ones((3, 3), dtype=np.uint8)
+    silhouette = cv2.morphologyEx(mask_u8, cv2.MORPH_GRADIENT, contour_kernel).astype(np.float32)
+    geo = np.maximum(geo_core, args.geometry_silhouette_weight * silhouette)
     if args.geometry_dilate_kernel > 1:
         kernel = np.ones((args.geometry_dilate_kernel, args.geometry_dilate_kernel), dtype=np.uint8)
-        geo = cv2.dilate(geo, kernel, iterations=1)
+        geo_halo = cv2.dilate(geo, kernel, iterations=1)
+        # Dilation only compensates a small event/geometry misregistration. A
+        # full-strength max dilation turns thin normal/depth detail into broad
+        # bands and teaches the reliability net an over-smoothed target.
+        geo = np.maximum(geo, args.geometry_dilate_gain * geo_halo)
+    geo = np.clip(geo, 0.0, 1.0) * mask.astype(np.float32)
 
     image_edge, saturation = _image_cues(rgb, mask)
     # RGB edges are supporting evidence, not a prerequisite. In particular,
@@ -202,6 +223,7 @@ def _make_target(view: Dict, args) -> Dict[str, np.ndarray]:
         "target_reliability": target[None].astype(np.float32),
         "weight": weight[None].astype(np.float32),
         "event_support": event_support[None].astype(np.float32),
+        "geometry_core": geo_core[None].astype(np.float32),
         "geometry_support": geo[None].astype(np.float32),
         "temporal_score": temporal_factor[None].astype(np.float32),
         "temporal_event_score": (temporal_factor * event_support)[None].astype(np.float32),
@@ -243,6 +265,7 @@ def _save_preview(path: Path, sample: Dict[str, np.ndarray]) -> None:
     panels = [
         (_to_rgb01(sample["rgb"]) * 255.0).round().astype(np.uint8),
         _event_panel(sample["event_full"]),
+        _gray_panel(sample["geometry_core"]),
         _gray_panel(sample["geometry_support"]),
         _gray_panel(sample["event_support"]),
         _gray_panel(sample["temporal_event_score"]),
@@ -250,7 +273,17 @@ def _save_preview(path: Path, sample: Dict[str, np.ndarray]) -> None:
         _gray_panel(sample["target_reliability"]),
         _gray_panel(sample["weight"]),
     ]
-    labels = ["rgb", "event", "geo", "event_sup", "temp@event", "sat", "target", "weight"]
+    labels = [
+        "rgb",
+        "event",
+        "geo_core",
+        "geo_support",
+        "event_sup",
+        "temp@event",
+        "sat",
+        "target",
+        "weight",
+    ]
     height, width = panels[0].shape[:2]
     title_h = 20
     canvas = np.zeros((height + title_h, width * len(panels), 3), dtype=np.uint8)
@@ -393,7 +426,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preview-count", type=int, default=24)
     parser.add_argument("--event-bin-threshold", type=float, default=1.0e-5)
     parser.add_argument("--geometry-percentile", type=float, default=99.0)
-    parser.add_argument("--geometry-dilate-kernel", type=int, default=7)
+    parser.add_argument("--geometry-interior-erode", type=int, default=3)
+    parser.add_argument("--geometry-silhouette-weight", type=float, default=0.45)
+    parser.add_argument("--geometry-dilate-kernel", type=int, default=5)
+    parser.add_argument("--geometry-dilate-gain", type=float, default=0.25)
     parser.add_argument("--normal-detail-weight", type=float, default=0.7)
     parser.add_argument("--depth-detail-weight", type=float, default=0.3)
     parser.add_argument("--image-support-floor", type=float, default=0.70)
