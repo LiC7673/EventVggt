@@ -116,3 +116,13 @@ geometry voxel. Defaults can be overridden with Hydra additions:
 +vis.event_bins_enabled=true +vis.event_bins_count=10 \
 +vis.event_bins_num_views=4 +vis.event_bin_panel_width=112
 ```
+
+Existing checkpoints can be visualized without retraining:
+
+```bash
+bash event_branch_ablation/run_event_bin_visualization.sh
+```
+
+This runs the decomposition and geometry-motion checkpoints in parallel on
+GPUs 2 and 3. Set `MAX_SAMPLES`, `INITIAL_SCENE_IDX`, `DECOMPOSE_GPU`, or
+`GEOMETRY_GPU` to override the defaults.
