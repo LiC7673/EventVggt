@@ -166,14 +166,28 @@ def _make_target(view: Dict, args) -> Dict[str, np.ndarray]:
         geo = cv2.dilate(geo, kernel, iterations=1)
 
     image_edge, saturation = _image_cues(rgb, mask)
-    image_factor = args.image_support_floor + (1.0 - args.image_support_floor) * image_edge
+    # RGB edges are supporting evidence, not a prerequisite. In particular,
+    # saturated LDR regions are exactly where events are expected to help, so
+    # saturation must not erase an otherwise geometry-aligned event target.
+    usable_image_edge = image_edge * (1.0 - saturation)
+    image_factor = args.image_support_floor + (1.0 - args.image_support_floor) * usable_image_edge
     saturation_factor = np.clip(1.0 - args.saturation_reject * saturation, 0.0, 1.0)
     temporal_factor = event["temporal_score"]
     polarity_factor = args.polarity_floor + (1.0 - args.polarity_floor) * event["polarity_conf"]
 
-    target = geo * image_factor * saturation_factor * temporal_factor * polarity_factor
-    target = np.clip(target, 0.0, 1.0) * mask.astype(np.float32)
     event_support = event["event_support"] * mask.astype(np.float32)
+    if args.cue_fusion == "product":
+        cue_factor = image_factor * saturation_factor * temporal_factor * polarity_factor
+    else:
+        # A direct product collapses weak labels when several imperfect cues
+        # are moderately confident. Their geometric mean keeps geometry as the
+        # anchor while still lowering ambiguous event evidence.
+        cue_product = image_factor * saturation_factor * temporal_factor * polarity_factor
+        cue_factor = np.power(np.clip(cue_product, 0.0, 1.0), 0.25)
+
+    event_present = event_support >= args.event_support_min
+    target = geo * cue_factor
+    target = np.clip(target, 0.0, 1.0) * event_present.astype(np.float32) * mask.astype(np.float32)
     # Only event pixels strongly supervise reliability, but keep a weak empty
     # background term so the net does not output dense reliability everywhere.
     weight = args.empty_weight + (1.0 - args.empty_weight) * event_support
@@ -187,6 +201,7 @@ def _make_target(view: Dict, args) -> Dict[str, np.ndarray]:
         "event_support": event_support[None].astype(np.float32),
         "geometry_support": geo[None].astype(np.float32),
         "temporal_score": temporal_factor[None].astype(np.float32),
+        "temporal_event_score": (temporal_factor * event_support)[None].astype(np.float32),
         "persistence": event["persistence"][None].astype(np.float32),
         "image_edge": image_edge[None].astype(np.float32),
         "saturation": saturation[None].astype(np.float32),
@@ -227,12 +242,12 @@ def _save_preview(path: Path, sample: Dict[str, np.ndarray]) -> None:
         _event_panel(sample["event_full"]),
         _gray_panel(sample["geometry_support"]),
         _gray_panel(sample["event_support"]),
-        _gray_panel(sample["temporal_score"]),
+        _gray_panel(sample["temporal_event_score"]),
         _gray_panel(sample["saturation"]),
         _gray_panel(sample["target_reliability"]),
         _gray_panel(sample["weight"]),
     ]
-    labels = ["rgb", "event", "geo", "event_sup", "temporal", "sat", "target", "weight"]
+    labels = ["rgb", "event", "geo", "event_sup", "temp@event", "sat", "target", "weight"]
     height, width = panels[0].shape[:2]
     title_h = 20
     canvas = np.zeros((height + title_h, width * len(panels), 3), dtype=np.uint8)
@@ -343,11 +358,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--geometry-dilate-kernel", type=int, default=7)
     parser.add_argument("--normal-detail-weight", type=float, default=0.7)
     parser.add_argument("--depth-detail-weight", type=float, default=0.3)
-    parser.add_argument("--image-support-floor", type=float, default=0.35)
-    parser.add_argument("--saturation-reject", type=float, default=0.7)
-    parser.add_argument("--persistence-floor", type=float, default=0.20)
+    parser.add_argument("--image-support-floor", type=float, default=0.70)
+    parser.add_argument("--saturation-reject", type=float, default=0.0)
+    parser.add_argument("--persistence-floor", type=float, default=0.50)
     parser.add_argument("--persistence-power", type=float, default=1.5)
-    parser.add_argument("--polarity-floor", type=float, default=0.50)
+    parser.add_argument("--polarity-floor", type=float, default=0.70)
+    parser.add_argument("--event-support-min", type=float, default=0.01)
+    parser.add_argument("--cue-fusion", choices=("geometric", "product"), default="geometric")
     parser.add_argument("--empty-weight", type=float, default=0.03)
     return parser.parse_args()
 
