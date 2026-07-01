@@ -96,3 +96,23 @@ Each result directory contains `condition_metrics.csv`,
 with zero events. `refiner_structure_zero_vs_coarse` measures the gain caused
 by the extra RGB/depth refinement capacity and must not be attributed to
 events.
+
+## Training-time event-bin visualization
+
+Both training entries automatically save polarity-colored temporal-bin grids
+whenever the normal training visualization runs. Positive events are red and
+negative events are blue. Files are written to:
+
+```text
+abl_event_exp/<experiment>/train_vis/event_bins/
+abl_event_exp/<experiment>/test_vis/step_XXXXXXX/event_bins/
+```
+
+The full-to-additive experiment shows the input full voxel, three GT branches,
+and three predicted branches. The geometry-motion experiment shows its input
+geometry voxel. Defaults can be overridden with Hydra additions:
+
+```bash
++vis.event_bins_enabled=true +vis.event_bins_count=10 \
++vis.event_bins_num_views=4 +vis.event_bin_panel_width=112
+```

@@ -36,6 +36,16 @@ def make_additive_token_loss(cfg):
             # token, not the unfiltered full event input.
             geometry_views = model_output.views if model_output.views is not None else views
             total, details, aux = super().forward(model_output, geometry_views)
+            # Detached aliases share storage with model outputs and let the
+            # visualizer inspect every predicted temporal/polarity bin.
+            if model_output.ress and all(
+                all(prediction_key in result for result in model_output.ress)
+                for prediction_key, _ in BRANCH_FIELDS.values()
+            ):
+                for name, (prediction_key, _) in BRANCH_FIELDS.items():
+                    aux[f"pred_event_{name}_token"] = self._stack_prediction(
+                        model_output, prediction_key
+                    ).detach()
             if "event_geometry_voxel" not in views[0]:
                 details.update(
                     {
