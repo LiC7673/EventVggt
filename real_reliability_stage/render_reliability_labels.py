@@ -5,10 +5,10 @@ EventVGGT dataloader and writes compact .npz samples:
 
     rgb, event_full, target_reliability, weight, components...
 
-The target does not depend on Blender additive branches. It is a weak label
-from real observable cues:
-
-    event support * GT geometry detail * temporal non-persistence * image cues
+The target does not depend on Blender additive branches. By default it is a
+weak geometry-alignment label: at pixels where an event exists, dilated GT
+geometry detail is the reliability target. RGB and the complete temporal
+voxel remain network inputs instead of being multiplied into the label.
 
 The purpose is to train a ReliabilityNet before coupling it back to VGGT.
 """
@@ -176,17 +176,20 @@ def _make_target(view: Dict, args) -> Dict[str, np.ndarray]:
     polarity_factor = args.polarity_floor + (1.0 - args.polarity_floor) * event["polarity_conf"]
 
     event_support = event["event_support"] * mask.astype(np.float32)
-    if args.cue_fusion == "product":
-        cue_factor = image_factor * saturation_factor * temporal_factor * polarity_factor
-    else:
-        # A direct product collapses weak labels when several imperfect cues
-        # are moderately confident. Their geometric mean keeps geometry as the
-        # anchor while still lowering ambiguous event evidence.
-        cue_product = image_factor * saturation_factor * temporal_factor * polarity_factor
-        cue_factor = np.power(np.clip(cue_product, 0.0, 1.0), 0.25)
-
     event_present = event_support >= args.event_support_min
-    target = geo * cue_factor
+    if args.target_mode == "geometry":
+        # Image appearance and event timing are evidence available to the
+        # network. Multiplying them into the target causes a trivial all-zero
+        # solution in saturated scenes, so the weak label only asks whether an
+        # observed event lies on GT geometry detail.
+        target = geo
+    else:
+        if args.cue_fusion == "product":
+            cue_factor = image_factor * saturation_factor * temporal_factor * polarity_factor
+        else:
+            cue_product = image_factor * saturation_factor * temporal_factor * polarity_factor
+            cue_factor = np.power(np.clip(cue_product, 0.0, 1.0), 0.25)
+        target = geo * cue_factor
     target = np.clip(target, 0.0, 1.0) * event_present.astype(np.float32) * mask.astype(np.float32)
     # Only event pixels strongly supervise reliability, but keep a weak empty
     # background term so the net does not output dense reliability everywhere.
@@ -301,11 +304,28 @@ def render_split(args, split: str) -> List[Dict[str, str]]:
     preview_dir = Path(args.output_dir) / "preview" / split
     manifest = []
     preview_count = 0
+    stats = {
+        "event_pixels": 0,
+        "target_sum_on_event": 0.0,
+        "target_positive_on_event": 0,
+        "geometry_sum_on_event": 0.0,
+        "valid_pixels": 0,
+    }
     for batch_idx, views in enumerate(loader):
         if args.max_batches > 0 and batch_idx >= args.max_batches:
             break
         for view_idx, view in enumerate(views):
             sample = _make_target(view, args)
+            event_support = np.squeeze(sample["event_support"])
+            target = np.squeeze(sample["target_reliability"])
+            geometry = np.squeeze(sample["geometry_support"])
+            valid = np.squeeze(sample["mask"]) > 0
+            event_pixels = (event_support >= args.event_support_min) & valid
+            stats["event_pixels"] += int(event_pixels.sum())
+            stats["valid_pixels"] += int(valid.sum())
+            stats["target_sum_on_event"] += float(target[event_pixels].sum())
+            stats["target_positive_on_event"] += int((target[event_pixels] >= 0.5).sum())
+            stats["geometry_sum_on_event"] += float(geometry[event_pixels].sum())
             label_value = view.get("label", [f"batch{batch_idx:05d}_view{view_idx:02d}"])
             label = label_value[0] if isinstance(label_value, (list, tuple)) else str(label_value)
             instance_value = view.get("instance", [label])
@@ -331,7 +351,25 @@ def render_split(args, split: str) -> List[Dict[str, str]]:
             indent=2,
             ensure_ascii=False,
         )
-    print(f"[render] split={split} scenes={dataset.get_active_scenes()} samples={len(manifest)} -> {manifest_path}")
+    event_count = max(stats["event_pixels"], 1)
+    valid_count = max(stats["valid_pixels"], 1)
+    summary = {
+        "target_mode": args.target_mode,
+        "event_pixel_ratio": stats["event_pixels"] / valid_count,
+        "target_mean_on_event": stats["target_sum_on_event"] / event_count,
+        "target_positive_ratio_on_event": stats["target_positive_on_event"] / event_count,
+        "geometry_mean_on_event": stats["geometry_sum_on_event"] / event_count,
+        **stats,
+    }
+    stats_path = Path(args.output_dir) / f"label_stats_{split}.json"
+    with stats_path.open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, ensure_ascii=False)
+    print(
+        f"[render] split={split} scenes={dataset.get_active_scenes()} samples={len(manifest)} "
+        f"event_ratio={summary['event_pixel_ratio']:.4f} "
+        f"target_mean={summary['target_mean_on_event']:.4f} "
+        f"target_pos={summary['target_positive_ratio_on_event']:.4f} -> {manifest_path}"
+    )
     return manifest
 
 
@@ -364,6 +402,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--persistence-power", type=float, default=1.5)
     parser.add_argument("--polarity-floor", type=float, default=0.70)
     parser.add_argument("--event-support-min", type=float, default=0.01)
+    parser.add_argument("--target-mode", choices=("geometry", "cue_modulated"), default="geometry")
     parser.add_argument("--cue-fusion", choices=("geometric", "product"), default="geometric")
     parser.add_argument("--empty-weight", type=float, default=0.03)
     return parser.parse_args()
