@@ -166,7 +166,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize event bins from an event-branch checkpoint")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--config", default=None)
-    parser.add_argument("--model-kind", choices=["auto", "geometry", "decomposition"], default="auto")
+    parser.add_argument(
+        "--model-kind",
+        choices=["auto", "geometry", "decomposition", "causal"],
+        default="auto",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--root", default="/data1/lzh/dataset/reflective_raw")
     parser.add_argument("--split", choices=["train", "test", "all"], default="test")

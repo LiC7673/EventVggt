@@ -49,6 +49,7 @@ from ablation.eag3r_metrics_eval import (  # noqa: E402
 from event_branch_ablation.common import (  # noqa: E402
     _build_decomposition_model,
     _build_geometry_model,
+    _model_kwargs,
 )
 from event_branch_ablation.data import (  # noqa: E402
     FixedWindowAdditiveDataset,
@@ -193,12 +194,29 @@ def _ensure_model_cfg(cfg) -> None:
             setattr(cfg.model, key, value)
 
 
-def _detect_model_kind(state: Dict[str, torch.Tensor], requested: str) -> str:
+def _detect_model_kind(state: Dict[str, torch.Tensor], requested: str, variant: str) -> str:
     if requested != "auto":
         return requested
+    if "causal" in str(variant).lower():
+        return "causal"
     if any(key.startswith("event_branch_decomposer.") for key in state):
         return "decomposition"
     return "geometry"
+
+
+def _build_causal_model(cfg):
+    from eventvggt.models.streamvggt_causal_additive_detail import StreamVGGT
+
+    kwargs = _model_kwargs(cfg)
+    kwargs["decomposition_hidden_dim"] = int(cfg.model.decomposition_hidden_dim)
+    kwargs["event_support_tau"] = float(getattr(cfg.model, "event_support_tau", 0.50))
+    kwargs["event_support_dilate_kernel"] = int(
+        getattr(cfg.model, "event_support_dilate_kernel", 5)
+    )
+    kwargs["event_support_blur_kernel"] = int(
+        getattr(cfg.model, "event_support_blur_kernel", 3)
+    )
+    return StreamVGGT(**kwargs)
 
 
 def build_model(checkpoint: Path, args, device: torch.device):
@@ -206,8 +224,13 @@ def build_model(checkpoint: Path, args, device: torch.device):
     cfg = cfg_from_checkpoint(raw_checkpoint, args.config)
     _ensure_model_cfg(cfg)
     state = strip_module_prefix(fe.unwrap_state_dict(raw_checkpoint))
-    kind = _detect_model_kind(state, args.model_kind)
-    model = _build_decomposition_model(cfg) if kind == "decomposition" else _build_geometry_model(cfg)
+    kind = _detect_model_kind(state, args.model_kind, getattr(cfg.model, "variant", ""))
+    if kind == "causal":
+        model = _build_causal_model(cfg)
+    elif kind == "decomposition":
+        model = _build_decomposition_model(cfg)
+    else:
+        model = _build_geometry_model(cfg)
     message = model.load_state_dict(state, strict=False)
     print(
         f"[load] kind={kind} missing={len(message.missing_keys)} "
@@ -511,7 +534,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Paired event-branch contribution evaluation")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--config", default=None)
-    parser.add_argument("--model-kind", choices=["auto", "geometry", "decomposition"], default="auto")
+    parser.add_argument(
+        "--model-kind",
+        choices=["auto", "geometry", "decomposition", "causal"],
+        default="auto",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--root", default="/data1/lzh/dataset/reflective_raw")
     parser.add_argument("--split", choices=["train", "test", "all"], default="test")

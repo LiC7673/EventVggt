@@ -126,3 +126,17 @@ bash event_branch_ablation/run_event_bin_visualization.sh
 This runs the decomposition and geometry-motion checkpoints in parallel on
 GPUs 2 and 3. Set `MAX_SAMPLES`, `INITIAL_SCENE_IDX`, `DECOMPOSE_GPU`, or
 `GEOMETRY_GPU` to override the defaults.
+
+## Event-causal additive refinement
+
+The causal variant prevents the RGB/depth refinement context from producing a
+correction when events are zero. Its residual is supported only by the
+predicted geometry-event token, and reliability is supervised directly with
+`V_geometry / V_full` rather than a GT-normal-gradient proxy.
+
+```bash
+bash event_branch_ablation/run_causal_full_to_geometry_2gpu.sh
+```
+
+The output is written to
+`abl_event_exp/causal_full_to_geometry_scene12/`.
