@@ -71,3 +71,28 @@ python event_branch_ablation/diagnose_additive_alignment.py
 `mean_additive_relative_l1` should be close to zero. The script also saves
 full/geometry/material/noise event panels under
 `abl_event_exp/additive_alignment_debug/`.
+
+## Paired held-out event contribution test
+
+Run both trained checkpoints on the same unseen scene:
+
+```bash
+bash event_branch_ablation/run_event_contribution_test.sh
+```
+
+The default uses scene index 12, after the 12 training scenes, and evaluates
+six controlled inputs: `coarse_rgb`, `zero_event`, `full_event`,
+`geometry_event`, `material_event`, and `noise_event`. Override the held-out
+range when needed:
+
+```bash
+INITIAL_SCENE_IDX=12 ACTIVE_SCENE_COUNT=4 \
+  bash event_branch_ablation/run_event_contribution_test.sh
+```
+
+Each result directory contains `condition_metrics.csv`,
+`per_batch_metrics.csv`, and `summary.json`. In the summary,
+`full_event_net_gain` is the event-only gain over the same refinement head
+with zero events. `refiner_structure_zero_vs_coarse` measures the gain caused
+by the extra RGB/depth refinement capacity and must not be attributed to
+events.

@@ -26,6 +26,7 @@ from event_branch_ablation.data import (
     build_geometry_motion_loader,
 )
 from event_branch_ablation.loss import make_additive_token_loss
+from event_branch_ablation.plots import install_event_plot_hook
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -218,6 +219,7 @@ def train_geometry_motion(cfg) -> None:
     fe.configure_trainable_params = _configure_trainable
     fe.EventSupervisedLoss = make_configured_image_guided_event_reliability_loss(cfg)
     fe.save_current_code = _safe_save_current_code
+    install_event_plot_hook(fe)
     print(f"[geometry-motion] output={cfg.output_dir}, epochs={cfg.epochs}, lr={cfg.lr}")
     fe.train(cfg)
 
@@ -238,5 +240,6 @@ def train_full_decomposition(cfg) -> None:
     fe.configure_trainable_params = _configure_trainable
     fe.EventSupervisedLoss = make_additive_token_loss(cfg)
     fe.save_current_code = _safe_save_current_code
+    install_event_plot_hook(fe)
     print(f"[full-decomposition] output={cfg.output_dir}, epochs={cfg.epochs}, lr={cfg.lr}")
     fe.train(cfg)

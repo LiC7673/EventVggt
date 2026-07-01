@@ -18,6 +18,7 @@ from event_filter_two_stage.data import build_stage2_full_event_loader
 from event_filter_two_stage.loss import make_two_stage_reliability_loss
 from eventvggt.models.streamvggt_frozen_additive_geometry_detail import StreamVGGT
 from event_branch_ablation.common import FULL_RELIABILITY_WEIGHTS
+from event_branch_ablation.plots import install_event_plot_hook
 from mul_loss_fine.launcher import configure_mul_loss_cfg
 
 
@@ -127,6 +128,7 @@ def run(cfg: OmegaConf):
     fe.configure_trainable_params = _configure_trainable
     fe.EventSupervisedLoss = make_two_stage_reliability_loss(cfg)
     fe.save_current_code = _safe_snapshot
+    install_event_plot_hook(fe)
     print(
         f"[two-stage-2] frozen={cfg.model.decomposition_checkpoint}, "
         f"event_floor={cfg.model.geometry_event_floor}, output={cfg.output_dir}"
