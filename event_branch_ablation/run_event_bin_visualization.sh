@@ -10,6 +10,7 @@ INITIAL_SCENE_IDX="${INITIAL_SCENE_IDX:-12}"
 ACTIVE_SCENE_COUNT="${ACTIVE_SCENE_COUNT:-1}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
 MAX_SAMPLES="${MAX_SAMPLES:-2}"
+PANEL_WIDTH="${PANEL_WIDTH:-224}"
 LDR_ID="${LDR_ID:-ev_5}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/abl_event_exp/event_bin_visualization_${RUN_ID}}"
@@ -27,6 +28,7 @@ COMMON_ARGS=(
   --active-scene-count "${ACTIVE_SCENE_COUNT}"
   --num-views "${NUM_VIEWS}"
   --max-samples "${MAX_SAMPLES}"
+  --panel-width "${PANEL_WIDTH}"
   --ldr-event-id "${LDR_ID}"
   --num-workers 0
   --amp bf16
