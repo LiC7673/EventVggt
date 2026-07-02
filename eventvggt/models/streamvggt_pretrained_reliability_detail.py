@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from eventvggt.models.streamvggt_temporal_detail import (
     StreamVGGT as TemporalDetailStreamVGGT,
@@ -58,9 +59,11 @@ class FrozenReliabilityEventFilter(nn.Module):
         num_bins: int = 10,
         base_channels: int = 32,
         count_cmax: float = 3.0,
-        gate_floor: float = 0.20,
+        gate_floor: float = 0.10,
         frame_chunk_size: int = 1,
         rgb_input_range: str = "minus_one_one",
+        residual_postfilter_kernel: int = 3,
+        residual_postfilter_strength: float = 0.75,
     ) -> None:
         super().__init__()
         self.base_refiner = base_refiner
@@ -69,6 +72,12 @@ class FrozenReliabilityEventFilter(nn.Module):
         self.gate_floor = min(max(float(gate_floor), 0.0), 1.0)
         self.frame_chunk_size = max(int(frame_chunk_size), 1)
         self.rgb_input_range = str(rgb_input_range)
+        self.residual_postfilter_kernel = max(int(residual_postfilter_kernel), 1)
+        if self.residual_postfilter_kernel % 2 == 0:
+            self.residual_postfilter_kernel += 1
+        self.residual_postfilter_strength = min(
+            max(float(residual_postfilter_strength), 0.0), 1.0
+        )
 
         checkpoint_path = Path(checkpoint).expanduser()
         if not checkpoint_path.is_file():
@@ -155,6 +164,30 @@ class FrozenReliabilityEventFilter(nn.Module):
             depth=depth,
             points=points,
         )
+        if self.residual_postfilter_kernel > 1 and self.residual_postfilter_strength > 0.0:
+            min_depth = float(getattr(self.base_refiner, "min_depth", 1.0e-6))
+            delta_log = torch.log(
+                refined_depth.float().clamp_min(min_depth) / depth.float().clamp_min(min_depth)
+            )
+            batch, seq_len, height, width, _ = delta_log.shape
+            delta_flat = delta_log.permute(0, 1, 4, 2, 3).reshape(
+                batch * seq_len, 1, height, width
+            )
+            pad = self.residual_postfilter_kernel // 2
+            smooth_delta = F.avg_pool2d(
+                F.pad(delta_flat, (pad, pad, pad, pad), mode="replicate"),
+                kernel_size=self.residual_postfilter_kernel,
+                stride=1,
+            )
+            strength = self.residual_postfilter_strength
+            delta_flat = (1.0 - strength) * delta_flat + strength * smooth_delta
+            delta_log = delta_flat.reshape(batch, seq_len, 1, height, width).permute(0, 1, 3, 4, 2)
+            refined_depth = depth.float() * torch.exp(delta_log)
+            refined_depth = refined_depth.to(dtype=depth.dtype).clamp_min(min_depth)
+            depth_residual = refined_depth - depth
+            if points is not None:
+                ratio = refined_depth / depth.clamp_min(min_depth)
+                refined_points = points * ratio.to(dtype=points.dtype)
         self.last_reliability = reliability
         self.last_gate = gate
         self.last_filtered_event_abs_mean = filtered_event.detach().abs().mean()
@@ -169,9 +202,11 @@ class StreamVGGT(TemporalDetailStreamVGGT):
         *args,
         reliability_checkpoint: str,
         reliability_base_channels: int = 32,
-        reliability_gate_floor: float = 0.20,
+        reliability_gate_floor: float = 0.10,
         reliability_frame_chunk_size: int = 1,
         reliability_rgb_input_range: str = "minus_one_one",
+        residual_postfilter_kernel: int = 3,
+        residual_postfilter_strength: float = 0.75,
         event_num_bins: int = 10,
         event_count_cmax: float = 3.0,
         **kwargs,
@@ -194,6 +229,8 @@ class StreamVGGT(TemporalDetailStreamVGGT):
             gate_floor=reliability_gate_floor,
             frame_chunk_size=reliability_frame_chunk_size,
             rgb_input_range=reliability_rgb_input_range,
+            residual_postfilter_kernel=residual_postfilter_kernel,
+            residual_postfilter_strength=residual_postfilter_strength,
         )
 
 

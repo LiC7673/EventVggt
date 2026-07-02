@@ -106,6 +106,8 @@ def _build_stage2_model(cfg):
         reliability_gate_floor=float(cfg.model.reliability_gate_floor),
         reliability_frame_chunk_size=int(cfg.model.reliability_frame_chunk_size),
         reliability_rgb_input_range=str(cfg.model.reliability_rgb_input_range),
+        residual_postfilter_kernel=int(cfg.model.residual_postfilter_kernel),
+        residual_postfilter_strength=float(cfg.model.residual_postfilter_strength),
     )
 
 
@@ -149,10 +151,14 @@ def _prepare_cfg(cfg):
         )
     )
     cfg.model.reliability_base_channels = int(getattr(cfg.model, "reliability_base_channels", 32))
-    cfg.model.reliability_gate_floor = float(getattr(cfg.model, "reliability_gate_floor", 0.20))
+    cfg.model.reliability_gate_floor = float(getattr(cfg.model, "reliability_gate_floor", 0.10))
     cfg.model.reliability_frame_chunk_size = int(getattr(cfg.model, "reliability_frame_chunk_size", 1))
     cfg.model.reliability_rgb_input_range = str(
         getattr(cfg.model, "reliability_rgb_input_range", "minus_one_one")
+    )
+    cfg.model.residual_postfilter_kernel = int(getattr(cfg.model, "residual_postfilter_kernel", 3))
+    cfg.model.residual_postfilter_strength = float(
+        getattr(cfg.model, "residual_postfilter_strength", 0.75)
     )
 
     cfg.data.train_initial_scene_idx = int(getattr(cfg.data, "train_initial_scene_idx", 0))
@@ -171,6 +177,7 @@ def _prepare_cfg(cfg):
     cfg.loss.pose_weight = 0.0
     cfg.loss.depth_weight = 1.0
     cfg.loss.points_weight = 1.0
+    cfg.loss.normal_weight = float(getattr(cfg.loss, "stage2_normal_weight", 0.05))
     cfg.epochs = max(int(getattr(cfg, "epochs", 10)), 20)
     if float(getattr(cfg, "lr", 1.0e-4)) > 4.0e-5:
         cfg.lr = 4.0e-5
@@ -225,9 +232,9 @@ def run(cfg: OmegaConf):
         "mv_event_blur_kernel": 1,
         "mv_event_power": 2.0,
         "mv_event_top_fraction": 0.20,
-        "residual_smooth_weight": 0.02,
-        "residual_second_order_weight": 0.02,
-        "residual_abs_weight": 0.01,
+        "residual_smooth_weight": 0.08,
+        "residual_second_order_weight": 0.05,
+        "residual_abs_weight": 0.02,
         "residual_smooth_alpha": 10.0,
         "final_grid_weight": 0.02,
         "final_phase_weight": 0.01,

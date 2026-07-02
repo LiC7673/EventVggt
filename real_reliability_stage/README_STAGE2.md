@@ -16,7 +16,7 @@ full event voxel + RGB
         |
 frozen ReliabilityNet
         |
-R_geo, G = 0.2 + 0.8 R_geo
+R_geo, G = 0.1 + 0.9 R_geo
         |
 G * full event voxel
         |
