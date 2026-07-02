@@ -11,6 +11,7 @@ refinement. Event-aware supervision is separately weighted by R.detach().
 from __future__ import annotations
 
 import sys
+import shutil
 from pathlib import Path
 
 import hydra
@@ -28,6 +29,23 @@ from real_reliability_stage.stage2_loss import make_stage2_reliability_weighted_
 
 _BASE_BUILD_LOADER = fe.build_event_loader
 _SPLIT_SCENES = {}
+
+
+def _save_stage2_code_snapshot(outdir: str):
+    """Save only files owned by this experiment, never recursively copy output."""
+    snapshot_dir = Path(outdir) / "code" / "stage2_sources"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    sources = (
+        ROOT_DIR / "real_reliability_stage" / "finetune_stage2_vggt.py",
+        ROOT_DIR / "real_reliability_stage" / "stage2_loss.py",
+        ROOT_DIR / "real_reliability_stage" / "run_stage2_vggt_12train_4test.sh",
+        ROOT_DIR / "eventvggt" / "models" / "streamvggt_pretrained_reliability_detail.py",
+        ROOT_DIR / "config" / "finetune_event.yaml",
+    )
+    for source in sources:
+        if source.is_file():
+            shutil.copy2(source, snapshot_dir / source.name)
+    return str(snapshot_dir)
 
 
 def _resolve_path(value: str) -> str:
@@ -156,8 +174,14 @@ def _prepare_cfg(cfg):
     cfg.epochs = max(int(getattr(cfg, "epochs", 10)), 20)
     if float(getattr(cfg, "lr", 1.0e-4)) > 4.0e-5:
         cfg.lr = 4.0e-5
-    cfg.eval_every_steps = int(getattr(cfg, "eval_every_steps", 500))
-    cfg.vis.test_max_batches = int(getattr(cfg.vis, "test_max_batches", 4))
+    # The four held-out scenes contain hundreds of overlapping windows. Avoid
+    # repeatedly rendering them during training; final evaluation still runs.
+    cfg.eval_every_steps = int(getattr(cfg, "stage2_eval_every_steps", 0))
+    cfg.save_every_steps = int(getattr(cfg, "stage2_checkpoint_every_steps", 2000))
+    cfg.print_freq = int(getattr(cfg, "stage2_print_freq", 50))
+    cfg.log_freq = int(getattr(cfg, "stage2_log_freq", 100))
+    cfg.vis.save_every_steps = int(getattr(cfg.vis, "stage2_save_every_steps", 2000))
+    cfg.vis.test_max_batches = int(getattr(cfg.vis, "stage2_test_max_batches", 1))
     cfg.vis.test_num_views = int(getattr(cfg.vis, "test_num_views", cfg.data.num_views))
 
     current_pretrained = str(getattr(cfg, "pretrained", "") or "")
@@ -226,6 +250,7 @@ def run(cfg: OmegaConf):
     fe.build_event_loader = _build_scene_disjoint_loader
     fe.build_event_model = _build_stage2_model
     fe.configure_trainable_params = _configure_stage2_trainable_params
+    fe.save_current_code = _save_stage2_code_snapshot
     fe.EventSupervisedLoss = make_stage2_reliability_weighted_loss(cfg)
     print(
         "Stage-2 frozen reliability VGGT finetune: "

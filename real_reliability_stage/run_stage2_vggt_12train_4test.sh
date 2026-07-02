@@ -12,6 +12,12 @@ PIN_MEM="${PIN_MEM:-true}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
 EPOCHS="${EPOCHS:-20}"
 LDR_ID="${LDR_ID:-ev_5}"
+PRINT_FREQ="${PRINT_FREQ:-50}"
+LOG_FREQ="${LOG_FREQ:-100}"
+VIS_EVERY_STEPS="${VIS_EVERY_STEPS:-2000}"
+CHECKPOINT_EVERY_STEPS="${CHECKPOINT_EVERY_STEPS:-2000}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-0}"
+TEST_VIS_MAX_BATCHES="${TEST_VIS_MAX_BATCHES:-1}"
 
 TRAIN_INITIAL_SCENE_IDX="${TRAIN_INITIAL_SCENE_IDX:-0}"
 TRAIN_SCENE_COUNT="${TRAIN_SCENE_COUNT:-12}"
@@ -63,8 +69,13 @@ CUDA_VISIBLE_DEVICES="${GPUS}" HYDRA_FULL_ERROR=1 \
   +data.test_scene_count="${TEST_SCENE_COUNT}" \
   +data.heldout_test_frame_count="${HELDOUT_TEST_FRAME_COUNT}" \
   +model.reliability_checkpoint="${RELIABILITY_CKPT}" \
+  +stage2_print_freq="${PRINT_FREQ}" \
+  +stage2_log_freq="${LOG_FREQ}" \
+  +stage2_eval_every_steps="${EVAL_EVERY_STEPS}" \
+  +stage2_checkpoint_every_steps="${CHECKPOINT_EVERY_STEPS}" \
+  +vis.stage2_save_every_steps="${VIS_EVERY_STEPS}" \
+  +vis.stage2_test_max_batches="${TEST_VIS_MAX_BATCHES}" \
   "$@"
 
 echo "[done] ${ROOT_DIR}/abl_event_exp/${EXP_NAME}/checkpoint-last.pth"
 echo "[done] held-out visuals: ${ROOT_DIR}/abl_event_exp/${EXP_NAME}/test_vis/"
-
