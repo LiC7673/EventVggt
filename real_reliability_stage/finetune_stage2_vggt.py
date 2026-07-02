@@ -108,6 +108,10 @@ def _build_stage2_model(cfg):
         reliability_rgb_input_range=str(cfg.model.reliability_rgb_input_range),
         residual_postfilter_kernel=int(cfg.model.residual_postfilter_kernel),
         residual_postfilter_strength=float(cfg.model.residual_postfilter_strength),
+        causal_output_gate=bool(cfg.model.causal_output_gate),
+        causal_support_threshold=float(cfg.model.causal_support_threshold),
+        causal_support_dilate_kernel=int(cfg.model.causal_support_dilate_kernel),
+        causal_support_blur_kernel=int(cfg.model.causal_support_blur_kernel),
     )
 
 
@@ -159,6 +163,16 @@ def _prepare_cfg(cfg):
     cfg.model.residual_postfilter_kernel = int(getattr(cfg.model, "residual_postfilter_kernel", 3))
     cfg.model.residual_postfilter_strength = float(
         getattr(cfg.model, "residual_postfilter_strength", 0.75)
+    )
+    cfg.model.causal_output_gate = bool(getattr(cfg.model, "causal_output_gate", False))
+    cfg.model.causal_support_threshold = float(
+        getattr(cfg.model, "causal_support_threshold", 0.01)
+    )
+    cfg.model.causal_support_dilate_kernel = int(
+        getattr(cfg.model, "causal_support_dilate_kernel", 5)
+    )
+    cfg.model.causal_support_blur_kernel = int(
+        getattr(cfg.model, "causal_support_blur_kernel", 3)
     )
 
     cfg.data.train_initial_scene_idx = int(getattr(cfg.data, "train_initial_scene_idx", 0))

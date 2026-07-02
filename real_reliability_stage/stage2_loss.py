@@ -72,6 +72,7 @@ class FrozenReliabilityWeightedEventLossMixin:
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]):
         reliability = _stack_output_field(model_output, "event_reliability")
         model_gate = _stack_output_field(model_output, "event_gate")
+        model_event_support = _stack_output_field(model_output, "event_support")
         if reliability is None:
             total, details, aux = super().forward(model_output, views)
             details.update(
@@ -196,6 +197,9 @@ class FrozenReliabilityWeightedEventLossMixin:
             {
                 "stage2_reliability_mean": float(reliability.mean()),
                 "stage2_gate_mean": float(model_gate.detach().mean()) if model_gate is not None else 0.0,
+                "stage2_event_support_mean": float(model_event_support.detach().mean())
+                if model_event_support is not None
+                else 0.0,
                 "stage2_reliability_positive_ratio": float((reliability >= 0.5).float().mean()),
                 "stage2_weighted_event_abs_mean": float(
                     (weighted_event_sum / weighted_event_count.clamp_min(1.0)).detach()
@@ -210,6 +214,8 @@ class FrozenReliabilityWeightedEventLossMixin:
         aux["event_reliability"] = reliability
         if model_gate is not None:
             aux["event_gate"] = model_gate.detach()
+        if model_event_support is not None:
+            aux["event_motion_density"] = model_event_support.detach()
         return total, details, aux
 
 

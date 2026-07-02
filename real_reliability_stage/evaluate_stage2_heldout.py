@@ -91,6 +91,12 @@ def build_model(checkpoint: Path, reliability_checkpoint: str | None, device: to
         residual_postfilter_strength=float(
             _cfg_value(model_cfg, "residual_postfilter_strength", 0.75)
         ),
+        causal_output_gate=bool(_cfg_value(model_cfg, "causal_output_gate", False)),
+        causal_support_threshold=float(_cfg_value(model_cfg, "causal_support_threshold", 0.01)),
+        causal_support_dilate_kernel=int(
+            _cfg_value(model_cfg, "causal_support_dilate_kernel", 5)
+        ),
+        causal_support_blur_kernel=int(_cfg_value(model_cfg, "causal_support_blur_kernel", 3)),
     )
     state = strip_module_prefix(fe.unwrap_state_dict(raw_checkpoint))
     message = model.load_state_dict(state, strict=False)
@@ -319,4 +325,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

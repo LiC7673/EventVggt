@@ -50,3 +50,18 @@ bash real_reliability_stage/run_stage2_vggt_12train_4test.sh
 
 Outputs are written under
 `abl_event_exp/stage2_reliability_residual_train12_test4/`.
+
+## Causal event-only residual experiment
+
+This variant enforces `zero event -> zero detail residual`, preventing the
+refiner from improving geometry using RGB/coarse depth alone:
+
+```bash
+bash real_reliability_stage/run_stage2_causal_event_train_and_eval.sh
+```
+
+Training output:
+`abl_event_exp/stage2_causal_event_reliability_train12_test4/`
+
+The automatic held-out evaluation compares coarse RGB, zero event, full event,
+reverse-time event, and swapped-polarity event on scene indices `12..15`.

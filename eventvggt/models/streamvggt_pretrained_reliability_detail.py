@@ -80,6 +80,10 @@ class FrozenReliabilityEventFilter(nn.Module):
         rgb_input_range: str = "minus_one_one",
         residual_postfilter_kernel: int = 3,
         residual_postfilter_strength: float = 0.75,
+        causal_output_gate: bool = False,
+        causal_support_threshold: float = 0.01,
+        causal_support_dilate_kernel: int = 5,
+        causal_support_blur_kernel: int = 3,
     ) -> None:
         super().__init__()
         self.base_refiner = base_refiner
@@ -94,6 +98,14 @@ class FrozenReliabilityEventFilter(nn.Module):
         self.residual_postfilter_strength = min(
             max(float(residual_postfilter_strength), 0.0), 1.0
         )
+        self.causal_output_gate = bool(causal_output_gate)
+        self.causal_support_threshold = max(float(causal_support_threshold), 0.0)
+        self.causal_support_dilate_kernel = max(int(causal_support_dilate_kernel), 1)
+        self.causal_support_blur_kernel = max(int(causal_support_blur_kernel), 1)
+        if self.causal_support_dilate_kernel % 2 == 0:
+            self.causal_support_dilate_kernel += 1
+        if self.causal_support_blur_kernel % 2 == 0:
+            self.causal_support_blur_kernel += 1
 
         checkpoint_path = Path(checkpoint).expanduser()
         if not checkpoint_path.is_file():
@@ -118,6 +130,7 @@ class FrozenReliabilityEventFilter(nn.Module):
         self.last_gate: Optional[torch.Tensor] = None
         self.last_filtered_event_abs_mean: Optional[torch.Tensor] = None
         self.last_delta_log: Optional[torch.Tensor] = None
+        self.last_event_support: Optional[torch.Tensor] = None
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -140,6 +153,21 @@ class FrozenReliabilityEventFilter(nn.Module):
         elif self.rgb_input_range == "zero_one" and float(rgb.detach().amin()) < -0.05:
             rgb = (rgb + 1.0) * 0.5
         return rgb
+
+    def _event_support(self, event_voxel: torch.Tensor) -> torch.Tensor:
+        batch, seq_len, _, height, width = event_voxel.shape
+        activity = event_voxel.detach().float().abs().sum(dim=2, keepdim=True)
+        peak = activity.flatten(3).amax(dim=-1, keepdim=True).view(batch, seq_len, 1, 1, 1)
+        normalized = activity / peak.clamp_min(1.0e-6)
+        support = (normalized >= self.causal_support_threshold).to(dtype=activity.dtype)
+        support = support.reshape(batch * seq_len, 1, height, width)
+        if self.causal_support_dilate_kernel > 1:
+            kernel = self.causal_support_dilate_kernel
+            support = F.max_pool2d(support, kernel, stride=1, padding=kernel // 2)
+        if self.causal_support_blur_kernel > 1:
+            kernel = self.causal_support_blur_kernel
+            support = F.avg_pool2d(support, kernel, stride=1, padding=kernel // 2)
+        return support.clamp(0.0, 1.0).reshape(batch, seq_len, height, width)
 
     @torch.no_grad()
     def _predict_reliability(self, event_voxel: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
@@ -205,9 +233,29 @@ class FrozenReliabilityEventFilter(nn.Module):
             if points is not None:
                 ratio = refined_depth / depth.clamp_min(min_depth)
                 refined_points = points * ratio.to(dtype=points.dtype)
+        event_support = self._event_support(event_voxel)
+        if self.causal_output_gate:
+            # This is the causal constraint: without observed events, the
+            # detail branch cannot alter RGB coarse geometry. Reliability has
+            # already filtered the event input; support only enforces where a
+            # residual is allowed to be written.
+            min_depth = float(getattr(self.base_refiner, "min_depth", 1.0e-6))
+            delta_log = torch.log(
+                refined_depth.float().clamp_min(min_depth) / depth.float().clamp_min(min_depth)
+            ).squeeze(-1)
+            delta_log = delta_log * event_support.to(dtype=delta_log.dtype)
+            refined_depth = depth.float() * torch.exp(delta_log.unsqueeze(-1))
+            refined_depth = refined_depth.to(dtype=depth.dtype).clamp_min(min_depth)
+            depth_residual = refined_depth - depth
+            if points is not None:
+                ratio = refined_depth / depth.clamp_min(min_depth)
+                refined_points = points * ratio.to(dtype=points.dtype)
         self.last_reliability = reliability
-        self.last_gate = gate
+        self.last_gate = (
+            gate * event_support.to(dtype=gate.dtype) if self.causal_output_gate else gate
+        )
         self.last_filtered_event_abs_mean = filtered_event.detach().abs().mean()
+        self.last_event_support = event_support
         self.last_delta_log = torch.log(
             refined_depth.float().clamp_min(1.0e-6) / depth.float().clamp_min(1.0e-6)
         ).squeeze(-1)
@@ -227,6 +275,10 @@ class StreamVGGT(TemporalDetailStreamVGGT):
         reliability_rgb_input_range: str = "minus_one_one",
         residual_postfilter_kernel: int = 3,
         residual_postfilter_strength: float = 0.75,
+        causal_output_gate: bool = False,
+        causal_support_threshold: float = 0.01,
+        causal_support_dilate_kernel: int = 5,
+        causal_support_blur_kernel: int = 3,
         event_num_bins: int = 10,
         event_count_cmax: float = 3.0,
         **kwargs,
@@ -251,14 +303,21 @@ class StreamVGGT(TemporalDetailStreamVGGT):
             rgb_input_range=reliability_rgb_input_range,
             residual_postfilter_kernel=residual_postfilter_kernel,
             residual_postfilter_strength=residual_postfilter_strength,
+            causal_output_gate=causal_output_gate,
+            causal_support_threshold=causal_support_threshold,
+            causal_support_dilate_kernel=causal_support_dilate_kernel,
+            causal_support_blur_kernel=causal_support_blur_kernel,
         )
 
     def forward(self, views, *args, **kwargs):
         output = super().forward(views, *args, **kwargs)
         delta_log = self.event_detail_refiner.last_delta_log
+        event_support = self.event_detail_refiner.last_event_support
         if delta_log is not None:
             for frame_idx, result in enumerate(output.ress):
                 result["event_delta_log"] = delta_log[:, frame_idx]
+                if event_support is not None:
+                    result["event_support"] = event_support[:, frame_idx]
         return output
 
 
