@@ -49,4 +49,4 @@ bash real_reliability_stage/run_stage2_vggt_12train_4test.sh
 ```
 
 Outputs are written under
-`abl_event_exp/stage2_frozen_real_reliability_train12_test4/`.
+`abl_event_exp/stage2_reliability_residual_train12_test4/`.

@@ -178,6 +178,24 @@ def _prepare_cfg(cfg):
     cfg.loss.depth_weight = 1.0
     cfg.loss.points_weight = 1.0
     cfg.loss.normal_weight = float(getattr(cfg.loss, "stage2_normal_weight", 0.05))
+    cfg.loss.stage2_residual_target_weight = float(
+        getattr(cfg.loss, "stage2_residual_target_weight", 1.0)
+    )
+    cfg.loss.stage2_residual_gradient_weight = float(
+        getattr(cfg.loss, "stage2_residual_gradient_weight", 2.0)
+    )
+    cfg.loss.stage2_target_highpass_kernel = int(
+        getattr(cfg.loss, "stage2_target_highpass_kernel", 9)
+    )
+    cfg.loss.stage2_target_abs_limit = float(
+        getattr(cfg.loss, "stage2_target_abs_limit", cfg.model.event_delta_abs_limit)
+    )
+    cfg.loss.stage2_target_geometry_threshold = float(
+        getattr(cfg.loss, "stage2_target_geometry_threshold", 0.02)
+    )
+    cfg.loss.stage2_target_reliability_floor = float(
+        getattr(cfg.loss, "stage2_target_reliability_floor", 0.25)
+    )
     cfg.epochs = max(int(getattr(cfg, "epochs", 10)), 20)
     if float(getattr(cfg, "lr", 1.0e-4)) > 4.0e-5:
         cfg.lr = 4.0e-5
@@ -196,7 +214,7 @@ def _prepare_cfg(cfg):
         cfg.pretrained = _resolve_path("ckpt/model.pt")
 
     if str(getattr(cfg, "exp_name", "")) == "event_finetune_LDR5":
-        cfg.exp_name = "stage2_frozen_real_reliability_train12_test4"
+        cfg.exp_name = "stage2_reliability_residual_train12_test4"
     output_root = ROOT_DIR / "abl_event_exp"
     cfg.save_dir = str(output_root)
     cfg.output_dir = str(output_root / str(cfg.exp_name))
@@ -245,7 +263,7 @@ def run(cfg: OmegaConf):
     cfg = configure_mul_loss_cfg(
         _prepare_cfg(cfg),
         weights=weights,
-        exp_name="stage2_frozen_real_reliability_train12_test4",
+        exp_name="stage2_reliability_residual_train12_test4",
     )
 
     reliability_checkpoint = Path(str(cfg.model.reliability_checkpoint))

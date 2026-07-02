@@ -101,6 +101,7 @@ class FrozenReliabilityEventFilter(nn.Module):
         self.last_reliability: Optional[torch.Tensor] = None
         self.last_gate: Optional[torch.Tensor] = None
         self.last_filtered_event_abs_mean: Optional[torch.Tensor] = None
+        self.last_delta_log: Optional[torch.Tensor] = None
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -191,6 +192,9 @@ class FrozenReliabilityEventFilter(nn.Module):
         self.last_reliability = reliability
         self.last_gate = gate
         self.last_filtered_event_abs_mean = filtered_event.detach().abs().mean()
+        self.last_delta_log = torch.log(
+            refined_depth.float().clamp_min(1.0e-6) / depth.float().clamp_min(1.0e-6)
+        ).squeeze(-1)
         return refined_depth, refined_points, depth_residual
 
 
@@ -232,6 +236,14 @@ class StreamVGGT(TemporalDetailStreamVGGT):
             residual_postfilter_kernel=residual_postfilter_kernel,
             residual_postfilter_strength=residual_postfilter_strength,
         )
+
+    def forward(self, views, *args, **kwargs):
+        output = super().forward(views, *args, **kwargs)
+        delta_log = self.event_detail_refiner.last_delta_log
+        if delta_log is not None:
+            for frame_idx, result in enumerate(output.ress):
+                result["event_delta_log"] = delta_log[:, frame_idx]
+        return output
 
 
 __all__ = ["StreamVGGT", "StreamVGGTOutput", "FrozenReliabilityEventFilter"]

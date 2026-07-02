@@ -29,7 +29,7 @@ TEST_SCENE_COUNT="${TEST_SCENE_COUNT:-4}"
 TRAIN_HOLDOUT_FRAME_COUNT="${TRAIN_HOLDOUT_FRAME_COUNT:-0}"
 HELDOUT_TEST_FRAME_COUNT="${HELDOUT_TEST_FRAME_COUNT:-120}"
 
-EXP_NAME="${EXP_NAME:-stage2_frozen_real_reliability_train12_test4}"
+EXP_NAME="${EXP_NAME:-stage2_reliability_residual_train12_test4}"
 RELIABILITY_CKPT="${RELIABILITY_CKPT:-${ROOT_DIR}/abl_event_exp/real_reliability_stage/reliability_net/checkpoint-best.pth}"
 
 if [[ ! -f "${RELIABILITY_CKPT}" ]]; then
