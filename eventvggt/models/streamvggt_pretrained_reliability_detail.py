@@ -38,6 +38,22 @@ def _unwrap_reliability_state(checkpoint):
                 break
     if not isinstance(state, dict):
         raise TypeError("Reliability checkpoint does not contain a state_dict.")
+    nested = {}
+    nested_prefixes = (
+        "event_detail_refiner.reliability_net.",
+        "event_detail_refiner.external_reliability_net.",
+    )
+    for key, value in state.items():
+        name = str(key)
+        if name.startswith("module."):
+            name = name[len("module.") :]
+        for prefix in nested_prefixes:
+            if name.startswith(prefix):
+                nested[name[len(prefix) :]] = value
+                break
+    if nested:
+        return nested
+
     cleaned = {}
     for key, value in state.items():
         name = str(key)
