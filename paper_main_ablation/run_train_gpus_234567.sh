@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 ACCELERATE_BIN="${ACCELERATE_BIN:-accelerate}"
-GPU_GROUPS="${GPU_GROUPS:-2,3 4,5 6,7}"
+GPU_GROUPS="${GPU_GROUPS:-0,3 5,6 7}"
 VARIANTS="${VARIANTS:-m0_matched_rgb,m1_event_residual,m2_event_detail_gt,m3_event_detail_multildr,m4_full_reliability}"
 PORT_BASE="${PORT_BASE:-30240}"
 EPOCHS="${EPOCHS:-20}"
@@ -41,6 +41,20 @@ launch_one() {
   local job_index="$3"
   local checkpoint="${OUTPUT_ROOT}/${variant}/checkpoint-last.pth"
   local log_file="${LOG_ROOT}/${job_index}_${variant}_gpus_${gpu_group//,/_}.log"
+  local process_count
+  local accum_iter
+  local -a launch_mode
+
+  IFS=',' read -r -a local_gpus <<< "${gpu_group}"
+  process_count="${#local_gpus[@]}"
+  if [[ "${process_count}" -gt 1 ]]; then
+    launch_mode=(--multi_gpu)
+    accum_iter=1
+  else
+    launch_mode=()
+    # Match the two-GPU jobs' effective batch size.
+    accum_iter=2
+  fi
 
   if [[ "${SKIP_EXISTING}" == "true" && -f "${checkpoint}" ]]; then
     echo "[skip] ${variant}: ${checkpoint}"
@@ -50,8 +64,8 @@ launch_one() {
   echo "[launch] ${variant} on GPUs ${gpu_group}"
   CUDA_VISIBLE_DEVICES="${gpu_group}" HYDRA_FULL_ERROR=1 \
   "${ACCELERATE_BIN}" launch \
-    --multi_gpu \
-    --num_processes 2 \
+    "${launch_mode[@]}" \
+    --num_processes "${process_count}" \
     --num_machines 1 \
     --mixed_precision bf16 \
     --dynamo_backend no \
@@ -60,6 +74,7 @@ launch_one() {
     +main_table_variant="${variant}" \
     +main_table_output_root="${OUTPUT_ROOT}" \
     epochs="${EPOCHS}" \
+    accum_iter="${accum_iter}" \
     num_workers="${NUM_WORKERS}" \
     pin_mem="${PIN_MEM}" \
     print_freq=100 \
