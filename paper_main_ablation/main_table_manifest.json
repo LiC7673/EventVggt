@@ -1,0 +1,27 @@
+[
+  {
+    "name": "M0_matched_RGB",
+    "family": "main_table",
+    "checkpoint": "abl_event_exp/paper_main_table/m0_matched_rgb/checkpoint-last.pth"
+  },
+  {
+    "name": "M1_event_residual",
+    "family": "main_table",
+    "checkpoint": "abl_event_exp/paper_main_table/m1_event_residual/checkpoint-last.pth"
+  },
+  {
+    "name": "M2_event_detail_GT",
+    "family": "main_table",
+    "checkpoint": "abl_event_exp/paper_main_table/m2_event_detail_gt/checkpoint-last.pth"
+  },
+  {
+    "name": "M3_event_detail_MultiLDR",
+    "family": "main_table",
+    "checkpoint": "abl_event_exp/paper_main_table/m3_event_detail_multildr/checkpoint-last.pth"
+  },
+  {
+    "name": "M4_full_reliability",
+    "family": "main_table",
+    "checkpoint": "abl_event_exp/paper_main_table/m4_full_reliability/checkpoint-last.pth"
+  }
+]

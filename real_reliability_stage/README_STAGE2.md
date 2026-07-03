@@ -65,3 +65,14 @@ Training output:
 
 The automatic held-out evaluation compares coarse RGB, zero event, full event,
 reverse-time event, and swapped-polarity event on scene indices `12..15`.
+
+## Stage-1 input ablation
+
+To test whether ReliabilityNet uses RGB, events, or a constant bias:
+
+```bash
+GPU=7 bash real_reliability_stage/run_stage1_input_ablation.sh
+```
+
+This also evaluates `stage2_rgb_domain`, which reproduces the RGB conversion
+used by the Stage-2 wrapper and therefore reveals an RGB-range domain shift.
