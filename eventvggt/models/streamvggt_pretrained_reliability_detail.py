@@ -281,6 +281,7 @@ class StreamVGGT(TemporalDetailStreamVGGT):
         causal_support_blur_kernel: int = 3,
         event_num_bins: int = 10,
         event_count_cmax: float = 3.0,
+        forward_batch_chunk: int = 1,
         **kwargs,
     ) -> None:
         # Disable the temporal-detail branch's internal gate. The pretrained
@@ -308,8 +309,9 @@ class StreamVGGT(TemporalDetailStreamVGGT):
             causal_support_dilate_kernel=causal_support_dilate_kernel,
             causal_support_blur_kernel=causal_support_blur_kernel,
         )
+        self.forward_batch_chunk = max(int(forward_batch_chunk), 0)
 
-    def forward(self, views, *args, **kwargs):
+    def _forward_chunk(self, views, *args, **kwargs):
         output = super().forward(views, *args, **kwargs)
         delta_log = self.event_detail_refiner.last_delta_log
         event_support = self.event_detail_refiner.last_event_support
@@ -319,6 +321,52 @@ class StreamVGGT(TemporalDetailStreamVGGT):
                 if event_support is not None:
                     result["event_support"] = event_support[:, frame_idx]
         return output
+
+    def forward(self, views, query_points=None, **kwargs):
+        batch = views[0]["img"].shape[0]
+        chunk = self.forward_batch_chunk
+        if chunk <= 0 or batch <= chunk:
+            return self._forward_chunk(views, query_points=query_points, **kwargs)
+        outputs = []
+        for start in range(0, batch, chunk):
+            end = min(start + chunk, batch)
+            chunk_views = self._slice_views(views, start, end, batch)
+            chunk_query = query_points
+            if torch.is_tensor(query_points) and query_points.ndim > 0 and query_points.shape[0] == batch:
+                chunk_query = query_points[start:end]
+            outputs.append(self._forward_chunk(chunk_views, query_points=chunk_query, **kwargs))
+        return self._concat_outputs(outputs, views)
+
+    @staticmethod
+    def _slice_views(views, start, end, batch):
+        sliced = []
+        for view in views:
+            item = {}
+            for key, value in view.items():
+                if torch.is_tensor(value) and value.ndim > 0 and value.shape[0] == batch:
+                    item[key] = value[start:end]
+                elif isinstance(value, (list, tuple)) and len(value) == batch:
+                    item[key] = value[start:end]
+                else:
+                    item[key] = value
+            sliced.append(item)
+        return sliced
+
+    @staticmethod
+    def _concat_outputs(outputs, views):
+        ress = []
+        for frame_idx in range(len(outputs[0].ress)):
+            frame = {}
+            for key in outputs[0].ress[frame_idx]:
+                values = [output.ress[frame_idx][key] for output in outputs]
+                frame[key] = torch.cat(values, dim=0) if torch.is_tensor(values[0]) else values
+            ress.append(frame)
+        return StreamVGGTOutput(
+            ress=ress,
+            views=views,
+            depth_coarse=torch.cat([output.depth_coarse for output in outputs], dim=0),
+            depth_residual=torch.cat([output.depth_residual for output in outputs], dim=0),
+        )
 
 
 __all__ = ["StreamVGGT", "StreamVGGTOutput", "FrozenReliabilityEventFilter"]

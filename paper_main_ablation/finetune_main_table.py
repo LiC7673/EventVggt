@@ -17,14 +17,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import finetune_event as fe  # noqa: E402
-from fine_event.finetune_event_random_ldr import build_random_ldr_event_loader  # noqa: E402
+from mul_loss_fine.finetune_mul_ldr_event import (  # noqa: E402
+    MultiLdrExposureLoss,
+    build_mul_ldr_loader,
+)
 from mul_loss_fine.launcher import configure_mul_loss_cfg, make_configured_loss  # noqa: E402
 from paper_main_ablation.common import (  # noqa: E402
     VARIANTS,
     build_model,
     configure_trainable_params,
+    is_event_variant,
     uses_detail_loss,
     uses_multildr,
+    uses_reliability,
 )
 
 
@@ -59,6 +64,26 @@ DETAIL_LOSS = {
     "detail_gt_hf_weight": 1.0,
     "detail_gt_grad_weight": 1.0,
 }
+
+
+def _make_paired_multildr_loss(cfg):
+    """Compose paired exposure consistency on top of the same detail loss."""
+    configured_detail_loss = make_configured_loss(cfg)
+
+    class MainTablePairedMultiLdrLoss(MultiLdrExposureLoss, configured_detail_loss):
+        def __init__(self, *args, **kwargs):
+            super().__init__(
+                *args,
+                exp_depth_weight=float(cfg.loss.ldr_exp_depth_weight),
+                exp_normal_weight=float(cfg.loss.ldr_exp_normal_weight),
+                exp_sat_boost=float(cfg.loss.ldr_exp_sat_boost),
+                exp_event_boost=float(cfg.loss.ldr_exp_event_boost),
+                exp_base_weight=float(cfg.loss.ldr_exp_base_weight),
+                exp_sat_threshold=float(cfg.loss.ldr_exp_sat_threshold),
+                **kwargs,
+            )
+
+    return MainTablePairedMultiLdrLoss
 
 
 class UnevenBatchAccelerator(HFAccelerator):
@@ -115,6 +140,7 @@ def _prepare_cfg(cfg, variant: str):
     cfg.model.event_delta_patch_zero_mean = True
     cfg.model.event_delta_patch_size = int(cfg.model.patch_size)
     cfg.model.event_delta_abs_limit = 0.025
+    cfg.model.exposure_forward_batch_chunk = 1
     cfg.model.causal_support_threshold = 0.01
     cfg.model.causal_support_dilate_kernel = 5
     cfg.model.causal_support_blur_kernel = 3
@@ -144,7 +170,9 @@ def _prepare_cfg(cfg, variant: str):
     cfg.eval_every_steps = 0
     cfg.skip_final_eval = True
 
-    output_root = Path(str(getattr(cfg, "main_table_output_root", "abl_event_exp/paper_main_table")))
+    output_root = Path(
+        str(getattr(cfg, "main_table_output_root", "abl_event_exp/paper_module_ablation"))
+    )
     if not output_root.is_absolute():
         output_root = ROOT / output_root
     cfg.exp_name = variant
@@ -157,9 +185,21 @@ def _prepare_cfg(cfg, variant: str):
         cfg.pretrained = str(ROOT / "ckpt/model.pt")
 
     if uses_multildr(variant):
-        cfg.data.random_train_ldr = True
+        # Same sample and camera window, two different LDR observations. The
+        # event stream and GT geometry are shared by construction.
         cfg.data.eval_ldr_event_id = str(getattr(cfg.data, "main_table_eval_ldr", "ev_5"))
         cfg.data.ldr_event_id = "random"
+        cfg.data.mul_ldr_train_ids = getattr(
+            cfg.data, "mul_ldr_train_ids", ["ev_2", "ev_5", "ev_10"]
+        )
+        cfg.data.mul_ldr_exposures_per_sample = 2
+        cfg.data.mul_ldr_scenes_per_batch = 1
+        cfg.loss.ldr_exp_depth_weight = 0.30
+        cfg.loss.ldr_exp_normal_weight = 0.20
+        cfg.loss.ldr_exp_sat_boost = 1.0
+        cfg.loss.ldr_exp_event_boost = 0.50
+        cfg.loss.ldr_exp_base_weight = 0.10
+        cfg.loss.ldr_exp_sat_threshold = 0.95
 
     weights = DETAIL_LOSS if uses_detail_loss(variant) else COMMON_LOSS
     configure_mul_loss_cfg(cfg, weights=weights, exp_name=variant)
@@ -168,10 +208,12 @@ def _prepare_cfg(cfg, variant: str):
         "pretrained": str(cfg.pretrained),
         "trainable_shared": ["camera_head", "depth_head", "point_head"],
         "aggregator_frozen": True,
-        "event_refiner_trainable": variant != "m0_matched_rgb",
+        "event_input": is_event_variant(variant),
+        "event_refiner_trainable": is_event_variant(variant),
         "detail_gt": uses_detail_loss(variant),
         "multi_ldr": uses_multildr(variant),
-        "frozen_reliability": variant == "m4_full_reliability",
+        "multi_ldr_mode": "paired_consistency" if uses_multildr(variant) else "disabled",
+        "frozen_reliability": uses_reliability(variant),
     }
     return cfg
 
@@ -182,11 +224,11 @@ def _prepare_cfg(cfg, variant: str):
     config_name="finetune_event.yaml",
 )
 def run(cfg):
-    variant = str(getattr(cfg, "main_table_variant", "m4_full_reliability")).lower()
+    variant = str(getattr(cfg, "main_table_variant", "a5_full")).lower()
     if variant not in VARIANTS:
         raise ValueError(f"main_table_variant must be one of {VARIANTS}, got {variant}")
     cfg = _prepare_cfg(cfg, variant)
-    if variant == "m4_full_reliability" and not Path(cfg.model.reliability_checkpoint).is_file():
+    if uses_reliability(variant) and not Path(cfg.model.reliability_checkpoint).is_file():
         raise FileNotFoundError(
             f"Frozen ReliabilityNet checkpoint missing: {cfg.model.reliability_checkpoint}"
         )
@@ -199,9 +241,17 @@ def run(cfg):
     fe.save_current_code = _safe_code_snapshot
     fe.build_event_model = build_model
     fe.configure_trainable_params = configure_trainable_params
-    fe.EventSupervisedLoss = make_configured_loss(cfg)
+    fe.EventSupervisedLoss = (
+        _make_paired_multildr_loss(cfg)
+        if uses_multildr(variant)
+        else make_configured_loss(cfg)
+    )
     if uses_multildr(variant):
-        fe.build_event_loader = build_random_ldr_event_loader
+        fe.build_event_loader = build_mul_ldr_loader
+    if getattr(cfg.data, "module_scene_manifest", None):
+        from paper_main_ablation.scene_manifest_loader import build_module_scene_loader
+
+        fe.build_event_loader = build_module_scene_loader
 
     print(f"[main-table] variant={variant}")
     print(f"[main-table] contract={OmegaConf.to_container(cfg.ablation_contract, resolve=True)}")

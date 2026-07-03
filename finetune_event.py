@@ -321,7 +321,17 @@ def build_optimizer_params(model: nn.Module, cfg):
     return [p for p in model.parameters() if p.requires_grad]
 
 
-def save_checkpoint(accelerator, model, optimizer, loss_scaler, cfg, epoch, global_step, best_loss):
+def save_checkpoint(
+    accelerator,
+    model,
+    optimizer,
+    loss_scaler,
+    cfg,
+    epoch,
+    global_step,
+    best_loss,
+    filename="checkpoint-last.pth",
+):
     ckpt = {
         "model": accelerator.unwrap_model(model).state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -330,7 +340,7 @@ def save_checkpoint(accelerator, model, optimizer, loss_scaler, cfg, epoch, glob
         "best_loss": best_loss,
         "cfg": OmegaConf.to_container(cfg, resolve=True),
     }
-    ckpt_path = Path(cfg.output_dir) / "checkpoint-last.pth"
+    ckpt_path = Path(cfg.output_dir) / str(filename)
     misc.save_on_master(accelerator, ckpt, ckpt_path)
 
 
@@ -1478,6 +1488,12 @@ def train(cfg):
     log_writer = SummaryWriter(log_dir=cfg.logdir) if accelerator.is_main_process else None
 
     best_loss = float("inf")
+    validation_best = float("inf")
+    validation_bad_epochs = 0
+    validate_each_epoch = bool(getattr(cfg, "validate_each_epoch", False))
+    validation_monitor = str(getattr(cfg, "validation_monitor", "loss"))
+    early_stopping_patience = max(int(getattr(cfg, "early_stopping_patience", 0)), 0)
+    validation_min_delta = max(float(getattr(cfg, "validation_min_delta", 0.0)), 0.0)
     global_step = 0
     start_time = time.time()
     
@@ -1583,6 +1599,73 @@ def train(cfg):
             save_metrics_json(cfg, epoch, global_step, epoch_stats, test_stats=None)
 
         save_checkpoint(accelerator, model, optimizer, loss_scaler, cfg, epoch, global_step, best_loss)
+
+        if validate_each_epoch and test_samples_count > 0:
+            if accelerator.is_main_process:
+                printer.info(
+                    "Running scene-disjoint validation after epoch %d (monitor=%s)",
+                    epoch,
+                    validation_monitor,
+                )
+            validation_stats, _ = evaluate_on_test_set(
+                model,
+                data_loader_test,
+                criterion,
+                accelerator,
+                cfg,
+                global_step,
+                log_writer=log_writer,
+            )
+            if validation_monitor not in validation_stats:
+                raise KeyError(
+                    f"Validation monitor {validation_monitor!r} is unavailable. "
+                    f"Available metrics: {sorted(validation_stats)}"
+                )
+            monitored_value = float(validation_stats[validation_monitor])
+            improved = monitored_value < validation_best - validation_min_delta
+            if improved:
+                validation_best = monitored_value
+                validation_bad_epochs = 0
+                save_checkpoint(
+                    accelerator,
+                    model,
+                    optimizer,
+                    loss_scaler,
+                    cfg,
+                    epoch,
+                    global_step,
+                    validation_best,
+                    filename="checkpoint-best.pth",
+                )
+                if accelerator.is_main_process:
+                    printer.info(
+                        "New best validation %s=%.6f at epoch %d",
+                        validation_monitor,
+                        validation_best,
+                        epoch,
+                    )
+            else:
+                validation_bad_epochs += 1
+                if accelerator.is_main_process:
+                    printer.info(
+                        "Validation did not improve: current=%.6f best=%.6f bad_epochs=%d/%d",
+                        monitored_value,
+                        validation_best,
+                        validation_bad_epochs,
+                        early_stopping_patience,
+                    )
+            if accelerator.is_main_process:
+                save_test_summary(cfg, epoch, global_step, validation_stats)
+                save_metrics_json(cfg, epoch, global_step, epoch_stats, validation_stats)
+            model.train()
+            if early_stopping_patience > 0 and validation_bad_epochs >= early_stopping_patience:
+                if accelerator.is_main_process:
+                    printer.info(
+                        "Early stopping at epoch %d after %d non-improving validation epochs",
+                        epoch,
+                        validation_bad_epochs,
+                    )
+                break
 
     total_time = time.time() - start_time
     printer.info("Training finished in %.2f minutes", total_time / 60.0)

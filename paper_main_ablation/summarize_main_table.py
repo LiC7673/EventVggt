@@ -8,11 +8,12 @@ from pathlib import Path
 
 
 MODULES = {
-    "M0_matched_RGB": (0, 0, 0, 0),
-    "M1_event_residual": (1, 0, 0, 0),
-    "M2_event_detail_GT": (1, 1, 0, 0),
-    "M3_event_detail_MultiLDR": (1, 1, 1, 0),
-    "M4_full_reliability": (1, 1, 1, 1),
+    "A0_RGB_only": (0, 0, 0, 0),
+    "A1_Direct_event": (1, 0, 0, 0),
+    "A2_w_o_Reliability": (1, 1, 1, 0),
+    "A3_w_o_MultiLDR": (1, 1, 0, 1),
+    "A4_w_o_Detail": (1, 0, 1, 1),
+    "A5_Full": (1, 1, 1, 1),
 }
 
 
@@ -37,7 +38,12 @@ def main():
         raise RuntimeError(f"Main-table evaluation is incomplete; missing rows: {missing}")
 
     rows = []
-    previous = None
+    rgb_source = by_name["A0_RGB_only"]
+    full_source = by_name["A5_Full"]
+    rgb_abs_rel = _float(rgb_source, "abs_rel")
+    rgb_normal = _float(rgb_source, "normal_error_deg")
+    full_abs_rel = _float(full_source, "abs_rel")
+    full_normal = _float(full_source, "normal_error_deg")
     for name, flags in MODULES.items():
         source = by_name[name]
         row = {
@@ -54,26 +60,15 @@ def main():
             "rpe_trans": _float(source, "rpe_trans"),
             "rpe_rot_deg": _float(source, "rpe_rot_deg"),
         }
-        if previous is None:
-            row.update(
-                {
-                    "abs_rel_reduction_vs_prev": float("nan"),
-                    "delta1_gain_vs_prev": float("nan"),
-                    "normal_reduction_vs_prev_deg": float("nan"),
-                }
-            )
-        else:
-            row.update(
-                {
-                    "abs_rel_reduction_vs_prev": previous["abs_rel"] - row["abs_rel"],
-                    "delta1_gain_vs_prev": row["delta1"] - previous["delta1"],
-                    "normal_reduction_vs_prev_deg": (
-                        previous["normal_error_deg"] - row["normal_error_deg"]
-                    ),
-                }
-            )
+        row.update(
+            {
+                "abs_rel_reduction_vs_rgb": rgb_abs_rel - row["abs_rel"],
+                "normal_reduction_vs_rgb_deg": rgb_normal - row["normal_error_deg"],
+                "abs_rel_gap_to_full": row["abs_rel"] - full_abs_rel,
+                "normal_gap_to_full_deg": row["normal_error_deg"] - full_normal,
+            }
+        )
         rows.append(row)
-        previous = row
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -12,31 +12,39 @@ from streamvggt.models.streamvggt import StreamVGGT as RGBStreamVGGT
 
 
 VARIANTS = (
-    "m0_matched_rgb",
-    "m1_event_residual",
-    "m2_event_detail_gt",
-    "m3_event_detail_multildr",
-    "m4_full_reliability",
+    "a0_rgb_only",
+    "a1_direct_event",
+    "a2_wo_reliability",
+    "a3_wo_multildr",
+    "a4_wo_detail",
+    "a5_full",
 )
 
 
+VARIANT_MODULES = {
+    "a0_rgb_only": {"event": False, "detail": False, "multildr": False, "reliability": False},
+    "a1_direct_event": {"event": True, "detail": False, "multildr": False, "reliability": False},
+    "a2_wo_reliability": {"event": True, "detail": True, "multildr": True, "reliability": False},
+    "a3_wo_multildr": {"event": True, "detail": True, "multildr": False, "reliability": True},
+    "a4_wo_detail": {"event": True, "detail": False, "multildr": True, "reliability": True},
+    "a5_full": {"event": True, "detail": True, "multildr": True, "reliability": True},
+}
+
+
 def is_event_variant(variant: str) -> bool:
-    return str(variant).lower() != "m0_matched_rgb"
+    return bool(VARIANT_MODULES[str(variant).lower()]["event"])
 
 
 def uses_detail_loss(variant: str) -> bool:
-    return str(variant).lower() in {
-        "m2_event_detail_gt",
-        "m3_event_detail_multildr",
-        "m4_full_reliability",
-    }
+    return bool(VARIANT_MODULES[str(variant).lower()]["detail"])
 
 
 def uses_multildr(variant: str) -> bool:
-    return str(variant).lower() in {
-        "m3_event_detail_multildr",
-        "m4_full_reliability",
-    }
+    return bool(VARIANT_MODULES[str(variant).lower()]["multildr"])
+
+
+def uses_reliability(variant: str) -> bool:
+    return bool(VARIANT_MODULES[str(variant).lower()]["reliability"])
 
 
 def build_model(cfg):
@@ -48,7 +56,7 @@ def build_model(cfg):
         "patch_size": int(cfg.model.patch_size),
         "embed_dim": int(cfg.model.embed_dim),
     }
-    if variant == "m0_matched_rgb":
+    if not is_event_variant(variant):
         return RGBStreamVGGT(**common)
 
     event_common = {
@@ -64,13 +72,14 @@ def build_model(cfg):
         "residual_abs_limit": float(cfg.model.event_delta_abs_limit),
         "refine_points": True,
         "use_checkpoint": bool(cfg.model.refiner_use_checkpoint),
+        "forward_batch_chunk": int(getattr(cfg.model, "exposure_forward_batch_chunk", 1)),
     }
     support = {
         "causal_support_threshold": float(cfg.model.causal_support_threshold),
         "causal_support_dilate_kernel": int(cfg.model.causal_support_dilate_kernel),
         "causal_support_blur_kernel": int(cfg.model.causal_support_blur_kernel),
     }
-    if variant == "m4_full_reliability":
+    if uses_reliability(variant):
         return PretrainedReliabilityVGGT(
             **event_common,
             reliability_checkpoint=str(cfg.model.reliability_checkpoint),

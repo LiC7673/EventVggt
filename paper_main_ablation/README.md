@@ -1,66 +1,83 @@
-# Clean Paper Main-Table Ablation
+# Paper Module Ablation
 
-This folder replaces the old mixed-configuration ablation with five
-independently trained checkpoints. Every row starts from `ckpt/model.pt`, uses
-training scenes `0..11`, and shares the same optimizer, epochs, frozen
-aggregator, trainable camera/depth/point heads, normal loss, and regularizers.
+This is the paper-facing leave-one-out experiment. All rows use the same fixed
+12 training scenes, original VGGT initialization, optimization budget, frozen
+backbone, trainable geometry heads, event voxelization, and four held-out test
+scenes.
 
-| Row | Event residual | Detail GT | Multi-LDR | Frozen ReliabilityNet |
+| Row | Event | Detail GT | Paired Multi-LDR | Geometry reliability |
 | --- | ---: | ---: | ---: | ---: |
-| M0 matched RGB |  |  |  |  |
-| M1 | yes |  |  |  |
-| M2 | yes | yes |  |  |
-| M3 | yes | yes | yes |  |
-| M4 full | yes | yes | yes | yes |
+| A0 RGB only |  |  |  |  |
+| A1 Direct event | yes |  |  |  |
+| A2 w/o Reliability | yes | yes | yes |  |
+| A3 w/o Multi-LDR | yes | yes |  | yes |
+| A4 w/o Detail | yes |  | yes | yes |
+| A5 Full | yes | yes | yes | yes |
 
-The event residual is causally gated in M1-M4: zero events force zero event
-correction. M4 reuses the existing Stage-1 ReliabilityNet in frozen mode; it
-does not retrain Stage 1. The historical full-model residual post-filter is
-disabled here, so M3 to M4 changes only the reliability module.
+`A0` is pure VGGT fine-tuning: no event branch is instantiated. `A1` is an
+additional direct-event control. Rows A2-A4 each remove exactly one of the
+three paper modules from the full model.
 
-## Train on the currently free GPUs
+Multi-LDR training uses paired observations of the same scene/window at
+`ev_2/ev_5/ev_10`, rather than independent random exposure augmentation.
+`ev_1` is held out from Multi-LDR training and included in evaluation as a
+harder exposure-generalization condition.
 
-```bash
-bash paper_main_ablation/run_train_gpus_03567.sh
-```
-
-The default scheduler uses GPU groups `0,3`, `5,6`, and `7`. The single-GPU
-job automatically uses gradient accumulation 2 so its effective batch matches
-the two-GPU jobs. Override with `GPU_GROUPS="..."` when availability changes.
-
-Outputs are isolated under `abl_event_exp/paper_main_table/`. Each experiment
-also saves `ablation_contract.json`, so the active modules can be audited.
-
-## Evaluate unseen scenes 12-15
+## One-click background run on GPUs 2-7
 
 ```bash
-GPU=7 bash paper_main_ablation/run_eval_heldout.sh
+bash paper_main_ablation/run_module_ablation_background.sh
 ```
 
-The paper-facing results are written to:
+The command returns immediately and prints a PID and master log path. Monitor
+with the printed `tail -f ...` command. Internally, training uses three
+two-GPU groups:
 
 ```text
-abl_event_exp/paper_main_table/results_heldout_scene12_15/
-  summary.csv
-  summary.json
-  paper_main_table.csv
+2,3    4,5    6,7
 ```
 
-For a quick pipeline smoke test before the full run:
+After all six checkpoints finish, evaluation starts automatically on GPUs
+2,3,4,5,6,7. Every model is tested at:
+
+```text
+ev_1, ev_2, ev_5, ev_10
+```
+
+The same four unseen scenes are used in every job. The scene manifest requires
+all four exposures and is shared by training and testing to prevent silent
+scene changes across LDR levels.
+
+## Outputs
+
+```text
+abl_event_exp/paper_module_ablation/
+  scene_manifest.json
+  a0_rgb_only/checkpoint-last.pth
+  ...
+  a5_full/checkpoint-last.pth
+  test_4scenes_ldr_1_2_5_10/
+    all_scene_metrics.csv
+    mean_metrics_by_model_ldr.csv
+    mean_metrics_all_ldrs.csv
+    <variant>/ev_<LDR>/per_scene_metrics.csv
+    <variant>/ev_<LDR>/visuals/<scene>/*.png
+```
+
+Each visualization contains RGB, event bins, GT/predicted depth, log-depth
+error, event reliability, and GT/predicted normals. Each scene is recorded as
+an independent metric row before four-scene averaging.
+
+## Useful overrides
 
 ```bash
-MAX_BATCHES=2 GPU=7 bash paper_main_ablation/run_eval_heldout.sh
+EPOCHS=30 SKIP_EXISTING=false \
+VISUAL_BATCHES=2 NUM_WORKERS=2 \
+bash paper_main_ablation/run_module_ablation_background.sh
 ```
 
-## DSEC preflight
-
-The local `DSEC_EV_VGGT/{val,test}` export must be checked for event/RGB/depth
-pixel alignment before it is connected to this trainer:
+For a quick evaluation smoke test after checkpoints exist:
 
 ```bash
-bash paper_main_ablation/run_dsec_preflight.sh
+MAX_BATCHES=2 bash paper_main_ablation/run_ldr_scene_eval_gpus_234567.sh
 ```
-
-See `DSEC_INTEGRATION.md`. The generated JSON identifies the exact missing
-alignment or supervision fields for every one of the four train and two test
-sequences.
