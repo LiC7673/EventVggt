@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
 from pathlib import Path
 
 import torch
@@ -31,6 +32,34 @@ from multildr_token_exp.token_model import StreamVGGT as TokenAlignedStreamVGGT
 
 ROOT = Path(__file__).resolve().parents[1]
 STRATEGIES = ("random_ldr_full", "paired_output_full", "paired_token_full")
+
+
+def safe_code_snapshot(outdir: str):
+    """Copy only reproducibility-critical sources, never the whole workspace."""
+    destination = Path(outdir) / "code_snapshot"
+    relative_files = (
+        "multildr_token_exp/common.py",
+        "multildr_token_exp/token_model.py",
+        "multildr_token_exp/token_loss.py",
+        "multildr_token_exp/finetune_random_ldr_full.py",
+        "multildr_token_exp/finetune_paired_output_full.py",
+        "multildr_token_exp/finetune_paired_token_full.py",
+        "ablation/finetune_paper_ablation.py",
+        "fine_event/finetune_event_random_ldr.py",
+        "mul_loss_fine/finetune_mul_ldr_event.py",
+        "mul_loss_fine/image_guided_event_reliability_loss.py",
+        "mul_loss_fine/event_supported_mv_loss.py",
+        "eventvggt/models/streamvggt_temporal_detail.py",
+        "eventvggt/datasets/my_event_dataset.py",
+        "finetune_event.py",
+        "config/finetune_event.yaml",
+    )
+    for relative in relative_files:
+        source = ROOT / relative
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    return destination
 
 
 class UnevenBatchAccelerator(HFAccelerator):
@@ -262,6 +291,7 @@ def launch(cfg, strategy: str):
         loss_class = base_loss
 
     fe.Accelerator = UnevenBatchAccelerator
+    fe.save_current_code = safe_code_snapshot
     fe.build_event_loader = build_strategy_loader
     fe.configure_trainable_params = configure_trainable
     fe.EventSupervisedLoss = loss_class
