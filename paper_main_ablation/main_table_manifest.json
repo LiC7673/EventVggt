@@ -2,31 +2,31 @@
   {
     "name": "A0_RGB_only",
     "family": "main_table",
-    "checkpoint": "abl_event_exp/paper_module_ablation/a0_rgb_only/checkpoint-last.pth"
+    "checkpoint": "abl_event_exp/paper_module_ablation_extrel_normal/a0_rgb_only/checkpoint-last.pth"
   },
   {
     "name": "A1_Direct_event",
     "family": "main_table",
-    "checkpoint": "abl_event_exp/paper_module_ablation/a1_direct_event/checkpoint-last.pth"
+    "checkpoint": "abl_event_exp/paper_module_ablation_extrel_normal/a1_direct_event/checkpoint-last.pth"
   },
   {
     "name": "A2_w_o_Reliability",
     "family": "main_table",
-    "checkpoint": "abl_event_exp/paper_module_ablation/a2_wo_reliability/checkpoint-last.pth"
+    "checkpoint": "abl_event_exp/paper_module_ablation_extrel_normal/a2_wo_reliability/checkpoint-last.pth"
   },
   {
     "name": "A3_w_o_MultiLDR",
     "family": "main_table",
-    "checkpoint": "abl_event_exp/paper_module_ablation/a3_wo_multildr/checkpoint-last.pth"
+    "checkpoint": "abl_event_exp/paper_module_ablation_extrel_normal/a3_wo_multildr/checkpoint-last.pth"
   },
   {
     "name": "A4_w_o_Detail",
     "family": "main_table",
-    "checkpoint": "abl_event_exp/paper_module_ablation/a4_wo_detail/checkpoint-last.pth"
+    "checkpoint": "abl_event_exp/paper_module_ablation_extrel_normal/a4_wo_detail/checkpoint-last.pth"
   },
   {
     "name": "A5_Full",
     "family": "main_table",
-    "checkpoint": "abl_event_exp/paper_module_ablation/a5_full/checkpoint-last.pth"
+    "checkpoint": "abl_event_exp/paper_module_ablation_extrel_normal/a5_full/checkpoint-last.pth"
   }
 ]

@@ -74,11 +74,6 @@ def build_model(cfg):
         "use_checkpoint": bool(cfg.model.refiner_use_checkpoint),
         "forward_batch_chunk": int(getattr(cfg.model, "exposure_forward_batch_chunk", 1)),
     }
-    support = {
-        "causal_support_threshold": float(cfg.model.causal_support_threshold),
-        "causal_support_dilate_kernel": int(cfg.model.causal_support_dilate_kernel),
-        "causal_support_blur_kernel": int(cfg.model.causal_support_blur_kernel),
-    }
     if uses_reliability(variant):
         return PretrainedReliabilityVGGT(
             **event_common,
@@ -90,13 +85,15 @@ def build_model(cfg):
             residual_postfilter_kernel=int(cfg.model.residual_postfilter_kernel),
             residual_postfilter_strength=float(cfg.model.residual_postfilter_strength),
             causal_output_gate=True,
-            **support,
+            causal_support_threshold=float(cfg.model.causal_support_threshold),
+            causal_support_dilate_kernel=int(cfg.model.causal_support_dilate_kernel),
+            causal_support_blur_kernel=int(cfg.model.causal_support_blur_kernel),
         )
     return CausalTemporalDetailVGGT(
         **event_common,
-        support_threshold=support["causal_support_threshold"],
-        support_dilate_kernel=support["causal_support_dilate_kernel"],
-        support_blur_kernel=support["causal_support_blur_kernel"],
+        support_threshold=float(cfg.model.causal_support_threshold),
+        support_dilate_kernel=int(cfg.model.causal_support_dilate_kernel),
+        support_blur_kernel=int(cfg.model.causal_support_blur_kernel),
     )
 
 
@@ -105,7 +102,7 @@ def configure_trainable_params(model, _cfg) -> None:
     for parameter in model.parameters():
         parameter.requires_grad = False
 
-    for module_name in ("camera_head", "depth_head", "point_head"):
+    for module_name in ("depth_head", "point_head"):
         module = getattr(model, module_name, None)
         if module is not None:
             module.requires_grad_(True)

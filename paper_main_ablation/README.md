@@ -1,9 +1,16 @@
 # Paper Module Ablation
 
-This is the paper-facing leave-one-out experiment. All rows use the same fixed
+This is the corrected paper-facing leave-one-out experiment. All rows use the same fixed
 12 training scenes, original VGGT initialization, optimization budget, frozen
 backbone, trainable geometry heads, event voxelization, and four held-out test
 scenes.
+
+The reliability rows use the intended frozen external ReliabilityUNet. Its
+soft output filters the full temporal voxel before temporal-detail refinement.
+To prevent the filtered event texture from becoming surface-slope noise, the
+Geometry-detail module adds global normal and normal-gradient supervision
+derived strictly from GT depth. The rendered-normal field is not used by this
+term, and the term is disabled in every row marked `w/o Detail`.
 
 | Row | Event | Detail GT | Paired Multi-LDR | Geometry reliability |
 | --- | ---: | ---: | ---: | ---: |
@@ -29,6 +36,16 @@ harder exposure-generalization condition.
 bash paper_main_ablation/run_module_ablation_background.sh
 ```
 
+Before rerunning the complete table, the corrected external-reliability Full
+row can be checked independently:
+
+```bash
+bash paper_main_ablation/run_full_external_reliability_normal.sh
+```
+
+This trains A5 on GPUs 2,3 and then evaluates the four LDR levels in parallel
+on GPUs 2,3,4,5.
+
 The command returns immediately and prints a PID and master log path. Monitor
 with the printed `tail -f ...` command. Internally, training uses three
 two-GPU groups:
@@ -51,7 +68,7 @@ scene changes across LDR levels.
 ## Outputs
 
 ```text
-abl_event_exp/paper_module_ablation/
+abl_event_exp/paper_module_ablation_extrel_normal/
   scene_manifest.json
   a0_rgb_only/checkpoint-last.pth
   ...
@@ -67,6 +84,9 @@ abl_event_exp/paper_module_ablation/
 Each visualization contains RGB, event bins, GT/predicted depth, log-depth
 error, event reliability, and GT/predicted normals. Each scene is recorded as
 an independent metric row before four-scene averaging.
+
+Previous `paper_module_ablation*` directories are intentionally left untouched
+and must not be mixed with this retraining run.
 
 ## Useful overrides
 

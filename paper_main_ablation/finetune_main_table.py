@@ -22,6 +22,9 @@ from mul_loss_fine.finetune_mul_ldr_event import (  # noqa: E402
     build_mul_ldr_loader,
 )
 from mul_loss_fine.launcher import configure_mul_loss_cfg, make_configured_loss  # noqa: E402
+from paper_main_ablation.depth_normal_supervision import (  # noqa: E402
+    wrap_depth_normal_supervision,
+)
 from paper_main_ablation.common import (  # noqa: E402
     VARIANTS,
     build_model,
@@ -46,6 +49,12 @@ COMMON_LOSS = {
     "detail_gt_weight_power": 1.0,
     "detail_gt_normal_source": "depth",
     "detail_gt_chunk_size": 1,
+    "mv_event_support_mode": "temporal_polarity",
+    "mv_event_threshold": 0.20,
+    "mv_event_dilate_kernel": 1,
+    "mv_event_blur_kernel": 1,
+    "mv_event_power": 2.0,
+    "mv_event_top_fraction": 0.20,
     # These regularizers are identical for all rows and are not ablated.
     "residual_smooth_weight": 0.02,
     "residual_second_order_weight": 0.02,
@@ -60,17 +69,21 @@ COMMON_LOSS = {
 
 DETAIL_LOSS = {
     **COMMON_LOSS,
-    "detail_gt_normal_weight": 0.25,
+    "detail_gt_normal_weight": 0.50,
     "detail_gt_hf_weight": 1.0,
     "detail_gt_grad_weight": 1.0,
+    "detail_gt_event_boost": 1.5,
 }
 
 
-def _make_paired_multildr_loss(cfg):
-    """Compose paired exposure consistency on top of the same detail loss."""
-    configured_detail_loss = make_configured_loss(cfg)
+def _make_base_loss(cfg, variant):
+    del variant
+    return wrap_depth_normal_supervision(make_configured_loss(cfg), cfg)
 
-    class MainTablePairedMultiLdrLoss(MultiLdrExposureLoss, configured_detail_loss):
+
+def _make_paired_multildr_loss(cfg, configured_base):
+    """Compose paired exposure consistency on top of the same detail loss."""
+    class MainTablePairedMultiLdrLoss(MultiLdrExposureLoss, configured_base):
         def __init__(self, *args, **kwargs):
             super().__init__(
                 *args,
@@ -111,7 +124,10 @@ def _safe_code_snapshot(outdir: str):
         "paper_main_ablation/common.py",
         "eventvggt/models/streamvggt_causal_temporal_detail.py",
         "eventvggt/models/streamvggt_pretrained_reliability_detail.py",
+        "eventvggt/models/streamvggt_temporal_detail.py",
         "mul_loss_fine/event_supported_mv_loss.py",
+        "mul_loss_fine/finetune_mul_ldr_event.py",
+        "paper_main_ablation/depth_normal_supervision.py",
         "mul_loss_fine/launcher.py",
         "finetune_event.py",
     )
@@ -135,11 +151,11 @@ def _prepare_cfg(cfg, variant: str):
     cfg.model.main_event_hidden_dim = int(getattr(cfg.model, "main_event_hidden_dim", 16))
     cfg.model.event_num_bins = int(getattr(cfg.data, "event_resize_bins", 10))
     cfg.model.event_count_cmax = float(getattr(cfg.model, "event_count_cmax", 3.0))
-    cfg.model.refiner_residual_scale = 0.035
+    cfg.model.refiner_residual_scale = 0.025
     cfg.model.event_delta_highpass_kernel = 9
     cfg.model.event_delta_patch_zero_mean = True
     cfg.model.event_delta_patch_size = int(cfg.model.patch_size)
-    cfg.model.event_delta_abs_limit = 0.025
+    cfg.model.event_delta_abs_limit = 0.015
     cfg.model.exposure_forward_batch_chunk = 1
     cfg.model.causal_support_threshold = 0.01
     cfg.model.causal_support_dilate_kernel = 5
@@ -152,17 +168,18 @@ def _prepare_cfg(cfg, variant: str):
         )
     )
     cfg.model.reliability_base_channels = 32
-    cfg.model.reliability_gate_floor = 0.10
+    cfg.model.reliability_gate_floor = 0.05
     cfg.model.reliability_frame_chunk_size = 1
-    # Keep M3 -> M4 as a reliability-only change. The historical full model
-    # used an additional residual post-filter, but that would confound this
-    # main-table row with a second unlabelled module.
-    cfg.model.residual_postfilter_kernel = 1
-    cfg.model.residual_postfilter_strength = 0.0
+    cfg.model.residual_postfilter_kernel = 3
+    cfg.model.residual_postfilter_strength = 0.50
 
     # This is the fairness contract shared by every row.
     cfg.lr = float(getattr(cfg, "main_table_lr", 4.0e-5))
-    cfg.loss.normal_weight = float(getattr(cfg.loss, "main_table_normal_weight", 0.05))
+    # The dataset's rendered-normal convention is inconsistent with normals
+    # derived from metric depth. The detail module owns the depth-derived
+    # normal terms below instead of using this base normal loss.
+    cfg.loss.pose_weight = 0.0
+    cfg.loss.normal_weight = 0.0
     cfg.train.unfreeze_heads = False
     cfg.train.unfreeze_aggregator_blocks = False
     cfg.data.return_normal_gt = True
@@ -171,7 +188,7 @@ def _prepare_cfg(cfg, variant: str):
     cfg.skip_final_eval = True
 
     output_root = Path(
-        str(getattr(cfg, "main_table_output_root", "abl_event_exp/paper_module_ablation"))
+        str(getattr(cfg, "main_table_output_root", "abl_event_exp/paper_module_ablation_extrel_normal"))
     )
     if not output_root.is_absolute():
         output_root = ROOT / output_root
@@ -194,8 +211,10 @@ def _prepare_cfg(cfg, variant: str):
         )
         cfg.data.mul_ldr_exposures_per_sample = 2
         cfg.data.mul_ldr_scenes_per_batch = 1
-        cfg.loss.ldr_exp_depth_weight = 0.30
-        cfg.loss.ldr_exp_normal_weight = 0.20
+        # A gentle consistency term avoids forcing the newly initialized event
+        # residual toward an exposure-invariant over-smoothed shortcut.
+        cfg.loss.ldr_exp_depth_weight = 0.10
+        cfg.loss.ldr_exp_normal_weight = 0.05
         cfg.loss.ldr_exp_sat_boost = 1.0
         cfg.loss.ldr_exp_event_boost = 0.50
         cfg.loss.ldr_exp_base_weight = 0.10
@@ -203,17 +222,22 @@ def _prepare_cfg(cfg, variant: str):
 
     weights = DETAIL_LOSS if uses_detail_loss(variant) else COMMON_LOSS
     configure_mul_loss_cfg(cfg, weights=weights, exp_name=variant)
+    # This is part of the Geometry-detail Supervision module. Keeping it off in
+    # A0/A1/A4 makes the w/o-Detail row a genuine module removal.
+    cfg.loss.depth_gt_normal_weight = 0.20 if uses_detail_loss(variant) else 0.0
+    cfg.loss.depth_gt_normal_gradient_weight = 0.10 if uses_detail_loss(variant) else 0.0
     cfg.ablation_contract = {
         "variant": variant,
         "pretrained": str(cfg.pretrained),
-        "trainable_shared": ["camera_head", "depth_head", "point_head"],
+        "trainable_shared": ["depth_head", "point_head"],
         "aggregator_frozen": True,
         "event_input": is_event_variant(variant),
         "event_refiner_trainable": is_event_variant(variant),
         "detail_gt": uses_detail_loss(variant),
         "multi_ldr": uses_multildr(variant),
         "multi_ldr_mode": "paired_consistency" if uses_multildr(variant) else "disabled",
-        "frozen_reliability": uses_reliability(variant),
+        "reliability_type": "frozen_external_unet" if uses_reliability(variant) else "disabled",
+        "normal_target": "derived_from_gt_depth",
     }
     return cfg
 
@@ -232,7 +256,6 @@ def run(cfg):
         raise FileNotFoundError(
             f"Frozen ReliabilityNet checkpoint missing: {cfg.model.reliability_checkpoint}"
         )
-
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
     with (Path(cfg.output_dir) / "ablation_contract.json").open("w", encoding="utf-8") as handle:
         json.dump(OmegaConf.to_container(cfg.ablation_contract, resolve=True), handle, indent=2)
@@ -241,10 +264,11 @@ def run(cfg):
     fe.save_current_code = _safe_code_snapshot
     fe.build_event_model = build_model
     fe.configure_trainable_params = configure_trainable_params
+    configured_base_loss = _make_base_loss(cfg, variant)
     fe.EventSupervisedLoss = (
-        _make_paired_multildr_loss(cfg)
+        _make_paired_multildr_loss(cfg, configured_base_loss)
         if uses_multildr(variant)
-        else make_configured_loss(cfg)
+        else configured_base_loss
     )
     if uses_multildr(variant):
         fe.build_event_loader = build_mul_ldr_loader
