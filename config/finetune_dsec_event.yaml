@@ -1,0 +1,69 @@
+defaults:
+  - finetune_event
+  - _self_
+
+approach: full_img_reliability
+pretrained: ./ckpt/model.pt
+epochs: 20
+batch_size: 1
+accum_iter: 1
+lr: 4.0e-5
+min_lr: 1.0e-6
+mixed_precision: bf16
+num_workers: 4
+pin_mem: true
+print_freq: 10
+save_every_steps: 1000
+eval_every_steps: 1000
+validate_each_epoch: false
+skip_final_eval: true
+early_stopping_patience: 5
+validation_monitor: depth_loss
+
+save_dir: ./dsec_exp/results
+exp_name: dsec_full_img_reliability
+logdir: ${save_dir}/${exp_name}/logs
+output_dir: ${save_dir}/${exp_name}
+
+model:
+  variant: temporal_detail
+  head_frames_chunk_size: 1
+  event_hidden_dim: 16
+  event_num_bins: 10
+
+train:
+  unfreeze_heads: false
+  unfreeze_aggregator_blocks: false
+
+loss:
+  pose_weight: 0.0
+  points_weight: 0.0
+  depth_weight: 1.0
+  normal_weight: 0.10
+  align_depth_scale: false
+  depth_min: 0.1
+  depth_max: 80.0
+
+data:
+  root: /data1/lzh/dataset/DESC/DSEC_EV_VGGT
+  num_views: 4
+  resolution: [518, 392]
+  event_window_ms: 50.0
+  event_resize_bins: 10
+  train_clip_stride: 4
+  test_clip_stride: 4
+  sequence_names: null
+  allow_unaligned_rgb: false
+  depth_scale: 1.0
+  disparity_fx: null
+  disparity_baseline: null
+
+vis:
+  save_every_steps: 1000
+  frame_index: 0
+  sample_index: 0
+
+hydra:
+  verbose: false
+  run:
+    dir: ${output_dir}
