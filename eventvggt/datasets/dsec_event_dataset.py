@@ -121,15 +121,23 @@ def _walk_mapping(value: Any, path: tuple[str, ...] = ()):
             yield from _walk_mapping(child, path + (str(index),))
 
 
-def _load_calibration(path: Optional[Path]) -> Dict[str, Optional[np.ndarray]]:
-    result: Dict[str, Optional[np.ndarray]] = {"Q": None, "K": None}
+def _load_calibration(path: Optional[Path]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "Q": None,
+        "K": None,
+        "P0": None,
+        "P3": None,
+        "focal_length": None,
+        "baseline": None,
+        "fb": None,
+    }
     if path is None:
         return result
 
     # OpenCV FileStorage handles native OpenCV YAML without custom constructors.
     try:
         storage = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
-        for parent in ("cams_03", "camRect0", "cam0"):
+        for parent in ("cams_03", "camRect0", "cam0", "camRect3", "cam3"):
             node = storage.getNode(parent)
             if node.empty():
                 continue
@@ -143,7 +151,13 @@ def _load_calibration(path: Optional[Path]) -> Dict[str, Optional[np.ndarray]]:
                     if mat is not None:
                         if key.lower() == "q" and mat.size == 16:
                             result["Q"] = np.asarray(mat, dtype=np.float64).reshape(4, 4)
-                        elif result["K"] is None:
+                        elif key.lower() in {"p", "projection_matrix"} and mat.size == 12:
+                            projection = np.asarray(mat, dtype=np.float64).reshape(3, 4)
+                            if parent.lower() in {"camrect0", "cam0"}:
+                                result["P0"] = projection
+                            elif parent.lower() in {"camrect3", "cam3"}:
+                                result["P3"] = projection
+                        elif result["K"] is None and parent.lower() in {"camrect0", "cam0"}:
                             mat = np.asarray(mat, dtype=np.float64)
                             result["K"] = mat[:3, :3]
         storage.release()
@@ -168,17 +182,73 @@ def _load_calibration(path: Optional[Path]) -> Dict[str, Optional[np.ndarray]]:
             for key, value in mapping.items():
                 key_lower = str(key).lower()
                 mat = _matrix(value)
-                if mat is None:
-                    continue
-                if key_lower == "q" and mat.shape == (4, 4) and ("cams_03" in joined or result["Q"] is None):
-                    result["Q"] = mat
-                if key_lower == "cams_03" and mat.shape == (4, 4):
-                    result["Q"] = mat
-                if key_lower in {"k", "camera_matrix", "projection_matrix", "p"}:
-                    if "camrect0" in joined or "cam0" in joined or result["K"] is None:
-                        result["K"] = mat[:3, :3]
+                if mat is not None:
+                    if key_lower == "q" and mat.shape == (4, 4) and ("cams_03" in joined or result["Q"] is None):
+                        result["Q"] = mat
+                    if key_lower == "cams_03" and mat.shape == (4, 4):
+                        result["Q"] = mat
+                    if key_lower in {"p", "projection_matrix"} and mat.shape == (3, 4):
+                        if "camrect0" in joined or joined.endswith("cam0"):
+                            result["P0"] = mat
+                        elif "camrect3" in joined or joined.endswith("cam3"):
+                            result["P3"] = mat
+                    if key_lower in {"k", "camera_matrix"}:
+                        camera_matrix = None
+                        if mat.ndim == 1 and mat.size == 4:
+                            fx, fy, cx, cy = mat.tolist()
+                            camera_matrix = np.array(
+                                [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]],
+                                dtype=np.float64,
+                            )
+                        elif mat.ndim == 2 and mat.shape[0] >= 3 and mat.shape[1] >= 3:
+                            camera_matrix = mat[:3, :3]
+                        if camera_matrix is not None and (
+                            "camrect0" in joined or "cam0" in joined or result["K"] is None
+                        ):
+                            result["K"] = camera_matrix
+                if key_lower in {"baseline", "base_line"}:
+                    try:
+                        result["baseline"] = abs(float(value))
+                    except (TypeError, ValueError):
+                        pass
+                if key_lower in {"focal_length", "focal", "fx"} and ("cams_03" in joined or result["focal_length"] is None):
+                    try:
+                        result["focal_length"] = abs(float(value))
+                    except (TypeError, ValueError):
+                        pass
     except Exception:
         pass
+
+    # Official DSEC YAML stores disparity_to_depth/cams_03 as a plain
+    # nested 4x4 list. Keep a dependency-free fallback so a missing or
+    # incompatible YAML parser cannot silently disable metric depth.
+    if result["Q"] is None:
+        try:
+            raw_text = path.read_text(encoding="utf-8-sig")
+            lines = raw_text.splitlines()
+            for index, line in enumerate(lines):
+                match = re.match(r"^(\s*)cams_03\s*:\s*(.*)$", line)
+                if match is None:
+                    continue
+                base_indent = len(match.group(1))
+                block = [match.group(2)]
+                for child in lines[index + 1 :]:
+                    if child.strip():
+                        child_indent = len(child) - len(child.lstrip())
+                        if child_indent < base_indent:
+                            break
+                        if child_indent == base_indent and not child.lstrip().startswith("-"):
+                            break
+                    block.append(child)
+                values = re.findall(
+                    r"(?<![A-Za-z0-9_.])[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?",
+                    "\n".join(block),
+                )
+                if len(values) >= 16:
+                    result["Q"] = np.asarray(values[:16], dtype=np.float64).reshape(4, 4)
+                    break
+        except (OSError, UnicodeError, ValueError):
+            pass
 
     if result["K"] is None and result["Q"] is not None:
         q = result["Q"]
@@ -186,6 +256,21 @@ def _load_calibration(path: Optional[Path]) -> Dict[str, Optional[np.ndarray]]:
             [[q[2, 3], 0.0, -q[0, 3]], [0.0, q[2, 3], -q[1, 3]], [0.0, 0.0, 1.0]],
             dtype=np.float64,
         )
+    if result["P0"] is not None:
+        result["K"] = result["P0"][:, :3].copy()
+    if result["P0"] is not None and result["P3"] is not None:
+        p0 = result["P0"]
+        p3 = result["P3"]
+        fx = abs(float(p0[0, 0]))
+        tx0 = float(p0[0, 3]) / float(p0[0, 0])
+        tx3 = float(p3[0, 3]) / float(p3[0, 0])
+        baseline = abs(tx3 - tx0)
+        if fx > 0 and baseline > 0:
+            result["focal_length"] = fx
+            result["baseline"] = baseline
+            result["fb"] = fx * baseline
+    if result["fb"] is None and result["focal_length"] is not None and result["baseline"] is not None:
+        result["fb"] = float(result["focal_length"]) * float(result["baseline"])
     return result
 
 
@@ -405,13 +490,23 @@ class DSECEventDataset(BaseEventMultiViewDataset):
                 path for path in _find_files(self.ROOT, {".yaml", ".yml"})
                 if "cam_to_cam" in path.name.lower() or "calib" in path.name.lower()
             ]
-            calibrated = [(path, _load_calibration(path)["Q"]) for path in foreign]
-            calibrated = [(path, q) for path, q in calibrated if q is not None]
-            if calibrated and all(np.allclose(calibrated[0][1], q, rtol=1e-6, atol=1e-8) for _, q in calibrated[1:]):
+            calibrated = []
+            for path in foreign:
+                parsed = _load_calibration(path)
+                signature = parsed["Q"]
+                if signature is None and parsed["fb"] is not None:
+                    signature = np.asarray([parsed["fb"]], dtype=np.float64)
+                if signature is not None:
+                    calibrated.append((path, signature))
+            if calibrated and all(
+                first.shape == signature.shape and np.allclose(first, signature, rtol=1e-6, atol=1e-8)
+                for _, signature in calibrated[1:]
+                for first in [calibrated[0][1]]
+            ):
                 unique = [calibrated[0][0]]
                 print(
-                    f"DSEC {scene.name}: using shared cams_03 calibration from {unique[0]} "
-                    "because all available sequence Q matrices are identical."
+                    f"DSEC {scene.name}: using shared disparity calibration from {unique[0]} "
+                    "because all available sequence calibrations are identical."
                 )
         return unique
 
@@ -439,20 +534,34 @@ class DSECEventDataset(BaseEventMultiViewDataset):
         image_ts = _read_numbers(image_timestamp_path) if image_timestamp_path else None
         rgb_for_frame = _pair_by_stem_or_time(supervision, timestamps, rgb_files, image_ts)
         calibration_files = self._calibration_files(scene)
-        calibration = {"Q": None, "K": None}
+        calibration = {"Q": None, "K": None, "fb": None}
         calibration_path = None
+        calibration_debug = []
         for candidate in calibration_files:
             parsed = _load_calibration(candidate)
-            if parsed["Q"] is not None:
+            calibration_debug.append(
+                {
+                    "path": str(candidate),
+                    "Q": parsed["Q"] is not None,
+                    "K": parsed["K"] is not None,
+                    "P0": parsed["P0"] is not None,
+                    "P3": parsed["P3"] is not None,
+                    "focal_length": parsed["focal_length"],
+                    "baseline": parsed["baseline"],
+                    "fb": parsed["fb"],
+                }
+            )
+            if parsed["Q"] is not None or parsed["fb"] is not None:
                 calibration = parsed
                 calibration_path = candidate
                 break
-        if supervision_kind == "disparity" and calibration["Q"] is None:
+        if supervision_kind == "disparity" and calibration["Q"] is None and calibration["fb"] is None:
             if self.disparity_fx is None or self.disparity_baseline is None:
                 raise ValueError(
-                    f"{scene.name}: disparity requires cams_03/Q in cam_to_cam.yaml, or explicit "
+                    f"{scene.name}: disparity requires cams_03/Q, camRect0/P+camRect3/P, "
+                    "focal_length+baseline, or explicit "
                     "data.disparity_fx and data.disparity_baseline. "
-                    f"Searched calibration candidates={[str(path) for path in calibration_files[:8]]}"
+                    f"Parsed calibration candidates={calibration_debug[:8]}"
                 )
 
         intrinsics = calibration["K"]
@@ -483,6 +592,7 @@ class DSECEventDataset(BaseEventMultiViewDataset):
             "src_resolution": np.asarray(target_size, dtype=np.int32),
             "intrinsics": np.asarray(intrinsics, dtype=np.float32),
             "Q": calibration["Q"],
+            "fb": calibration["fb"],
             "calibration_path": str(calibration_path) if calibration_path else None,
         }
 
@@ -530,6 +640,8 @@ class DSECEventDataset(BaseEventMultiViewDataset):
                     q[2, 3], denominator, out=np.zeros_like(disparity, dtype=np.float32), where=np.abs(denominator) > 1e-8
                 )
                 depth = np.abs(depth)
+            elif meta.get("fb") is not None:
+                depth = float(meta["fb"]) / np.maximum(disparity, 1e-6)
             else:
                 depth = (self.disparity_fx * self.disparity_baseline) / np.maximum(disparity, 1e-6)
         valid &= np.isfinite(depth) & (depth > 0.0)
