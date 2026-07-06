@@ -12,8 +12,49 @@ PORT="${PORT:-29671}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 EXP_NAME="${EXP_NAME:-dsec_${APPROACH}_${RUN_ID}}"
 OUT="${ROOT_DIR}/dsec_exp/results/${EXP_NAME}"
+AUTO_PREPARE_ALIGN="${AUTO_PREPARE_ALIGN:-1}"
 
 mkdir -p "${OUT}"
+
+alignment_missing=()
+for split in val test; do
+  [[ -d "${DSEC_ROOT}/${split}" ]] || continue
+  while IFS= read -r -d '' scene; do
+    aligned_dir="${scene}/images/event_aligned"
+    marker="${aligned_dir}/vggt_alignment.json"
+    first_png="$(find "${aligned_dir}" -maxdepth 1 -type f -iname '*.png' -print -quit 2>/dev/null || true)"
+    if [[ ! -f "${marker}" || -z "${first_png}" ]]; then
+      alignment_missing+=("${scene}")
+    fi
+  done < <(find "${DSEC_ROOT}/${split}" -mindepth 1 -maxdepth 1 -type d -print0)
+done
+
+if (( ${#alignment_missing[@]} > 0 )); then
+  echo "[alignment] missing event-aligned RGB in ${#alignment_missing[@]} scene(s):"
+  printf '  - %s\n' "${alignment_missing[@]}"
+  if [[ "${AUTO_PREPARE_ALIGN}" == "1" ]]; then
+    bash "${ROOT_DIR}/dsec_exp/download_prepare_event_aligned_rgb.sh" "${DSEC_ROOT}"
+  else
+    echo "Run dsec_exp/download_prepare_event_aligned_rgb.sh first, or set AUTO_PREPARE_ALIGN=1." >&2
+    exit 3
+  fi
+fi
+
+alignment_failed=0
+for scene in "${alignment_missing[@]}"; do
+  aligned_dir="${scene}/images/event_aligned"
+  marker="${aligned_dir}/vggt_alignment.json"
+  first_png="$(find "${aligned_dir}" -maxdepth 1 -type f -iname '*.png' -print -quit 2>/dev/null || true)"
+  if [[ ! -f "${marker}" || -z "${first_png}" ]]; then
+    echo "[alignment failed] ${scene}" >&2
+    alignment_failed=1
+  fi
+done
+if (( alignment_failed != 0 )); then
+  echo "Event-aligned RGB preparation did not produce all required outputs." >&2
+  exit 3
+fi
+
 python -m paper_main_ablation.inspect_dsec_vggt --root "${DSEC_ROOT}" --output "${OUT}/layout_report.json"
 python -m dsec_exp.check_dsec_loader --root "${DSEC_ROOT}" --split train --output "${OUT}/loader_check"
 
