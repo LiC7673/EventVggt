@@ -32,6 +32,17 @@ camera images cannot be paired directly with 640x480 event-camera disparity.
 The loader accepts a clearly named event-aligned directory or a custom 640x480
 RGB export; untouched 1440x1080 frame-camera images are rejected.
 
+Prepare aligned RGB from the official DSEC-Detection remapped-image package:
+
+```bash
+bash dsec_exp/download_prepare_event_aligned_rgb.sh \
+  /data1/lzh/dataset/DESC/DSEC_EV_VGGT
+```
+
+This first obtains RGB in the distorted left-event view and then applies each
+scene's official `rectify_map` to produce `images/event_aligned` in rectified
+cam0 coordinates. Do not bypass this with `allow_unaligned_rgb=true`.
+
 ## 1. Fine-tune then test
 
 Event method on GPUs 4-7:
