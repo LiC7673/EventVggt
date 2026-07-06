@@ -125,13 +125,7 @@ while (( round < MAX_ROUNDS )); do
         total_failed=$((total_failed + 1))
       fi
     fi
-  done < <(
-    find "${ROOT}" -type f \(
-      -iname '*.zip' -o -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o \
-      -iname '*.tar.bz2' -o -iname '*.tbz2' -o -iname '*.tar.xz' -o -iname '*.txz' -o \
-      -iname '*.7z' -o -iname '*.rar'
-    \) -print0
-  )
+  done < <(find "${ROOT}" -type f \( -iname '*.zip' -o -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.tar.bz2' -o -iname '*.tbz2' -o -iname '*.tar.xz' -o -iname '*.txz' -o -iname '*.7z' -o -iname '*.rar' \) -print0)
 
   if (( found_unfinished == 0 )); then
     break
