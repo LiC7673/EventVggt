@@ -4,6 +4,18 @@ This integration follows the official DSEC event slicing, timestamp offset,
 rectification, and disparity encoding. It uses every scene under `val/` for
 training and every scene under `test/` only for final evaluation.
 
+## Extract downloaded archives
+
+Recursively extract every archive into a sibling subdirectory:
+
+```bash
+bash dsec_exp/extract_archives_recursive.sh \
+  /data1/lzh/dataset/DESC/DSEC_EV_VGGT
+```
+
+The archives are retained. Completed outputs have an extraction marker, so the
+command can safely be rerun and will also process nested archives.
+
 The export must contain event-camera-aligned RGB. Raw official 1440x1080 frame
 camera images cannot be paired directly with 640x480 event-camera disparity.
 The loader accepts a clearly named event-aligned directory or a custom 640x480
