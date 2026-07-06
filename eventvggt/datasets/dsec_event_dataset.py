@@ -74,6 +74,16 @@ def _load_map(path: Path) -> np.ndarray:
     return value
 
 
+def _map_size(path: Path) -> Optional[Tuple[int, int]]:
+    try:
+        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
+            return _image_size(path)
+        value = _load_map(path)
+        return int(value.shape[1]), int(value.shape[0])
+    except (OSError, ValueError):
+        return None
+
+
 def _matrix(value: Any) -> Optional[np.ndarray]:
     if value is None:
         return None
@@ -288,30 +298,107 @@ class DSECEventDataset(BaseEventMultiViewDataset):
             raise FileNotFoundError(f"Missing events/left/events.h5 or rectify_map.h5 in {scene}")
         return event_candidates[0], rect_candidates[0]
 
+    @staticmethod
+    def _select_supervision_group(paths: Sequence[Path]) -> list[Path]:
+        groups: Dict[Path, list[Path]] = {}
+        for path in paths:
+            groups.setdefault(path.parent, []).append(path)
+        ranked = []
+        for parent, files in groups.items():
+            files.sort()
+            size = _map_size(files[0])
+            parent_text = str(parent).lower()
+            camera_score = 30 if any(token in parent_text for token in ("event", "cam0", "left")) else 0
+            resolution_score = 50 if size == (640, 480) else 0
+            score = camera_score + resolution_score + min(len(files), 1000) / 1000.0
+            ranked.append((score, files))
+        return max(ranked, key=lambda item: item[0])[1] if ranked else []
+
     def _supervision(self, scene: Path):
-        depth_files = [
-            path for path in _find_files(scene, {".npy", ".npz", ".exr", ".png"})
-            if "depth" in str(path.parent).lower()
-            and not any(token in str(path.parent).lower() for token in ("preview", "visual"))
+        all_maps = _find_files(scene, {".npy", ".npz", ".exr", ".png", ".tif", ".tiff"})
+        depth_candidates = [
+            path for path in all_maps
+            if "depth" in str(path).lower()
+            and not any(token in str(path).lower() for token in ("preview", "visual", "blend", "normal"))
         ]
-        disparity_files = [
-            path for path in _find_files(scene, {".png"})
-            if "disparity" in str(path.parent).lower() and "event" in str(path.parent).lower()
+        disparity_candidates = [
+            path for path in all_maps
+            if "disparity" in str(path).lower()
+            and not any(token in str(path).lower() for token in ("preview", "visual", "blend", "color"))
         ]
+        depth_files = self._select_supervision_group(depth_candidates)
+        disparity_files = self._select_supervision_group(disparity_candidates)
         files = sorted(depth_files or disparity_files)
         if not files:
-            raise FileNotFoundError(f"No event-camera depth or disparity supervision found in {scene}")
+            candidates = [str(path.relative_to(scene)) for path in all_maps[:20]]
+            raise FileNotFoundError(
+                f"No event-camera depth or disparity supervision found in {scene}; map candidates={candidates}"
+            )
         kind = "depth" if depth_files else "disparity"
         timestamp_path = _choose_timestamp_file(scene, kind)
         if timestamp_path is None and kind == "disparity":
             candidate = scene / "disparity" / "timestamps.txt"
             timestamp_path = candidate if candidate.is_file() else None
         if timestamp_path is None:
+            timestamp_candidates = [
+                path for path in _find_files(scene, {".txt", ".csv"}) if "timestamp" in path.name.lower()
+            ]
+            timestamp_candidates.sort(
+                key=lambda path: (
+                    path.parent not in files[0].parents and path.parent != files[0].parent,
+                    kind not in str(path.parent).lower(),
+                    len(path.parts),
+                )
+            )
+            timestamp_path = timestamp_candidates[0] if timestamp_candidates else None
+        if timestamp_path is None:
             raise FileNotFoundError(f"No {kind} timestamps found in {scene}")
         timestamps = _read_numbers(timestamp_path)
         if len(timestamps) != len(files):
             raise ValueError(f"{scene.name}: {len(files)} {kind} files but {len(timestamps)} timestamps")
         return files, timestamps, kind
+
+    def _calibration_files(self, scene: Path) -> list[Path]:
+        candidates = []
+        known_scene_names = {
+            child.name
+            for split_name in ("val", "test", "train")
+            for child in ((self.ROOT / split_name).iterdir() if (self.ROOT / split_name).is_dir() else [])
+            if child.is_dir()
+        }
+        search_roots = []
+        for root in (scene, scene.parent, self.ROOT):
+            if root.is_dir() and root not in search_roots:
+                search_roots.append(root)
+        for root in search_roots:
+            for path in _find_files(root, {".yaml", ".yml"}):
+                if "cam_to_cam" in path.name.lower() or "calib" in path.name.lower():
+                    foreign_scenes = (set(path.parts) & known_scene_names) - {scene.name}
+                    if foreign_scenes:
+                        continue
+                    candidates.append(path)
+        unique = list(dict.fromkeys(candidates))
+        unique.sort(
+            key=lambda path: (
+                scene.name not in str(path),
+                "cam_to_cam" not in path.name.lower(),
+                len(path.parts),
+            )
+        )
+        if not unique:
+            foreign = [
+                path for path in _find_files(self.ROOT, {".yaml", ".yml"})
+                if "cam_to_cam" in path.name.lower() or "calib" in path.name.lower()
+            ]
+            calibrated = [(path, _load_calibration(path)["Q"]) for path in foreign]
+            calibrated = [(path, q) for path, q in calibrated if q is not None]
+            if calibrated and all(np.allclose(calibrated[0][1], q, rtol=1e-6, atol=1e-8) for _, q in calibrated[1:]):
+                unique = [calibrated[0][0]]
+                print(
+                    f"DSEC {scene.name}: using shared cams_03 calibration from {unique[0]} "
+                    "because all available sequence Q matrices are identical."
+                )
+        return unique
 
     def _build_scene(self, scene: Path) -> Dict[str, Any]:
         event_h5, rectify_h5 = self._event_paths(scene)
@@ -335,16 +422,14 @@ class DSECEventDataset(BaseEventMultiViewDataset):
         image_timestamp_path = _choose_timestamp_file(scene, "image")
         image_ts = _read_numbers(image_timestamp_path) if image_timestamp_path else None
         rgb_for_frame = _pair_by_stem_or_time(supervision, timestamps, rgb_files, image_ts)
-        calibration_files = [
-            path for path in _find_files(scene, {".yaml", ".yml"})
-            if "cam_to_cam" in path.name.lower() or "calib" in path.name.lower()
-        ]
+        calibration_files = self._calibration_files(scene)
         calibration = _load_calibration(calibration_files[0] if calibration_files else None)
         if supervision_kind == "disparity" and calibration["Q"] is None:
             if self.disparity_fx is None or self.disparity_baseline is None:
                 raise ValueError(
                     f"{scene.name}: disparity requires cams_03/Q in cam_to_cam.yaml, or explicit "
-                    "data.disparity_fx and data.disparity_baseline."
+                    "data.disparity_fx and data.disparity_baseline. "
+                    f"Searched calibration candidates={[str(path) for path in calibration_files[:8]]}"
                 )
 
         intrinsics = calibration["K"]

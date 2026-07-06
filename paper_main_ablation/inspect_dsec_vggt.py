@@ -33,7 +33,13 @@ def _files(root: Path, suffixes: Iterable[str]):
 
 
 def _relative(paths, root, limit=12):
-    return [str(path.relative_to(root)) for path in paths[:limit]]
+    values = []
+    for path in paths[:limit]:
+        try:
+            values.append(str(path.relative_to(root)))
+        except ValueError:
+            values.append(str(path))
+    return values
 
 
 def _sample_image_info(paths):
@@ -64,7 +70,7 @@ def _inspect_event_h5(path: Path):
     return report
 
 
-def inspect_scene(scene: Path):
+def inspect_scene(scene: Path, dataset_root: Path | None = None):
     all_png = _files(scene, {".png"})
     image_files = [
         path for path in all_png
@@ -82,6 +88,17 @@ def inspect_scene(scene: Path):
         path for path in _files(scene, {".yaml", ".yml", ".json"})
         if any(token in path.name.lower() for token in ("calib", "cam_to_cam", "intrinsic", "extrinsic"))
     ]
+    if not calibration and dataset_root is not None:
+        calibration = [
+            path for path in _files(dataset_root, {".yaml", ".yml", ".json"})
+            if any(token in path.name.lower() for token in ("calib", "cam_to_cam", "intrinsic", "extrinsic"))
+            and not any(
+                part in {child.name for split in ("val", "test", "train")
+                         for child in ((dataset_root / split).iterdir() if (dataset_root / split).is_dir() else [])
+                         if child.is_dir()} - {scene.name}
+                for part in path.parts
+            )
+        ]
     timestamp_files = [
         path for path in _files(scene, {".txt", ".csv"}) if "timestamp" in path.name.lower()
     ]
@@ -109,13 +126,21 @@ def inspect_scene(scene: Path):
         and image_info["width"] == supervision_info["width"]
         and image_info["height"] == supervision_info["height"]
     )
+    event_resolution_match = bool(
+        same_resolution
+        and image_info
+        and image_info.get("width") == 640
+        and image_info.get("height") == 480
+    )
     explicit_alignment = bool(alignment_markers or aligned_image_paths)
+    usable_alignment = explicit_alignment or event_resolution_match
     event_reports = [_inspect_event_h5(path) for path in event_h5[:2]]
     official_event_ok = any(report.get("official_keys_present", False) for report in event_reports)
     has_depth = any("depth" in str(path.parent).lower() for path in supervision_files)
     has_disparity = any("disparity" in str(path.parent).lower() for path in supervision_files)
 
     blockers = []
+    warnings = []
     if not official_event_ok:
         blockers.append("official DSEC event h5 keys were not detected")
     if not image_files:
@@ -128,8 +153,10 @@ def inspect_scene(scene: Path):
         blockers.append("event rectify map was not detected")
     if not same_resolution:
         blockers.append("RGB and depth/disparity sample resolutions differ")
-    if not explicit_alignment:
+    if not usable_alignment:
         blockers.append("no explicit RGB-to-event-camera alignment marker was detected")
+    elif not explicit_alignment:
+        warnings.append("assuming the custom 640x480 RGB export is already aligned to the event camera")
 
     return {
         "scene": scene.name,
@@ -150,9 +177,11 @@ def inspect_scene(scene: Path):
         "alignment_markers": _relative(alignment_markers, scene),
         "same_rgb_supervision_resolution": same_resolution,
         "explicit_event_camera_alignment": explicit_alignment,
+        "event_resolution_alignment_assumed": event_resolution_match and not explicit_alignment,
         "pose_supervision_available": bool(pose_files),
         "direct_vggt_ready": not blockers,
         "blockers": blockers,
+        "warnings": warnings,
     }
 
 
@@ -170,7 +199,7 @@ def main():
     for split in ("val", "test"):
         split_root = root / split
         scenes = sorted(path for path in split_root.iterdir() if path.is_dir()) if split_root.is_dir() else []
-        reports = [inspect_scene(scene) for scene in scenes]
+        reports = [inspect_scene(scene, root) for scene in scenes]
         result["splits"][split] = {
             "scene_count": len(reports),
             "ready_count": sum(report["direct_vggt_ready"] for report in reports),
@@ -196,6 +225,8 @@ def main():
             print(f"  [{status}] {scene['scene']}")
             for blocker in scene["blockers"]:
                 print(f"    - {blocker}")
+            for warning in scene.get("warnings", []):
+                print(f"    ! {warning}")
     print(f"Report saved to {output}")
     if args.strict and not result["all_scenes_ready"]:
         raise SystemExit(2)
