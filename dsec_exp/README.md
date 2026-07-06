@@ -6,6 +6,17 @@ training and every scene under `test/` only for final evaluation.
 
 ## Extract downloaded archives
 
+First audit the existing downloads and redownload missing/corrupt files:
+
+```bash
+bash dsec_exp/repair_dsec_downloads.sh \
+  /data1/lzh/dataset/DESC/DSEC_EV_VGGT
+```
+
+Add `EXTRACT=1` to repair and then extract in one run. The repair script keeps
+the existing val/test directory assignment and also downloads event-camera
+disparity (`disparity_event`) required for event-frame geometry supervision.
+
 Recursively extract every archive into a sibling subdirectory:
 
 ```bash

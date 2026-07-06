@@ -8,6 +8,7 @@ set -uo pipefail
 ROOT="${1:-/data1/lzh/dataset/DESC/DSEC_EV_VGGT}"
 MARKER=".eventvggt_extract_complete"
 MAX_ROUNDS="${MAX_ROUNDS:-20}"
+declare -A FAILED_THIS_RUN=()
 
 if [[ ! -d "${ROOT}" ]]; then
   echo "[error] directory does not exist: ${ROOT}" >&2
@@ -57,7 +58,18 @@ extract_one() {
 
   case "${lower}" in
     *.zip)
-      require_command unzip && unzip -oq "${archive}" -d "${output}"
+      if ! require_command unzip; then
+        return 1
+      fi
+      if ! unzip -tqq "${archive}" >/dev/null 2>&1; then
+        echo "[invalid zip] ${archive}" >&2
+        if command -v file >/dev/null 2>&1; then
+          file "${archive}" >&2 || true
+        fi
+        echo "The download is incomplete, is an HTML response, or is one part of a split archive." >&2
+        return 4
+      fi
+      unzip -oq "${archive}" -d "${output}"
       ;;
     *.tar)
       require_command tar && tar -xf "${archive}" -C "${output}"
@@ -108,6 +120,9 @@ while (( round < MAX_ROUNDS )); do
   found_unfinished=0
 
   while IFS= read -r -d '' archive; do
+    if [[ -n "${FAILED_THIS_RUN[${archive}]+x}" ]]; then
+      continue
+    fi
     name="$(basename "${archive}")"
     stem="$(archive_stem "${name}")" || continue
     output="$(dirname "${archive}")/${stem}"
@@ -122,6 +137,7 @@ while (( round < MAX_ROUNDS )); do
     else
       status=$?
       if [[ ${status} -ne 3 ]]; then
+        FAILED_THIS_RUN["${archive}"]=1
         total_failed=$((total_failed + 1))
       fi
     fi
