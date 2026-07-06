@@ -87,14 +87,19 @@ def _map_size(path: Path) -> Optional[Tuple[int, int]]:
 def _matrix(value: Any) -> Optional[np.ndarray]:
     if value is None:
         return None
-    if isinstance(value, dict) and "data" in value:
+    if isinstance(value, dict):
+        if "data" not in value:
+            return None
         data = np.asarray(value["data"], dtype=np.float64)
         rows = int(value.get("rows", 0))
         cols = int(value.get("cols", 0))
         if rows > 0 and cols > 0 and data.size == rows * cols:
             return data.reshape(rows, cols)
         value = data
-    array = np.asarray(value, dtype=np.float64)
+    try:
+        array = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
     if array.size == 16:
         return array.reshape(4, 4)
     if array.size == 12:
@@ -142,7 +147,7 @@ def _load_calibration(path: Optional[Path]) -> Dict[str, Optional[np.ndarray]]:
                             mat = np.asarray(mat, dtype=np.float64)
                             result["K"] = mat[:3, :3]
         storage.release()
-    except cv2.error:
+    except (cv2.error, SystemError, TypeError):
         pass
 
     try:
@@ -155,7 +160,8 @@ def _load_calibration(path: Optional[Path]) -> Dict[str, Optional[np.ndarray]]:
             return loader.construct_mapping(node, deep=True)
 
         OpenCVLoader.add_constructor("tag:yaml.org,2002:opencv-matrix", construct_matrix)
-        text = path.read_text(encoding="utf-8").replace("%YAML:1.0", "%YAML 1.1")
+        text = path.read_text(encoding="utf-8-sig")
+        text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("%YAML:"))
         data = yaml.load(text, Loader=OpenCVLoader)
         for keys, mapping in _walk_mapping(data):
             joined = "/".join(keys).lower()
@@ -166,10 +172,12 @@ def _load_calibration(path: Optional[Path]) -> Dict[str, Optional[np.ndarray]]:
                     continue
                 if key_lower == "q" and mat.shape == (4, 4) and ("cams_03" in joined or result["Q"] is None):
                     result["Q"] = mat
+                if key_lower == "cams_03" and mat.shape == (4, 4):
+                    result["Q"] = mat
                 if key_lower in {"k", "camera_matrix", "projection_matrix", "p"}:
                     if "camrect0" in joined or "cam0" in joined or result["K"] is None:
                         result["K"] = mat[:3, :3]
-    except (ImportError, OSError, ValueError):
+    except Exception:
         pass
 
     if result["K"] is None and result["Q"] is not None:
@@ -212,7 +220,14 @@ def _choose_rgb_files(scene: Path, target_size: Tuple[int, int]) -> tuple[list[P
         scored.append((score, files, explicit, size))
     if not scored:
         return [], False
-    _, files, explicit, size = max(scored, key=lambda item: item[0])
+    explicit_groups = [item for item in scored if item[2]]
+    if explicit_groups:
+        _, files, explicit, size = max(
+            explicit_groups,
+            key=lambda item: (item[3] == target_size, len(item[1])),
+        )
+    else:
+        _, files, explicit, size = max(scored, key=lambda item: item[0])
     # A 640x480 RGB export is accepted as an already warped custom export.
     # Untouched DSEC frame-camera images are 1440x1080 and fail below.
     return files, bool(explicit or size == target_size)
@@ -415,6 +430,7 @@ class DSECEventDataset(BaseEventMultiViewDataset):
         if rgb_size != target_size or (not explicitly_aligned and not self.allow_unaligned_rgb):
             raise ValueError(
                 f"{scene.name}: RGB {rgb_size} and event-camera supervision {target_size} are not proven aligned. "
+                f"Selected RGB={rgb_files[0].parent}; supervision={supervision[0].parent}. "
                 "Export RGB into an event_aligned/cam0 directory, or set data.allow_unaligned_rgb=true only "
                 "after independently verifying the warp."
             )
@@ -423,7 +439,14 @@ class DSECEventDataset(BaseEventMultiViewDataset):
         image_ts = _read_numbers(image_timestamp_path) if image_timestamp_path else None
         rgb_for_frame = _pair_by_stem_or_time(supervision, timestamps, rgb_files, image_ts)
         calibration_files = self._calibration_files(scene)
-        calibration = _load_calibration(calibration_files[0] if calibration_files else None)
+        calibration = {"Q": None, "K": None}
+        calibration_path = None
+        for candidate in calibration_files:
+            parsed = _load_calibration(candidate)
+            if parsed["Q"] is not None:
+                calibration = parsed
+                calibration_path = candidate
+                break
         if supervision_kind == "disparity" and calibration["Q"] is None:
             if self.disparity_fx is None or self.disparity_baseline is None:
                 raise ValueError(
@@ -460,6 +483,7 @@ class DSECEventDataset(BaseEventMultiViewDataset):
             "src_resolution": np.asarray(target_size, dtype=np.int32),
             "intrinsics": np.asarray(intrinsics, dtype=np.float32),
             "Q": calibration["Q"],
+            "calibration_path": str(calibration_path) if calibration_path else None,
         }
 
     def _discover(self):

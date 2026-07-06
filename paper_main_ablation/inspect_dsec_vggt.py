@@ -52,6 +52,29 @@ def _sample_image_info(paths):
         return {"path": str(paths[0]), "error": str(error)}
 
 
+def _preferred_camera_files(paths, *, aligned=False, supervision=False):
+    if not paths:
+        return []
+    scored = []
+    for path in paths:
+        text = str(path.parent).lower()
+        score = 0
+        if aligned and any(token in text for token in ("event_aligned", "cam0", "event_camera")):
+            score += 100
+        if supervision and any(token in text for token in ("disparity_event", "event", "cam0")):
+            score += 100
+        try:
+            with Image.open(path) as image:
+                if image.size == (640, 480):
+                    score += 50
+        except Exception:
+            pass
+        scored.append((score, path))
+    scored.sort(key=lambda item: (-item[0], str(item[1])))
+    best_parent = scored[0][1].parent
+    return [path for _, path in scored if path.parent == best_parent]
+
+
 def _inspect_event_h5(path: Path):
     report = {"path": str(path), "keys": [], "official_keys_present": False}
     try:
@@ -116,8 +139,11 @@ def inspect_scene(scene: Path, dataset_root: Path | None = None):
         if any(token in str(path.parent).lower() for token in ("event_aligned", "cam0", "event_camera"))
     ]
 
-    image_info = _sample_image_info(image_files)
-    supervision_info = _sample_image_info([path for path in supervision_files if path.suffix.lower() == ".png"])
+    image_sample_files = _preferred_camera_files(image_files, aligned=True)
+    supervision_pngs = [path for path in supervision_files if path.suffix.lower() == ".png"]
+    supervision_sample_files = _preferred_camera_files(supervision_pngs, supervision=True)
+    image_info = _sample_image_info(image_sample_files)
+    supervision_info = _sample_image_info(supervision_sample_files)
     same_resolution = bool(
         image_info
         and supervision_info
@@ -166,9 +192,13 @@ def inspect_scene(scene: Path, dataset_root: Path | None = None):
         "image_count": len(image_files),
         "image_examples": _relative(image_files, scene),
         "image_sample": image_info,
+        "selected_image_directory": str(image_sample_files[0].parent) if image_sample_files else None,
         "supervision_count": len(supervision_files),
         "supervision_examples": _relative(supervision_files, scene),
         "supervision_sample": supervision_info,
+        "selected_supervision_directory": (
+            str(supervision_sample_files[0].parent) if supervision_sample_files else None
+        ),
         "has_depth": has_depth,
         "has_disparity": has_disparity,
         "calibration": _relative(calibration, scene),
