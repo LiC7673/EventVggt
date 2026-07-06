@@ -58,31 +58,46 @@ printer = get_logger(__name__, log_level="INFO")
 def save_current_code(outdir: str):
     now = datetime.datetime.now()
     date_time = now.strftime("%m_%d-%H-%M-%S")
-    src_dir = "."
-    dst_dir = os.path.join(outdir, "code", date_time)
+    src_dir = Path.cwd().resolve()
+    output_root = Path(outdir).resolve()
+    dst_dir = output_root / "code" / date_time
+    pattern_ignore = shutil.ignore_patterns(
+        ".vscode*",
+        "assets*",
+        "example*",
+        "checkpoints*",
+        "OLD*",
+        "logs*",
+        "out*",
+        "runs*",
+        "results*",
+        "ablation_logs*",
+        "abl_event_exp*",
+        "*.png",
+        "*.mp4",
+        "*__pycache__*",
+        "*.git*",
+        "*.idea*",
+        "*.zip",
+        "*.jpg",
+    )
+
+    def ignore_generated(directory, names):
+        ignored = set(pattern_ignore(directory, names))
+        directory = Path(directory).resolve()
+        for name in names:
+            candidate = (directory / name).resolve()
+            if candidate == output_root or candidate == dst_dir:
+                ignored.add(name)
+        return ignored
+
     shutil.copytree(
         src_dir,
         dst_dir,
-        ignore=shutil.ignore_patterns(
-            ".vscode*",
-            "assets*",
-            "example*",
-            "checkpoints*",
-            "OLD*",
-            "logs*",
-            "out*",
-            "runs*",
-            "*.png",
-            "*.mp4",
-            "*__pycache__*",
-            "*.git*",
-            "*.idea*",
-            "*.zip",
-            "*.jpg",
-        ),
+        ignore=ignore_generated,
         dirs_exist_ok=True,
     )
-    return dst_dir
+    return str(dst_dir)
 
 
 def maybe_denormalize_views(views: List[Dict[str, torch.Tensor]]) -> List[Dict[str, torch.Tensor]]:

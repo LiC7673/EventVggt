@@ -58,13 +58,19 @@ fi
 python -m paper_main_ablation.inspect_dsec_vggt --root "${DSEC_ROOT}" --output "${OUT}/layout_report.json"
 python -m dsec_exp.check_dsec_loader --root "${DSEC_ROOT}" --split train --output "${OUT}/loader_check"
 
-CUDA_VISIBLE_DEVICES="${GPUS}" accelerate launch \
+TRAIN_LOG="${OUT}/train.log"
+echo "[train] complete output: ${TRAIN_LOG}"
+if ! HYDRA_FULL_ERROR=1 CUDA_VISIBLE_DEVICES="${GPUS}" accelerate launch \
   --multi_gpu --num_processes "${NUM_PROCESSES}" --main_process_port "${PORT}" \
   --mixed_precision bf16 --dynamo_backend no \
   -m dsec_exp.finetune_dsec \
   approach="${APPROACH}" data.root="${DSEC_ROOT}" \
   exp_name="${EXP_NAME}" save_dir="${ROOT_DIR}/dsec_exp/results" \
-  "$@"
+  "$@" 2>&1 | tee "${TRAIN_LOG}"; then
+  echo "[error] DSEC training failed. Root traceback is in ${TRAIN_LOG}" >&2
+  echo "[error] Inspect it with: grep -nE 'Traceback|Error|Exception|CUDA out of memory' '${TRAIN_LOG}'" >&2
+  exit 1
+fi
 
 CUDA_VISIBLE_DEVICES="${GPUS%%,*}" python -m dsec_exp.evaluate_dsec \
   --checkpoint "${OUT}/checkpoint-last.pth" \

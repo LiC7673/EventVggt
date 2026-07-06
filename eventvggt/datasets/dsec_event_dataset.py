@@ -26,10 +26,26 @@ from PIL import Image
 from eventvggt.datasets.base.base_event_dataset import BaseEventMultiViewDataset
 from eventvggt.datasets.my_event_dataset import event_multiview_collate
 
+_HDF5PLUGIN_IMPORT_ERROR = None
 try:  # DSEC h5 files may use the Blosc filter registered by hdf5plugin.
     import hdf5plugin  # noqa: F401
-except ImportError:  # pragma: no cover - only required for compressed releases
+except Exception as exc:  # pragma: no cover - depends on the runtime installation
     hdf5plugin = None
+    _HDF5PLUGIN_IMPORT_ERROR = exc
+
+
+def _hdf5_filter_summary(dataset: h5py.Dataset) -> list[str]:
+    filters = []
+    try:
+        properties = dataset.id.get_create_plist()
+        for index in range(properties.get_nfilters()):
+            filter_id, _, _, name = properties.get_filter(index)
+            if isinstance(name, bytes):
+                name = name.decode("utf-8", errors="replace")
+            filters.append(f"{filter_id}:{name or 'unnamed'}")
+    except Exception:
+        pass
+    return filters
 
 
 def _read_numbers(path: Path) -> np.ndarray:
@@ -651,24 +667,35 @@ class DSECEventDataset(BaseEventMultiViewDataset):
 
     @staticmethod
     def _slice_events(handle: h5py.File, start_abs: int, end_abs: int):
-        offset = int(np.asarray(handle["t_offset"][()]).reshape(-1)[0])
-        start = int(start_abs) - offset
-        end = int(end_abs) - offset
         mapping = handle["ms_to_idx"]
-        raw_start_ms = start // 1000
-        raw_end_ms = end // 1000 + 2
-        start_ms = int(np.clip(raw_start_ms, 0, max(len(mapping) - 1, 0)))
-        end_ms = int(np.clip(raw_end_ms, 0, max(len(mapping) - 1, 0)))
-        i0 = int(mapping[start_ms])
-        i1 = len(handle["events/t"]) if raw_end_ms >= len(mapping) else int(mapping[end_ms])
-        t = np.asarray(handle["events/t"][i0:i1], dtype=np.int64)
-        keep = (t >= start) & (t < end)
-        return (
-            np.asarray(handle["events/x"][i0:i1], dtype=np.int32)[keep],
-            np.asarray(handle["events/y"][i0:i1], dtype=np.int32)[keep],
-            np.asarray(handle["events/p"][i0:i1], dtype=np.float32)[keep],
-            t[keep].astype(np.float64),
-        )
+        try:
+            offset = int(np.asarray(handle["t_offset"][()]).reshape(-1)[0])
+            start = int(start_abs) - offset
+            end = int(end_abs) - offset
+            raw_start_ms = start // 1000
+            raw_end_ms = end // 1000 + 2
+            start_ms = int(np.clip(raw_start_ms, 0, max(len(mapping) - 1, 0)))
+            end_ms = int(np.clip(raw_end_ms, 0, max(len(mapping) - 1, 0)))
+            i0 = int(mapping[start_ms])
+            i1 = len(handle["events/t"]) if raw_end_ms >= len(mapping) else int(mapping[end_ms])
+            t = np.asarray(handle["events/t"][i0:i1], dtype=np.int64)
+            keep = (t >= start) & (t < end)
+            return (
+                np.asarray(handle["events/x"][i0:i1], dtype=np.int32)[keep],
+                np.asarray(handle["events/y"][i0:i1], dtype=np.int32)[keep],
+                np.asarray(handle["events/p"][i0:i1], dtype=np.float32)[keep],
+                t[keep].astype(np.float64),
+            )
+        except OSError as exc:
+            filters = _hdf5_filter_summary(mapping)
+            plugin_error = repr(_HDF5PLUGIN_IMPORT_ERROR) if _HDF5PLUGIN_IMPORT_ERROR is not None else None
+            raise RuntimeError(
+                f"Cannot decode compressed DSEC events in {handle.filename}. "
+                f"ms_to_idx filters={filters or ['unknown']}; hdf5plugin_import_error={plugin_error}. "
+                "Install the filter package in the same environment with "
+                "`python -m pip install hdf5plugin`, unset HDF5_PLUGIN_PATH if it points to a missing "
+                "directory, then restart Python."
+            ) from exc
 
     @staticmethod
     def _voxel(x, y, p, t, rectify_map, bins: int):
