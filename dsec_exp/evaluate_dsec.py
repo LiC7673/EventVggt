@@ -74,9 +74,7 @@ def _event_rgb(voxel):
 def _normal_stats(pred, gt, intrinsics, valid):
     pred_n = fe.depth_to_normals(pred, intrinsics)
     gt_n = fe.depth_to_normals(gt, intrinsics)
-    mask = valid.clone()
-    mask[..., (0, -1), :] = False
-    mask[..., :, (0, -1)] = False
+    mask = fe.normal_stencil_valid_mask(valid, pred, eps=0.1)
     cosine = (F.normalize(pred_n, dim=-1, eps=1e-6) * F.normalize(gt_n, dim=-1, eps=1e-6)).sum(-1)
     error = torch.rad2deg(torch.acos(cosine.clamp(-1, 1)))[mask]
     if not error.numel():

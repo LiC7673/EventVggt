@@ -557,6 +557,28 @@ def compute_normals_from_points(points: torch.Tensor, valid_mask: Optional[torch
     if valid_mask is not None:
         normals = normals * valid_mask.unsqueeze(-1).to(normals.dtype)
     return normals
+
+
+def normal_stencil_valid_mask(
+    valid_mask: torch.Tensor,
+    depth: Optional[torch.Tensor] = None,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Require every sample used by the central-difference normal stencil."""
+    valid = valid_mask.bool()
+    if depth is not None:
+        valid = valid & torch.isfinite(depth) & (depth > eps)
+    result = torch.zeros_like(valid)
+    result[..., 1:-1, 1:-1] = (
+        valid[..., 1:-1, 1:-1]
+        & valid[..., 1:-1, :-2]
+        & valid[..., 1:-1, 2:]
+        & valid[..., :-2, 1:-1]
+        & valid[..., 2:, 1:-1]
+    )
+    return result
+
+
 def masked_chamfer_distance(pred_pts: torch.Tensor, gt_pts: torch.Tensor, mask: torch.Tensor, num_samples: int = 4096) -> torch.Tensor:
     """
     计算掩码点云之间的 Chamfer Distance。
@@ -682,11 +704,7 @@ class EventSupervisedLoss(nn.Module):
         # points_loss = masked_l1(points_pred, points_gt_aligned, points_mask)
         # points_loss =   masked_chamfer_distance(points_pred, points_gt, points_mask) 
 
-        normal_mask = valid_mask.clone()
-        normal_mask[..., 0, :] = False
-        normal_mask[..., -1, :] = False
-        normal_mask[..., :, 0] = False
-        normal_mask[..., :, -1] = False
+        normal_mask = normal_stencil_valid_mask(valid_mask, depth_pred, eps=self.depth_min)
 
         # 优先用GT法向图
         if all('normal' in v for v in views):
@@ -737,7 +755,9 @@ class EventSupervisedLoss(nn.Module):
         depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         
         # points_loss 根据 points_loss_type 选择 L1 或 Chamfer Distance
-        if self.points_loss_type == "l1":
+        if self.points_weight <= 0:
+            points_loss = depth_pred.new_zeros(())
+        elif self.points_loss_type == "l1":
             points_loss = masked_l1(points_pred_aligned, points_gt, points_mask)
         else:  # "cd"
             points_loss = masked_chamfer_distance(points_pred_aligned, points_gt, valid_mask)

@@ -212,11 +212,7 @@ def normal_error_metrics(
 ) -> Dict[str, float]:
     pred_normals = fe.depth_to_normals(pred_depth, intrinsics)
     gt_normals = fe.depth_to_normals(gt_depth, intrinsics)
-    normal_mask = valid_mask.clone()
-    normal_mask[..., 0, :] = False
-    normal_mask[..., -1, :] = False
-    normal_mask[..., :, 0] = False
-    normal_mask[..., :, -1] = False
+    normal_mask = fe.normal_stencil_valid_mask(valid_mask, pred_depth, eps=EPS)
     cos = (F.normalize(pred_normals, dim=-1, eps=1e-6) * F.normalize(gt_normals, dim=-1, eps=1e-6)).sum(dim=-1)
     err = torch.rad2deg(torch.acos(cos.clamp(-1.0, 1.0)))
     valid_err = err[normal_mask]

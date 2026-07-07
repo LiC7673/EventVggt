@@ -38,7 +38,9 @@ def _prepare_common(cfg):
     cfg.loss.points_weight = 0.0
     cfg.loss.depth_weight = 1.0
     cfg.loss.normal_weight = float(getattr(cfg.loss, "normal_weight", 0.10))
-    cfg.loss.align_depth_scale = False
+    # Preserve the Hydra/config choice so raw-metric and scale-aligned DSEC
+    # runs can be compared explicitly. YAML keeps the default disabled.
+    cfg.loss.align_depth_scale = bool(getattr(cfg.loss, "align_depth_scale", False))
     cfg.model.head_frames_chunk_size = int(getattr(cfg.model, "head_frames_chunk_size", 1))
     # The held-out DSEC test directory is never exposed to the training loop.
     # The loop's optional monitor loader uses val again; final test evaluation
