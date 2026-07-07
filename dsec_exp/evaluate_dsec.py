@@ -22,6 +22,50 @@ import finetune_no_event as nf
 from dsec_exp.common import build_dsec_loader
 
 
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DSEC_CONFIG = ROOT / "config" / "finetune_dsec_event.yaml"
+BASE_EVENT_CONFIG = ROOT / "config" / "finetune_event.yaml"
+
+
+def _cfg_from_dsec_checkpoint(checkpoint):
+    """Merge a possibly sparse checkpoint cfg over the complete DSEC config.
+
+    Some older DSEC runs only stored the experiment-specific model overrides
+    (for example ``variant`` and ``event_num_bins``). Treating that sparse dict
+    as a complete config drops the inherited VGGT dimensions and makes model
+    reconstruction fail during evaluation.
+    """
+    # OmegaConf.load does not execute Hydra's ``defaults`` composition. Merge
+    # the parent explicitly so this helper is also correct outside Hydra.
+    fallback = OmegaConf.merge(
+        OmegaConf.load(BASE_EVENT_CONFIG),
+        OmegaConf.load(DEFAULT_DSEC_CONFIG),
+    )
+    saved = checkpoint.get("cfg") if isinstance(checkpoint, dict) else None
+    cfg = OmegaConf.merge(fallback, OmegaConf.create(saved)) if saved is not None else fallback
+    OmegaConf.set_struct(cfg, False)
+    for branch_name in ("model", "data", "loss", "train", "vis"):
+        branch = getattr(cfg, branch_name, None)
+        if branch is not None:
+            OmegaConf.set_struct(branch, False)
+
+    required_model = {
+        "img_size": 518,
+        "patch_size": 14,
+        "embed_dim": 1024,
+        "event_hidden_dim": 16,
+        "head_frames_chunk_size": 1,
+    }
+    restored = []
+    for key, value in required_model.items():
+        if getattr(cfg.model, key, None) is None:
+            setattr(cfg.model, key, value)
+            restored.append(key)
+    if restored:
+        print(f"[config] restored missing model defaults: {restored}", flush=True)
+    return cfg
+
+
 def _state_dict(checkpoint):
     state = fe.unwrap_state_dict(checkpoint)
     return {key.removeprefix("module."): value for key, value in state.items()}
@@ -188,7 +232,7 @@ def main():
     args = parser.parse_args()
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    cfg = metric_utils.cfg_from_checkpoint(checkpoint, str(Path(__file__).parents[1] / "config" / "finetune_dsec_event.yaml"))
+    cfg = _cfg_from_dsec_checkpoint(checkpoint)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     model, approach = _build_model(checkpoint, cfg, args.approach, device)
     scenes = sorted(path.name for path in (Path(args.root) / "test").iterdir() if path.is_dir())
