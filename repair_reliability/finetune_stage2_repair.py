@@ -90,15 +90,15 @@ def _prepare_cfg(cfg):
 
     # Make reliability more selective.  The previous positive ratio near 0.9
     # diluted event supervision and made the residual branch timid.
-    cfg.model.reliability_gate_floor = float(getattr(cfg.model, "reliability_gate_floor", 0.05))
+    cfg.model.reliability_gate_floor = float(getattr(cfg.model, "reliability_gate_floor", 0.20))
     cfg.model.repair_reliability_threshold = float(
-        getattr(cfg.model, "repair_reliability_threshold", 0.58)
+        getattr(cfg.model, "repair_reliability_threshold", 0.45)
     )
     cfg.model.repair_reliability_temperature = float(
-        getattr(cfg.model, "repair_reliability_temperature", 0.12)
+        getattr(cfg.model, "repair_reliability_temperature", 0.18)
     )
     cfg.model.repair_reliability_top_fraction = float(
-        getattr(cfg.model, "repair_reliability_top_fraction", 0.35)
+        getattr(cfg.model, "repair_reliability_top_fraction", 0.80)
     )
     cfg.model.repair_event_support_threshold = float(
         getattr(cfg.model, "repair_event_support_threshold", 0.0)
@@ -107,11 +107,11 @@ def _prepare_cfg(cfg):
         getattr(cfg.model, "repair_event_support_dilate_kernel", 5)
     )
     cfg.model.repair_event_support_floor = float(
-        getattr(cfg.model, "repair_event_support_floor", 0.05)
+        getattr(cfg.model, "repair_event_support_floor", 0.25)
     )
-    cfg.model.repair_residual_gain = float(getattr(cfg.model, "repair_residual_gain", 1.6))
+    cfg.model.repair_residual_gain = float(getattr(cfg.model, "repair_residual_gain", 2.0))
     cfg.model.repair_output_abs_limit = float(
-        getattr(cfg.model, "repair_output_abs_limit", 0.04)
+        getattr(cfg.model, "repair_output_abs_limit", 0.06)
     )
 
     # The last run predicted only about 24% of the target delta.  Increase the
@@ -125,7 +125,7 @@ def _prepare_cfg(cfg):
     cfg.loss.stage2_target_reliability_floor = float(
         getattr(cfg.loss, "stage2_target_reliability_floor", 0.10)
     )
-    cfg.loss.stage2_target_abs_limit = float(getattr(cfg.loss, "stage2_target_abs_limit", 0.04))
+    cfg.loss.stage2_target_abs_limit = float(getattr(cfg.loss, "stage2_target_abs_limit", 0.06))
     cfg.epochs = max(int(getattr(cfg, "epochs", 20)), 20)
     cfg.eval_every_steps = int(getattr(cfg, "eval_every_steps", 0))
     cfg.vis.save_every_steps = int(getattr(cfg.vis, "save_every_steps", 3000))

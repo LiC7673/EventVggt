@@ -36,14 +36,14 @@ class RepairedFrozenOutputReliabilityGate(FrozenOutputReliabilityGate):
     def __init__(
         self,
         *args,
-        reliability_threshold: float = 0.58,
-        reliability_temperature: float = 0.12,
-        reliability_top_fraction: float = 0.35,
+        reliability_threshold: float = 0.45,
+        reliability_temperature: float = 0.18,
+        reliability_top_fraction: float = 0.80,
         event_support_threshold: float = 0.0,
         event_support_dilate_kernel: int = 5,
-        event_support_floor: float = 0.05,
-        residual_gain: float = 1.6,
-        output_abs_limit: float = 0.04,
+        event_support_floor: float = 0.25,
+        residual_gain: float = 2.0,
+        output_abs_limit: float = 0.06,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -138,14 +138,14 @@ class StreamVGGT(PairedTokenReliabilityStreamVGGT):
     def __init__(
         self,
         *args,
-        repair_reliability_threshold: float = 0.58,
-        repair_reliability_temperature: float = 0.12,
-        repair_reliability_top_fraction: float = 0.35,
+        repair_reliability_threshold: float = 0.45,
+        repair_reliability_temperature: float = 0.18,
+        repair_reliability_top_fraction: float = 0.80,
         repair_event_support_threshold: float = 0.0,
         repair_event_support_dilate_kernel: int = 5,
-        repair_event_support_floor: float = 0.05,
-        repair_residual_gain: float = 1.6,
-        repair_output_abs_limit: float = 0.04,
+        repair_event_support_floor: float = 0.25,
+        repair_residual_gain: float = 2.0,
+        repair_output_abs_limit: float = 0.06,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)

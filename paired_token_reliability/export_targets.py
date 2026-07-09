@@ -114,7 +114,14 @@ def main():
             dilate_kernel=args.dilate_kernel,
         )
         target_path = target_dir / f"{ordinal:06d}.npz"
-        np.savez_compressed(target_path, target=as_uint8(target[0]), weight=as_uint8(weight[0]))
+        np.savez_compressed(
+            target_path,
+            target=as_uint8(target[0]),
+            weight=as_uint8(weight[0]),
+            event_support=as_uint8(components["event_support"][0]),
+            geometry=as_uint8(components["geometry"][0]),
+            token_agreement=as_uint8(components["token_agreement"][0]),
+        )
         records.append(
             {
                 "dataset_index": dataset_index,
