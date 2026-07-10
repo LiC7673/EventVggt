@@ -147,6 +147,9 @@ class MultiLdrContributionDataset(Dataset):
             event_spatial_transform=event_spatial_transform,
             event_resize_method=event_resize_method,
             event_resize_bins=int(event_resize_bins),
+            # Enough to retain one complete multi-view window. The second
+            # exposure then reuses exactly the same resized event voxels.
+            event_voxel_cache_size=self.num_views,
             return_normal_gt=False,
             return_debug_event_fields=False,
         )

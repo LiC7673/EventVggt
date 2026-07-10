@@ -2,6 +2,7 @@ import os
 import os.path as osp
 import random
 import itertools
+import atexit
 
 import cv2
 import h5py
@@ -13,6 +14,36 @@ import torch.nn.functional as F
 from eventvggt.datasets.base.easy_dataset import EasyDataset
 from eventvggt.datasets.utils.transforms import ImgNorm, SeqColorJitter
 from eventvggt.utils.geometry import depthmap_to_absolute_camera_coordinates
+
+
+# Lazily populated after DataLoader workers start. Keying by PID avoids ever
+# sharing an h5py handle inherited across forked workers.
+_EVENT_H5_HANDLES = {}
+
+
+def _close_event_h5_handles():
+    for handle in list(_EVENT_H5_HANDLES.values()):
+        try:
+            handle.close()
+        except Exception:
+            pass
+    _EVENT_H5_HANDLES.clear()
+
+
+atexit.register(_close_event_h5_handles)
+
+
+def _persistent_event_h5(path):
+    key = (os.getpid(), osp.abspath(path))
+    handle = _EVENT_H5_HANDLES.get(key)
+    if handle is not None and bool(handle.id.valid):
+        return handle
+    try:
+        handle = h5py.File(path, "r", swmr=True)
+    except (OSError, ValueError):
+        handle = h5py.File(path, "r")
+    _EVENT_H5_HANDLES[key] = handle
+    return handle
 
 
 class BaseEventMultiViewDataset(EasyDataset):
@@ -968,13 +999,23 @@ class BaseEventMultiViewDataset(EasyDataset):
         vis_resolution=None,
         vis_prefix=None,
     ):
-        with h5py.File(path, "r") as h5_file:
-            if "events" not in h5_file:
-                raise ValueError(f"Unsupported event format: {path}")
-            events_ds = h5_file["events"]
-            events = events_ds[start_idx:end_idx]
-            attrs = {key: BaseEventMultiViewDataset._decode_h5_attr(value) for key, value in h5_file.attrs.items()}
-            attrs.update({key: BaseEventMultiViewDataset._decode_h5_attr(value) for key, value in events_ds.attrs.items()})
+        h5_file = _persistent_event_h5(path)
+        if "events" not in h5_file:
+            raise ValueError(f"Unsupported event format: {path}")
+        events_ds = h5_file["events"]
+        # frame_event_index already provides exact row offsets, so this is an
+        # HDF5 hyperslab read; no timestamp scan occurs here.
+        events = events_ds[start_idx:end_idx]
+        attrs = {
+            key: BaseEventMultiViewDataset._decode_h5_attr(value)
+            for key, value in h5_file.attrs.items()
+        }
+        attrs.update(
+            {
+                key: BaseEventMultiViewDataset._decode_h5_attr(value)
+                for key, value in events_ds.attrs.items()
+            }
+        )
 
         if len(events) == 0:
             BaseEventMultiViewDataset._visualize_event_slice_bins(

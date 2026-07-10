@@ -2,6 +2,7 @@ import json
 import json
 import os
 import os.path as osp
+from collections import OrderedDict
 
 import cv2
 import numpy as np
@@ -67,6 +68,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         event_vis_bins=10,
         event_resize_method="voxel_antialias",
         event_resize_bins=10,
+        event_voxel_cache_size=0,
         return_normal_gt=False,
         return_debug_event_fields=False,
         **kwargs,
@@ -85,6 +87,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.event_vis_bins = event_vis_bins
         self.event_resize_method = event_resize_method
         self.event_resize_bins = event_resize_bins
+        self.event_voxel_cache_size = max(int(event_voxel_cache_size), 0)
+        self._event_voxel_cache = OrderedDict()
         self.return_normal_gt = return_normal_gt
         self.return_debug_event_fields = return_debug_event_fields
         self.start_img_ids = []
@@ -112,6 +116,23 @@ class MyEventDataset(BaseEventMultiViewDataset):
         poses = self.blender_to_opencv(poses).astype(np.float32)
         intrinsics = np.repeat(intrinsics[None], len(poses), axis=0).astype(np.float32)
         return intrinsics, poses
+
+    def _cached_resized_event(self, key):
+        if self.event_voxel_cache_size <= 0:
+            return None
+        value = self._event_voxel_cache.pop(key, None)
+        if value is None:
+            return None
+        self._event_voxel_cache[key] = value
+        return dict(value)
+
+    def _store_resized_event(self, key, value):
+        if self.event_voxel_cache_size <= 0:
+            return
+        self._event_voxel_cache[key] = dict(value)
+        self._event_voxel_cache.move_to_end(key)
+        while len(self._event_voxel_cache) > self.event_voxel_cache_size:
+            self._event_voxel_cache.popitem(last=False)
 
     def _list_ldr_event_dirs(self, scene_dir):
         ldr_root = osp.join(scene_dir, "LDR")
@@ -875,26 +896,39 @@ class MyEventDataset(BaseEventMultiViewDataset):
             resized = self._load_view_data(scene_meta, frame_idx, resolution, ldr_event_id=ldr_event_id)
             width, height = resized["img"].size
             event_start, event_end = scene_meta["frame_event_index"][frame_idx]
-            event_data = self.load_event_slice(
-                scene_meta["event_h5"],
-                event_start,
-                event_end,
-                event_columns=scene_meta.get("event_columns"),
-                time_origin=scene_meta.get("event_time_info", {}).get("origin", 0.0),
-            )
             event_src_resolution = scene_meta.get("event_resolution", resized["src_resolution"])
             if np.asarray(event_src_resolution).reshape(-1).size < 2 or np.any(np.asarray(event_src_resolution) <= 0):
                 event_src_resolution = resized["src_resolution"]
             event_spatial_transform = self._resolve_event_spatial_transform(scene_meta)
             event_y_flip = event_spatial_transform == "vflip"
-            event_data = self._resize_event_data(
-                event_data,
-                src_resolution=event_src_resolution,
-                dst_resolution=resized["dst_resolution"],
-                spatial_transform=event_spatial_transform,
-                resize_method=self.event_resize_method,
-                resize_bins=self.event_resize_bins,
+            cache_key = (
+                scene_meta["event_h5"],
+                int(event_start),
+                int(event_end),
+                tuple(np.asarray(event_src_resolution).reshape(-1)[:2].tolist()),
+                tuple(np.asarray(resized["dst_resolution"]).reshape(-1)[:2].tolist()),
+                str(event_spatial_transform),
+                str(self.event_resize_method),
+                int(self.event_resize_bins),
             )
+            event_data = self._cached_resized_event(cache_key)
+            if event_data is None:
+                event_data = self.load_event_slice(
+                    scene_meta["event_h5"],
+                    event_start,
+                    event_end,
+                    event_columns=scene_meta.get("event_columns"),
+                    time_origin=scene_meta.get("event_time_info", {}).get("origin", 0.0),
+                )
+                event_data = self._resize_event_data(
+                    event_data,
+                    src_resolution=event_src_resolution,
+                    dst_resolution=resized["dst_resolution"],
+                    spatial_transform=event_spatial_transform,
+                    resize_method=self.event_resize_method,
+                    resize_bins=self.event_resize_bins,
+                )
+                self._store_resized_event(cache_key, event_data)
 
             self._visualize_processed_event_data(
                 scene_name=scene_name,
@@ -1000,6 +1034,7 @@ def get_combined_dataset(
     event_vis_bins=10,
     event_resize_method="voxel_antialias",
     event_resize_bins=10,
+    event_voxel_cache_size=0,
     return_normal_gt=False,
     return_debug_event_fields=False,
 ):
@@ -1023,6 +1058,7 @@ def get_combined_dataset(
         event_vis_bins=event_vis_bins,
         event_resize_method=event_resize_method,
         event_resize_bins=event_resize_bins,
+        event_voxel_cache_size=event_voxel_cache_size,
         return_normal_gt=return_normal_gt,
         return_debug_event_fields=return_debug_event_fields,
         # normalize=True

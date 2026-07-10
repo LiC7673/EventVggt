@@ -193,14 +193,21 @@ def make_dataset(cfg, split: str, pairs):
 
 
 def make_loader(dataset, *, batch_size: int, num_workers: int, train: bool):
+    worker_count = int(num_workers)
+    worker_options = (
+        {"persistent_workers": True, "prefetch_factor": 2}
+        if worker_count > 0
+        else {}
+    )
     return DataLoader(
         dataset,
         batch_size=int(batch_size),
         shuffle=bool(train),
-        num_workers=int(num_workers),
+        num_workers=worker_count,
         pin_memory=True,
         drop_last=False,
         collate_fn=contribution_pair_collate,
+        **worker_options,
     )
 
 

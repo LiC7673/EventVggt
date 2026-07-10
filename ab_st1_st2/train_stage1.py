@@ -38,14 +38,21 @@ def main(argv=None) -> None:
             if isinstance(dataset, SingleExposureGeometryDataset)
             else contribution_pair_collate
         )
+        worker_count = int(num_workers)
+        worker_options = (
+            {"persistent_workers": True, "prefetch_factor": 2}
+            if worker_count > 0
+            else {}
+        )
         return DataLoader(
             dataset,
             batch_size=int(batch_size),
             shuffle=bool(train),
-            num_workers=int(num_workers),
+            num_workers=worker_count,
             pin_memory=True,
             drop_last=False,
             collate_fn=collate,
+            **worker_options,
         )
 
     upstream.make_dataset = make_dataset
