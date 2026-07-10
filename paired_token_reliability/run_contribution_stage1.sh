@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-GPU="${GPU:-2,3,4,5,6,7}"
+GPU="${GPU:-6}"
 CONFIG="${CONFIG:-config/finetune_event.yaml}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
 OUTPUT="${OUTPUT:-abl_event_exp/event_contribution_stage1}"
@@ -31,7 +31,7 @@ python -m paired_token_reliability.test_contribution_stage1 \
 if [[ "${RUN_NO_BRIDGE}" == "1" ]]; then
   mkdir -p "${NO_BRIDGE_OUTPUT}/logs"
   echo "[ablation] train ContributionNet without the bridge mask"
-  CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.train_contribution_stage1 \
+  CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.train_contribution_stage1_with_vis \
     --config "${CONFIG}" \
     --pretrained "${PRETRAINED}" \
     --output "${NO_BRIDGE_OUTPUT}" \
