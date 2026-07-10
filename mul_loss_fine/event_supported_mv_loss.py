@@ -190,7 +190,12 @@ def _normalize_detail_support(
     # detail: [B, S, 1, H, W], valid_mask: [B, S, H, W]
     valid = valid_mask.unsqueeze(2).to(dtype=detail.dtype)
     masked = detail.detach().clamp_min(0.0) * valid
-    scale = masked.flatten(2).amax(dim=-1).view(detail.shape[0], detail.shape[1], 1, 1, 1).clamp_min(1e-6)
+    flat = masked.flatten(2)
+    robust = torch.quantile(flat.float(), 0.95, dim=-1).to(dtype=detail.dtype)
+    maximum = flat.amax(dim=-1)
+    scale = torch.where(robust > 1e-6, robust, maximum).view(
+        detail.shape[0], detail.shape[1], 1, 1, 1
+    ).clamp_min(1e-6)
     support = (masked / scale - float(threshold)).clamp_min(0.0) / max(1.0 - float(threshold), 1e-6)
     if power != 1.0:
         support = support.pow(float(power))
@@ -207,7 +212,12 @@ def _normalize_detail_support_flat(
     # detail: [N, 1, H, W], valid_mask: [N, H, W]
     valid = valid_mask.unsqueeze(1).to(dtype=detail.dtype)
     masked = detail.detach().clamp_min(0.0) * valid
-    scale = masked.flatten(2).amax(dim=-1).view(detail.shape[0], 1, 1, 1).clamp_min(1e-6)
+    flat = masked.flatten(2)
+    robust = torch.quantile(flat.float(), 0.95, dim=-1).to(dtype=detail.dtype)
+    maximum = flat.amax(dim=-1)
+    scale = torch.where(robust > 1e-6, robust, maximum).view(
+        detail.shape[0], 1, 1, 1
+    ).clamp_min(1e-6)
     support = (masked / scale - float(threshold)).clamp_min(0.0) / max(1.0 - float(threshold), 1e-6)
     if power != 1.0:
         support = support.pow(float(power))
@@ -643,19 +653,26 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         valid_mask: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         batch, seq_len, height, width = valid_mask.shape
+        # Normals/normal gradients use neighboring depth samples. Exclude a
+        # one-pixel band around invalid depth so silhouette/background jumps
+        # cannot dominate the detail objective.
+        valid_flat = valid_mask.float().reshape(batch * seq_len, 1, height, width)
+        interior_valid = (
+            F.avg_pool2d(valid_flat, kernel_size=3, stride=1, padding=1) >= (1.0 - 1e-6)
+        ).reshape(batch, seq_len, height, width)
         pred_flat = pred_normals.flatten(0, 1)
         gt_flat = gt_normals.flatten(0, 1)
         gt_grad = _normal_gradient_magnitude(gt_flat).view(batch, seq_len, 1, height, width).detach()
 
         detail_weight = _normalize_detail_support(
             gt_grad,
-            valid_mask,
+            interior_valid,
             threshold=self.detail_gt_threshold,
             power=self.detail_gt_weight_power,
         )
         if self.detail_gt_event_boost > 0.0:
             detail_weight = detail_weight * (1.0 + self.detail_gt_event_boost * event_support.unsqueeze(2).detach())
-        detail_weight = detail_weight * valid_mask.unsqueeze(2).to(dtype=detail_weight.dtype)
+        detail_weight = detail_weight * interior_valid.unsqueeze(2).to(dtype=detail_weight.dtype)
 
         normal_loss = pred_normals.new_tensor(0.0)
         hf_loss = pred_normals.new_tensor(0.0)
@@ -697,7 +714,7 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
         if hf_needed:
             flat_count = batch * seq_len
             flat_detail_weight = detail_weight.reshape(flat_count, 1, height, width)
-            flat_valid = valid_mask.reshape(flat_count, height, width)
+            flat_valid = interior_valid.reshape(flat_count, height, width)
             flat_gt_grad = gt_grad.reshape(flat_count, 1, height, width)
             flat_event_support = event_support.reshape(flat_count, height, width)
 
@@ -797,6 +814,15 @@ class MultiViewEventSupervisedLoss(fe.EventSupervisedLoss):
             "detail_gt_normal_loss": float(normal_loss.detach()),
             "detail_gt_hf_loss": float(hf_loss.detach()),
             "detail_gt_grad_loss": float(grad_loss.detach()),
+            "detail_gt_normal_contribution": float(
+                (self.detail_gt_normal_weight * normal_loss).detach()
+            ),
+            "detail_gt_hf_contribution": float(
+                (self.detail_gt_hf_weight * hf_loss).detach()
+            ),
+            "detail_gt_grad_contribution": float(
+                (self.detail_gt_grad_weight * grad_loss).detach()
+            ),
             "detail_gt_weight_mean": float(detail_weight.mean().detach()),
             "detail_gt_salient_loss": float(salient_loss.detach()),
             "detail_gt_salient_hf_loss": float(salient_hf_loss.detach()),

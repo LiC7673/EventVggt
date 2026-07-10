@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from eventvggt.models.streamvggt_paired_token_reliability_detail import (
@@ -146,6 +147,8 @@ class StreamVGGT(PairedTokenReliabilityStreamVGGT):
         repair_event_support_floor: float = 0.05,
         repair_residual_gain: float = 1.6,
         repair_output_abs_limit: float = 0.06,
+        repair_pose_translation_scale: float = 0.01,
+        repair_pose_quaternion_scale: float = 0.01,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -169,6 +172,57 @@ class StreamVGGT(PairedTokenReliabilityStreamVGGT):
             residual_gain=repair_residual_gain,
             output_abs_limit=repair_output_abs_limit,
         )
+        self.repair_pose_translation_scale = float(repair_pose_translation_scale)
+        self.repair_pose_quaternion_scale = float(repair_pose_quaternion_scale)
+        self.event_pose_head = nn.Sequential(nn.Linear(8, 32), nn.GELU(), nn.Linear(32, 7))
+        nn.init.zeros_(self.event_pose_head[-1].weight)
+        nn.init.zeros_(self.event_pose_head[-1].bias)
+
+    @staticmethod
+    def _pose_event_features(event_voxel: torch.Tensor, reliability: torch.Tensor) -> torch.Tensor:
+        batch, seq_len, channels, height, width = event_voxel.shape
+        bins = channels // 2
+        pos = torch.log1p(event_voxel[:, :, :bins].float().clamp_min(0.0))
+        neg = torch.log1p(event_voxel[:, :, bins : 2 * bins].float().clamp_min(0.0))
+        time = torch.linspace(-1.0, 1.0, bins, device=event_voxel.device).view(1, 1, bins, 1, 1)
+        spatial = (pos + neg).sum(dim=2)
+        denom = spatial.sum(dim=(-2, -1)).clamp_min(1.0e-6)
+        yy = torch.linspace(-1.0, 1.0, height, device=event_voxel.device).view(1, 1, height, 1)
+        xx = torch.linspace(-1.0, 1.0, width, device=event_voxel.device).view(1, 1, 1, width)
+        return torch.stack([
+            pos.mean(dim=(2, 3, 4)), neg.mean(dim=(2, 3, 4)),
+            (pos * time).mean(dim=(2, 3, 4)), (neg * time).mean(dim=(2, 3, 4)),
+            (spatial * xx).sum(dim=(-2, -1)) / denom,
+            (spatial * yy).sum(dim=(-2, -1)) / denom,
+            reliability.float().mean(dim=(-2, -1)),
+            (spatial > 0).float().mean(dim=(-2, -1)),
+        ], dim=-1).reshape(batch, seq_len, 8)
+
+    def forward(self, views, query_points=None, **kwargs):
+        output = super().forward(views, query_points=query_points, **kwargs)
+        if not views or not all("event_voxel" in view for view in views):
+            return output
+        voxel = torch.stack([view["event_voxel"] for view in views], dim=1)
+        reliability = getattr(self.event_detail_refiner, "last_reliability", None)
+        if voxel.numel() == 0 or reliability is None:
+            return output
+        features = self._pose_event_features(voxel, reliability)
+        raw = torch.tanh(self.event_pose_head(features.to(self.event_pose_head[0].weight.dtype)))
+        reliability_strength = reliability.float().mean(dim=(-2, -1))
+        event_strength = (voxel.detach().abs().sum(dim=2) > 0).float().mean(dim=(-2, -1))
+        residual = raw.float() * (reliability_strength * event_strength).unsqueeze(-1)
+        anchor_mask = torch.ones_like(residual)
+        anchor_mask[:, 0] = 0.0
+        residual = residual * anchor_mask
+        for frame_idx, result in enumerate(output.ress):
+            pose = result["camera_pose"].float().clone()
+            result["camera_pose_coarse"] = result["camera_pose"]
+            pose[:, :3] += self.repair_pose_translation_scale * residual[:, frame_idx, :3]
+            quat = pose[:, 3:7] + self.repair_pose_quaternion_scale * residual[:, frame_idx, 3:7]
+            pose[:, 3:7] = F.normalize(quat, dim=-1, eps=1.0e-6)
+            result["camera_pose"] = pose.to(result["camera_pose"].dtype)
+            result["event_pose_residual"] = residual[:, frame_idx]
+        return output
 
 
 __all__ = ["StreamVGGT", "RepairedFrozenOutputReliabilityGate"]

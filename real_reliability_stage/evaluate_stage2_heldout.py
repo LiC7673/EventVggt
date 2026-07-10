@@ -77,6 +77,8 @@ def build_model(checkpoint: Path, reliability_checkpoint: str | None, device: to
         "repair_event_support_floor": 0.05,
         "repair_residual_gain": 1.6,
         "repair_output_abs_limit": 0.06,
+        "repair_pose_translation_scale": 0.01,
+        "repair_pose_quaternion_scale": 0.01,
     }
     for name, default in repair_defaults.items():
         if name in constructor_parameters:
@@ -220,11 +222,17 @@ def evaluate(model, loader, cfg, args, device):
         full_depth = stack_output(full_output, "depth")
         coarse_depth = stack_output(full_output, "depth_coarse")
         cache["full_event"] = (full_output, full_depth)
-        cache["coarse_rgb"] = (full_output, coarse_depth)
+        if coarse_depth is not None:
+            cache["coarse_rgb"] = (full_output, coarse_depth)
         for condition in ("zero_event", "reverse_time", "swap_polarity"):
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                 output = model(condition_views(views, condition))
             cache[condition] = (output, stack_output(output, "depth"))
+        # Direct-fusion models have no residual/coarse output. Their exact
+        # zero-event forward is the RGB-only baseline.
+        if coarse_depth is None:
+            cache["coarse_rgb"] = cache["zero_event"]
+            coarse_depth = cache["zero_event"][1]
 
         for condition in CONDITIONS:
             output, depth = cache[condition]

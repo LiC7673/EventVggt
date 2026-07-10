@@ -48,12 +48,14 @@ class StreamVGGT(TemporalDetailVGGT):
         )
         self.token_adapter_layers = tuple(int(index) for index in token_adapter_layers)
         self._last_exposure_tokens = None
+        self._last_raw_exposure_tokens = None
         self._token_hook = self.aggregator.register_forward_hook(self._adapt_aggregator_output)
 
     def _adapt_aggregator_output(self, _module, _inputs, output):
         tokens_list, patch_start_idx, *tail = output
         adapted = list(tokens_list)
         valid_layers = []
+        raw_by_layer = {}
         for layer_index in self.token_adapter_layers:
             index = layer_index if layer_index >= 0 else len(adapted) + layer_index
             if index < 0 or index >= len(adapted):
@@ -61,6 +63,7 @@ class StreamVGGT(TemporalDetailVGGT):
             tokens = adapted[index]
             special = tokens[:, :, :patch_start_idx]
             patch = tokens[:, :, patch_start_idx:]
+            raw_by_layer[index] = patch
             patch = self.exposure_token_adapter(patch)
             adapted[index] = torch.cat([special, patch], dim=2)
             valid_layers.append(index)
@@ -70,6 +73,9 @@ class StreamVGGT(TemporalDetailVGGT):
                 f"{self.token_adapter_layers}"
             )
         self._last_exposure_tokens = adapted[valid_layers[-1]][:, :, patch_start_idx:]
+        # Fall back to the last valid layer when negative/out-of-range layer
+        # specifications make the direct capture above unavailable.
+        self._last_raw_exposure_tokens = raw_by_layer[valid_layers[-1]]
         return (adapted, patch_start_idx, *tail)
 
     def forward(self, views, query_points=None, **kwargs):

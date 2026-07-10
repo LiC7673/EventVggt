@@ -343,7 +343,10 @@ def _update_condition(
     accumulator.depth.update(depth_pred, depth_gt, valid, median_align=False)
     accumulator.depth_aligned.update(depth_pred, depth_gt, valid, median_align=True)
     accumulator.normal.update(depth_pred, depth_gt, intrinsics, valid)
-    pose = stack_output(output, "camera_pose")
+    pose_key = "camera_pose_coarse" if condition == "coarse_rgb" else "camera_pose"
+    pose = stack_output(output, pose_key)
+    if pose is None and pose_key != "camera_pose":
+        pose = stack_output(output, "camera_pose")
     if pose is not None:
         height, width = depth_pred.shape[-2:]
         pred_c2w, _ = fe.pose_encoding_to_c2w(pose.float(), image_size_hw=(height, width))

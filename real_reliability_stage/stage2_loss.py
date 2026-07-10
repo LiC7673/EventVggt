@@ -65,6 +65,8 @@ class FrozenReliabilityWeightedEventLossMixin:
         flat_normal_weight: float,
         flat_residual_gradient_weight: float,
         no_event_residual_weight: float,
+        contribution_depth_guard_weight: float,
+        contribution_normal_guard_weight: float,
     ) -> None:
         self.stage2_residual_target_weight = float(residual_target_weight)
         self.stage2_residual_gradient_weight = float(residual_gradient_weight)
@@ -76,6 +78,8 @@ class FrozenReliabilityWeightedEventLossMixin:
         self.stage2_flat_normal_weight = float(flat_normal_weight)
         self.stage2_flat_residual_gradient_weight = float(flat_residual_gradient_weight)
         self.stage2_no_event_residual_weight = float(no_event_residual_weight)
+        self.stage2_contribution_depth_guard_weight = float(contribution_depth_guard_weight)
+        self.stage2_contribution_normal_guard_weight = float(contribution_normal_guard_weight)
 
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]):
         reliability = _stack_output_field(model_output, "event_reliability")
@@ -118,6 +122,8 @@ class FrozenReliabilityWeightedEventLossMixin:
         flat_normal_loss = reliability.new_tensor(0.0)
         flat_residual_gradient_loss = reliability.new_tensor(0.0)
         no_event_residual_loss = reliability.new_tensor(0.0)
+        contribution_depth_guard_loss = reliability.new_tensor(0.0)
+        contribution_normal_guard_loss = reliability.new_tensor(0.0)
         if predicted_delta is not None and (
             self.stage2_residual_target_weight > 0.0
             or self.stage2_residual_gradient_weight > 0.0
@@ -194,10 +200,10 @@ class FrozenReliabilityWeightedEventLossMixin:
                 valid.to(dtype=predicted_delta.dtype)
                 * (1.0 - geometry).clamp(0.0, 1.0)
             )
+            final_normals = fe.depth_to_normals(
+                final_depth.clamp_min(self.depth_min), intrinsics
+            )
             if self.stage2_flat_normal_weight > 0.0:
-                final_normals = fe.depth_to_normals(
-                    final_depth.clamp_min(self.depth_min), intrinsics
-                )
                 final_normals = F.normalize(final_normals.float(), dim=-1, eps=1.0e-6)
                 target_normals = F.normalize(gt_normals.detach().float(), dim=-1, eps=1.0e-6)
                 normal_error = 1.0 - (final_normals * target_normals).sum(dim=-1).clamp(-1.0, 1.0)
@@ -219,11 +225,44 @@ class FrozenReliabilityWeightedEventLossMixin:
                 ).clamp(0.0, 1.0)
                 no_event_residual_loss = _weighted_mean(predicted_delta.abs(), no_event_weight)
                 total = total + self.stage2_no_event_residual_weight * no_event_residual_loss
+
+            # A reliability map should authorize only corrections with a net
+            # geometric benefit. Penalize event writes that make either depth
+            # or surface orientation worse than the frozen coarse prediction.
+            contribution_weight = (
+                valid.to(dtype=predicted_delta.dtype) * rel_weight * event_support
+            )
+            if self.stage2_contribution_depth_guard_weight > 0.0:
+                final_error = (
+                    torch.log(final_depth.clamp_min(self.depth_min))
+                    - torch.log(depth_gt.clamp_min(self.depth_min))
+                ).abs()
+                coarse_error = (
+                    torch.log(coarse_detached)
+                    - torch.log(depth_gt.clamp_min(self.depth_min))
+                ).abs()
+                contribution_depth_guard_loss = _weighted_mean(
+                    F.relu(final_error - coarse_error.detach()), contribution_weight
+                )
+                total = total + self.stage2_contribution_depth_guard_weight * contribution_depth_guard_loss
+            if self.stage2_contribution_normal_guard_weight > 0.0:
+                coarse_normals = fe.depth_to_normals(coarse_detached, intrinsics)
+                final_n = F.normalize(final_normals.float(), dim=-1, eps=1.0e-6)
+                coarse_n = F.normalize(coarse_normals.detach().float(), dim=-1, eps=1.0e-6)
+                target_n = F.normalize(gt_normals.detach().float(), dim=-1, eps=1.0e-6)
+                final_normal_error = 1.0 - (final_n * target_n).sum(dim=-1).clamp(-1.0, 1.0)
+                coarse_normal_error = 1.0 - (coarse_n * target_n).sum(dim=-1).clamp(-1.0, 1.0)
+                contribution_normal_guard_loss = _weighted_mean(
+                    F.relu(final_normal_error - coarse_normal_error), contribution_weight.float()
+                )
+                total = total + self.stage2_contribution_normal_guard_weight * contribution_normal_guard_loss
             artifact_supervision = (
                 self.stage2_flat_normal_weight * flat_normal_loss
                 + self.stage2_flat_residual_gradient_weight
                 * flat_residual_gradient_loss
                 + self.stage2_no_event_residual_weight * no_event_residual_loss
+                + self.stage2_contribution_depth_guard_weight * contribution_depth_guard_loss
+                + self.stage2_contribution_normal_guard_weight * contribution_normal_guard_loss
             )
 
             residual_target_loss = _weighted_mean(
@@ -272,6 +311,35 @@ class FrozenReliabilityWeightedEventLossMixin:
                     flat_residual_gradient_loss.detach()
                 ),
                 "stage2_no_event_residual_loss": float(no_event_residual_loss.detach()),
+                "stage2_contribution_depth_guard_loss": float(contribution_depth_guard_loss.detach()),
+                "stage2_contribution_normal_guard_loss": float(contribution_normal_guard_loss.detach()),
+                "stage2_residual_target_contribution": float(
+                    (self.stage2_residual_target_weight * residual_target_loss).detach()
+                ),
+                "stage2_residual_gradient_contribution": float(
+                    (self.stage2_residual_gradient_weight * residual_gradient_loss).detach()
+                ),
+                "stage2_flat_normal_contribution": float(
+                    (self.stage2_flat_normal_weight * flat_normal_loss).detach()
+                ),
+                "stage2_flat_residual_gradient_contribution": float(
+                    (self.stage2_flat_residual_gradient_weight * flat_residual_gradient_loss).detach()
+                ),
+                "stage2_no_event_residual_contribution": float(
+                    (self.stage2_no_event_residual_weight * no_event_residual_loss).detach()
+                ),
+                "stage2_contribution_depth_guard_contribution": float(
+                    (self.stage2_contribution_depth_guard_weight * contribution_depth_guard_loss).detach()
+                ),
+                "stage2_contribution_normal_guard_contribution": float(
+                    (self.stage2_contribution_normal_guard_weight * contribution_normal_guard_loss).detach()
+                ),
+                "pose_loss_contribution": float(
+                    float(getattr(self, "pose_weight", 0.0)) * float(details.get("pose_loss", 0.0))
+                ),
+                "normal_loss_contribution": float(
+                    float(getattr(self, "normal_weight", 0.0)) * float(details.get("normal_loss", 0.0))
+                ),
             }
         )
         aux["event_reliability"] = reliability
@@ -319,6 +387,12 @@ def make_stage2_reliability_weighted_loss(cfg):
                 ),
                 no_event_residual_weight=float(
                     getattr(cfg.loss, "stage2_no_event_residual_weight", 0.20)
+                ),
+                contribution_depth_guard_weight=float(
+                    getattr(cfg.loss, "stage2_contribution_depth_guard_weight", 1.0)
+                ),
+                contribution_normal_guard_weight=float(
+                    getattr(cfg.loss, "stage2_contribution_normal_guard_weight", 1.0)
                 ),
             )
 

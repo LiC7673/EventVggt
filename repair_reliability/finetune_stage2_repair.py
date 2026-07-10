@@ -49,6 +49,8 @@ def _build_model(cfg):
         repair_event_support_floor=float(cfg.model.repair_event_support_floor),
         repair_residual_gain=float(cfg.model.repair_residual_gain),
         repair_output_abs_limit=float(cfg.model.repair_output_abs_limit),
+        repair_pose_translation_scale=float(cfg.model.repair_pose_translation_scale),
+        repair_pose_quaternion_scale=float(cfg.model.repair_pose_quaternion_scale),
     )
 
 
@@ -56,9 +58,14 @@ def _configure_trainable(model, _cfg):
     model.requires_grad_(False)
     model.event_detail_refiner.base_refiner.requires_grad_(True)
     model.event_detail_refiner.base_refiner.reliability_head.requires_grad_(False)
-    model.depth_head.requires_grad_(True)
-    model.point_head.requires_grad_(True)
+    # Keep the RGB coarse geometry fixed. Otherwise D_coarse changes at every
+    # step and the residual target log(D_gt)-log(D_coarse) becomes a moving
+    # target; it also makes reliability ablations incomparable.
+    if bool(getattr(_cfg.model, "repair_train_coarse_heads", False)):
+        model.depth_head.requires_grad_(True)
+        model.point_head.requires_grad_(True)
     model.event_detail_refiner.reliability_net.requires_grad_(False).eval()
+    model.event_pose_head.requires_grad_(True)
 
 
 def _snapshot(outdir):
@@ -124,6 +131,15 @@ def _prepare_cfg(cfg):
     cfg.model.repair_output_abs_limit = float(
         getattr(cfg.model, "repair_output_abs_limit", 0.06)
     )
+    cfg.model.repair_pose_translation_scale = float(
+        getattr(cfg.model, "repair_pose_translation_scale", 0.01)
+    )
+    cfg.model.repair_pose_quaternion_scale = float(
+        getattr(cfg.model, "repair_pose_quaternion_scale", 0.01)
+    )
+    cfg.model.repair_train_coarse_heads = bool(
+        getattr(cfg.model, "repair_train_coarse_heads", False)
+    )
 
     # The repair gate already localizes the correction.  Applying a high-pass
     # and patch-wise zero-mean constraint before that gate removes the coherent
@@ -169,6 +185,15 @@ def _prepare_cfg(cfg):
     cfg.loss.stage2_no_event_residual_weight = float(
         getattr(cfg.loss, "stage2_no_event_residual_weight", 0.20)
     )
+    cfg.loss.stage2_contribution_depth_guard_weight = float(
+        getattr(cfg.loss, "stage2_contribution_depth_guard_weight", 1.0)
+    )
+    cfg.loss.stage2_contribution_normal_guard_weight = float(
+        getattr(cfg.loss, "stage2_contribution_normal_guard_weight", 1.0)
+    )
+    # The inherited Stage-2 preset disables pose supervision because the old
+    # architecture had no event-to-pose path. The repair model now has one.
+    cfg.loss.pose_weight = float(getattr(cfg.loss, "repair_pose_weight", 1.0))
     cfg.epochs = max(int(getattr(cfg, "epochs", 20)), 20)
     cfg.eval_every_steps = int(getattr(cfg, "eval_every_steps", 0))
     cfg.vis.save_every_steps = int(getattr(cfg.vis, "save_every_steps", 3000))
@@ -184,9 +209,9 @@ def run(cfg):
         "mv_presence_weight": 0.0,
         "mv_hf_weight": 0.0,
         "mv_orient_weight": 0.0,
-        "detail_gt_normal_weight": 0.25,
-        "detail_gt_hf_weight": 1.0,
-        "detail_gt_grad_weight": 1.0,
+        "detail_gt_normal_weight": float(getattr(cfg.loss, "repair_detail_gt_normal_weight", 0.0)),
+        "detail_gt_hf_weight": float(getattr(cfg.loss, "repair_detail_gt_hf_weight", 0.0)),
+        "detail_gt_grad_weight": float(getattr(cfg.loss, "repair_detail_gt_grad_weight", 0.0)),
         "detail_gt_event_boost": 1.5,
         "detail_gt_threshold": 0.02,
         "detail_gt_weight_power": 1.0,

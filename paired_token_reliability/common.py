@@ -83,6 +83,9 @@ def build_reliability_target(
     token_b: torch.Tensor,
     *,
     token_cosine_floor: float = 0.80,
+    token_agreement_mode: str = "fixed_floor",
+    token_quantile_low: float = 0.05,
+    token_quantile_high: float = 0.95,
     dilate_kernel: int = 3,
 ) -> tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     """Build R_gt = event support * geometry detail * exposure-token agreement."""
@@ -108,7 +111,19 @@ def build_reliability_target(
         ).reshape(batch, seq_len, height, width)
 
     cosine = F.cosine_similarity(token_a.float(), token_b.float(), dim=-1)
-    agreement = ((cosine - token_cosine_floor) / max(1.0 - token_cosine_floor, 1.0e-4)).clamp(0.0, 1.0)
+    if token_agreement_mode == "robust_quantile":
+        # Paired-token teachers deliberately make cosine values very high.
+        # Normalize their *relative spatial confidence* instead of mapping all
+        # values above a low fixed floor to almost one.
+        flat = cosine.flatten(2)
+        lo = torch.quantile(flat, token_quantile_low, dim=-1, keepdim=True)
+        hi = torch.quantile(flat, token_quantile_high, dim=-1, keepdim=True)
+        scale = (hi - lo).clamp_min(1.0e-4)
+        agreement = ((flat - lo) / scale).clamp(0.0, 1.0).view_as(cosine)
+    elif token_agreement_mode == "fixed_floor":
+        agreement = ((cosine - token_cosine_floor) / max(1.0 - token_cosine_floor, 1.0e-4)).clamp(0.0, 1.0)
+    else:
+        raise ValueError(f"Unknown token_agreement_mode={token_agreement_mode!r}")
     grid_h, grid_w = infer_patch_grid(agreement.shape[-1], height, width)
     agreement = F.interpolate(
         agreement.reshape(batch * seq_len, 1, grid_h, grid_w),
