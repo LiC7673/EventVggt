@@ -1,0 +1,463 @@
+% Required packages in the main paper:
+% \usepackage{amsmath,amssymb,bm}
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Overview}
+\label{sec:method_overview}
+
+We consider multi-view 3D reconstruction from a sequence of LDR images and
+camera-aligned event streams under severe overexposure. Let
+$\bm{I}_{i}^{e}$ denote the RGB observation of view $i$ at exposure $e$,
+$\bm{V}_{i}$ its event voxel, and $\bm{K}_{i}$ the camera intrinsics. Our goal
+is to estimate depth $D_i$, point map $\bm{P}_i$, and camera pose $\bm{T}_i$.
+At inference time, only one LDR exposure and its corresponding event stream
+are required.
+
+Overexposure removes texture gradients, boundaries, and local shading cues
+from RGB images. Events provide complementary temporal contrast, but their
+responses are ambiguous: highlights, reflections, unrelated illumination
+changes, and sensor noise may trigger events without corresponding to scene
+geometry. Event measurements are also spatially sparse, making aggressive
+input filtering likely to remove weak but useful boundary evidence.
+
+Our method addresses these issues using three components. First,
+\emph{paired-exposure token alignment} learns image features that are stable
+across different LDR levels of the same geometry. Second,
+\emph{geometry-detail supervision} explicitly allocates optimization gradients
+to boundaries and local surface-normal variations. Third,
+\emph{exposure-consistent event reliability} distills event support, geometric
+detail, and token agreement into a dense reliability map. The complete event
+voxel is preserved during encoding; reliability controls only the geometric
+residual written to the RGB prediction.
+
+\subsection{Event Representation and Coarse Geometry}
+\label{sec:event_and_coarse}
+
+For each view interval, events are divided into $B$ temporal bins and positive
+and negative polarities are accumulated separately:
+\begin{equation}
+    \bm{V}_{i}\in\mathbb{R}^{2B\times H\times W},\qquad
+    \bm{V}_{i}=
+    [V_{i,1}^{+},\ldots,V_{i,B}^{+},V_{i,1}^{-},\ldots,V_{i,B}^{-}].
+    \label{eq:event_voxel}
+\end{equation}
+Event counts are compressed before encoding:
+\begin{equation}
+    \widehat{V}_{i,c}(\bm{u})=
+    \frac{\log\!\left(1+\operatorname{clip}
+    (V_{i,c}(\bm{u}),0,c_{\max})\right)}
+    {\log(1+c_{\max})},
+    \label{eq:event_normalization}
+\end{equation}
+where $\bm{u}$ denotes a pixel and $c$ indexes event channels.
+
+An RGB geometry backbone first predicts globally stable coarse geometry:
+\begin{equation}
+    \{D_i^{c},\bm{P}_i^{c},\bm{T}_i\}_{i=1}^{N}
+    =\mathcal{G}_{\mathrm{rgb}}
+    (\{\bm{I}_{i}^{e_i}\}_{i=1}^{N}).
+    \label{eq:coarse_geometry}
+\end{equation}
+The event branch is subsequently used for spatially localized geometry
+refinement rather than global pose or scale estimation.
+
+\subsection{Paired-Exposure Token Alignment}
+\label{sec:paired_token_alignment}
+
+During training, we sample two LDR renderings $\bm{I}_{i}^{a}$ and
+$\bm{I}_{i}^{b}$ of the same view, pose, geometry, and event interval. The
+appearance changes with exposure, while the underlying scene geometry and
+event observation remain fixed. Let $\bm{Z}_{i,j}^{e}$ be patch token $j$ at
+exposure $e\in\{a,b\}$. We insert a bounded residual adapter into selected
+image-aggregator layers:
+\begin{equation}
+    \widetilde{\bm{Z}}_{i,j}^{e}
+    =\bm{Z}_{i,j}^{e}
+    +\alpha_{z}\tanh\!\left[
+    \bm{W}_{2}\,\phi\!\left(
+    \bm{W}_{1}\operatorname{LN}(\bm{Z}_{i,j}^{e})
+    \right)\right],
+    \label{eq:token_adapter}
+\end{equation}
+where $\phi$ is a nonlinear activation and $\alpha_z$ bounds the adaptation.
+The final projection $\bm{W}_{2}$ is zero-initialized so that optimization
+starts from the pretrained geometry representation.
+
+We select the less saturated exposure as the alignment anchor using
+\begin{equation}
+    q(\bm{I})=
+    1-\operatorname{Sat}(\bm{I})
+    +\eta\operatorname{Contrast}(\bm{I}).
+    \label{eq:anchor_quality}
+\end{equation}
+Assuming exposure $a$ is selected as the anchor, token alignment is supervised
+by
+\begin{equation}
+    \mathcal{L}_{\mathrm{tok}}=
+    \frac{1}{NJ}\sum_{i=1}^{N}\sum_{j=1}^{J}
+    \operatorname{SmoothL1}\!\left(
+    \operatorname{LN}(\widetilde{\bm{Z}}_{i,j}^{b}),
+    \operatorname{sg}\!\left[
+    \operatorname{LN}(\widetilde{\bm{Z}}_{i,j}^{a})
+    \right]\right),
+    \label{eq:token_alignment_loss}
+\end{equation}
+where $\operatorname{sg}$ denotes stop-gradient. Feature-level alignment avoids
+forcing two dense depth maps toward an over-smoothed average while removing
+exposure-specific variation before geometry decoding.
+
+The aligned tokens also provide a spatial exposure-agreement cue. We compute
+\begin{equation}
+    c_{i,j}=
+    \frac{\langle
+    \widetilde{\bm{Z}}_{i,j}^{a},
+    \widetilde{\bm{Z}}_{i,j}^{b}\rangle}
+    {\|\widetilde{\bm{Z}}_{i,j}^{a}\|_2
+     \|\widetilde{\bm{Z}}_{i,j}^{b}\|_2},
+\end{equation}
+followed by threshold normalization and spatial upsampling:
+\begin{equation}
+    C_i(\bm{u})=
+    \operatorname{Up}\!\left(
+    \left\{
+    \operatorname{clip}\!\left(
+    \frac{c_{i,j}-\tau_c}{1-\tau_c},0,1
+    \right)
+    \right\}_{j=1}^{J}
+    \right)(\bm{u}).
+    \label{eq:exposure_agreement}
+\end{equation}
+Here $C_i$ measures exposure stability and is not treated as geometric
+reliability by itself.
+
+\subsection{Geometry-Detail Supervision}
+\label{sec:geometry_detail}
+
+Standard depth and point losses are dominated by large, low-frequency
+surfaces and may obtain favorable average errors while missing thin boundaries,
+small concavities, and local normal transitions. We therefore construct a
+geometry-detail cue from ground-truth depth $D_i^{\ast}$. Surface normals are
+computed using camera intrinsics:
+\begin{equation}
+    \bm{N}_{i}^{\ast}=\Pi(D_i^{\ast},\bm{K}_i),
+    \label{eq:gt_normal}
+\end{equation}
+where $\Pi$ denotes depth-to-normal conversion. The raw detail magnitude is
+\begin{equation}
+    G_{i}^{\mathrm{raw}}(\bm{u})=
+    \frac{1}{2}\left(
+    \|\nabla_x\bm{N}_{i}^{\ast}(\bm{u})\|_2+
+    \|\nabla_y\bm{N}_{i}^{\ast}(\bm{u})\|_2
+    \right).
+\end{equation}
+We apply robust quantile normalization and a square-root transform:
+\begin{equation}
+    G_i(\bm{u})=
+    \sqrt{
+    \operatorname{clip}\!\left(
+    \frac{G_{i}^{\mathrm{raw}}(\bm{u})}
+    {Q_{0.95}(G_{i}^{\mathrm{raw}})},0,1
+    \right)}.
+    \label{eq:geometry_detail_map}
+\end{equation}
+The square root increases the relative contribution of weak but meaningful
+surface-normal transitions.
+
+Let $M_i$ be the valid-depth mask and let the event-support map be
+\begin{equation}
+    S_i(\bm{u})=
+    \operatorname{Dilate}\!\left(
+    \mathbf{1}\!\left[
+    \sum_{c=1}^{2B}|V_{i,c}(\bm{u})|>0
+    \right]\right).
+    \label{eq:event_support_map}
+\end{equation}
+Events are used as an emphasis cue rather than as a geometry label:
+\begin{equation}
+    W_i^{\mathrm{det}}(\bm{u})=
+    M_i(\bm{u})G_i(\bm{u})
+    \left[1+\beta S_i(\bm{u})\right].
+    \label{eq:detail_weight}
+\end{equation}
+Thus, an event alone does not imply a geometric discontinuity, but a GT
+geometry detail supported by events receives stronger supervision.
+
+Let $\widehat{\bm{N}}_i=\Pi(D_i,\bm{K}_i)$ denote the predicted normal map.
+For a per-pixel quantity $X_i$, define the weighted mean
+\begin{equation}
+    \mathbb{E}_{W}[X]=
+    \frac{\sum_{i,\bm{u}}W_i(\bm{u})X_i(\bm{u})}
+    {\sum_{i,\bm{u}}W_i(\bm{u})+\epsilon}.
+\end{equation}
+The geometry-detail loss combines normal orientation, normal gradients, and
+high-frequency normal residuals:
+\begin{align}
+    \mathcal{L}_{\mathrm{ori}}
+    &=\mathbb{E}_{W^{\mathrm{det}}}
+    \left[1-
+    \left\langle
+    \widehat{\bm{N}}_i,\bm{N}_i^{\ast}
+    \right\rangle\right],\\
+    \mathcal{L}_{\mathrm{grad}}
+    &=\mathbb{E}_{W^{\mathrm{det}}}
+    \left[\left\|
+    \nabla\widehat{\bm{N}}_i-
+    \nabla\bm{N}_i^{\ast}
+    \right\|_1\right],\\
+    \mathcal{L}_{\mathrm{hf}}
+    &=\mathbb{E}_{W^{\mathrm{det}}}
+    \left[\left\|
+    \operatorname{HF}(\widehat{\bm{N}}_i)-
+    \operatorname{HF}(\bm{N}_i^{\ast})
+    \right\|_1\right],
+\end{align}
+and
+\begin{equation}
+    \boxed{
+    \mathcal{L}_{\mathrm{det}}=
+    \lambda_{\mathrm{ori}}\mathcal{L}_{\mathrm{ori}}+
+    \lambda_{\mathrm{grad}}\mathcal{L}_{\mathrm{grad}}+
+    \lambda_{\mathrm{hf}}\mathcal{L}_{\mathrm{hf}}
+    }.
+    \label{eq:detail_loss}
+\end{equation}
+
+\subsection{Exposure-Consistent Event Reliability}
+\label{sec:event_reliability}
+
+Event support $S_i$ indicates where events exist but cannot reject highlights
+or reflections. Geometry detail $G_i$ identifies real surface variation but
+does not indicate whether it is observed by events. Token agreement $C_i$
+measures exposure stability but may also respond to stable texture. We combine
+the three complementary cues into a selective soft target:
+\begin{equation}
+    R_i^{\ast}(\bm{u})=
+    M_i(\bm{u})S_i(\bm{u})G_i(\bm{u})C_i(\bm{u}).
+    \label{eq:reliability_target}
+\end{equation}
+A small dilation accounts for spatial misalignment between event boundaries,
+normal gradients, and patch-token locations:
+\begin{equation}
+    \overline{R}_i^{\ast}=
+    \operatorname{Dilate}(R_i^{\ast}).
+\end{equation}
+The multiplicative construction assigns high reliability only when event
+evidence, geometric variation, and exposure stability are simultaneously
+present.
+
+A lightweight ReliabilityNet predicts reliability from one RGB observation
+and the complete event voxel:
+\begin{equation}
+    \widehat{R}_i^{e}=
+    \sigma\!\left(
+    \mathcal{R}_{\theta}
+    ([\widehat{\bm{V}}_i,\bm{I}_i^{e}])
+    \right),\qquad e\in\{a,b\}.
+    \label{eq:reliability_prediction}
+\end{equation}
+The regression objective is
+\begin{equation}
+    \mathcal{L}_{\mathrm{rel}}=
+    \frac{1}{2}\sum_{e\in\{a,b\}}
+    \operatorname{WBCE}
+    (\widehat{R}_i^{e},\overline{R}_i^{\ast}).
+    \label{eq:reliability_bce}
+\end{equation}
+Because paired observations share geometry and events, their reliability maps
+should be exposure invariant:
+\begin{equation}
+    \mathcal{L}_{\mathrm{pair}}=
+    \frac{\sum_{i,\bm{u}}M_i(\bm{u})
+    |\widehat{R}_i^{a}(\bm{u})-
+     \widehat{R}_i^{b}(\bm{u})|}
+    {\sum_{i,\bm{u}}M_i(\bm{u})+\epsilon}.
+    \label{eq:reliability_pair}
+\end{equation}
+
+We further separate positive and negative locations using a ranking loss. Let
+\begin{equation}
+    \Omega_i^{+}=\{\bm{u}\mid
+    \overline{R}_i^{\ast}(\bm{u})\geq\tau_{+}\},\qquad
+    \Omega_i^{-}=\{\bm{u}\mid
+    \overline{R}_i^{\ast}(\bm{u})\leq\tau_{-}\}.
+\end{equation}
+Then
+\begin{equation}
+    \mathcal{L}_{\mathrm{rank}}=
+    \frac{1}{2N}\sum_{i=1}^{N}\sum_{e\in\{a,b\}}
+    \max\!\left(
+    0,m_r-\mu_{\Omega_i^{+}}(\widehat{R}_i^{e})
+    +\mu_{\Omega_i^{-}}(\widehat{R}_i^{e})
+    \right),
+    \label{eq:reliability_rank}
+\end{equation}
+where $m_r$ is the ranking margin. The complete reliability loss is
+\begin{equation}
+    \boxed{
+    \mathcal{L}_{R}=
+    \mathcal{L}_{\mathrm{rel}}+
+    \lambda_{\mathrm{pair}}\mathcal{L}_{\mathrm{pair}}+
+    \lambda_{\mathrm{rank}}\mathcal{L}_{\mathrm{rank}}
+    }.
+    \label{eq:reliability_loss}
+\end{equation}
+We use $\lambda_{\mathrm{pair}}=0.2$,
+$\lambda_{\mathrm{rank}}=0.1$, and $m_r=0.2$.
+
+\subsection{Reliability-Guided Event Refinement}
+\label{sec:event_refinement}
+
+The event refiner processes the complete event voxel together with RGB
+context and coarse depth:
+\begin{equation}
+    D_i^{\mathrm{raw}}=
+    \mathcal{F}_{\mathrm{evt}}
+    (\bm{V}_i,\bm{I}_i^{e_i},D_i^{c}).
+\end{equation}
+We deliberately do not replace $\bm{V}_i$ by
+$\widehat{R}_i\odot\bm{V}_i$, because an imperfect reliability map could
+irreversibly remove sparse event details before temporal encoding. Instead, we
+express the event correction in log-depth space:
+\begin{equation}
+    \Delta_i^{\mathrm{raw}}(\bm{u})=
+    \log\!\left(
+    \frac{D_i^{\mathrm{raw}}(\bm{u})}
+    {D_i^{c}(\bm{u})}
+    \right).
+    \label{eq:raw_log_residual}
+\end{equation}
+
+Reliability is calibrated using a threshold $\tau_r$ and temperature
+$\gamma_r$:
+\begin{equation}
+    R_i^{\mathrm{cal}}(\bm{u})=
+    \sigma\!\left(
+    \frac{\widehat{R}_i(\bm{u})-\tau_r}{\gamma_r}
+    \right).
+\end{equation}
+We combine it with a support floor $\rho$:
+\begin{equation}
+    S_i^{\mathrm{soft}}(\bm{u})=
+    \rho+(1-\rho)S_i(\bm{u}),
+\end{equation}
+and optionally retain only the top-$\kappa$ fraction of calibrated
+reliability values using the binary mask $\mathcal{M}_{\kappa}$. The resulting
+reliability is
+\begin{equation}
+    \widetilde{R}_i(\bm{u})=
+    R_i^{\mathrm{cal}}(\bm{u})
+    S_i^{\mathrm{soft}}(\bm{u})
+    \mathcal{M}_{\kappa}(\bm{u}).
+\end{equation}
+The soft output gate is
+\begin{equation}
+    A_i(\bm{u})=
+    a_0+(1-a_0)\widetilde{R}_i(\bm{u}),
+    \label{eq:soft_output_gate}
+\end{equation}
+where $a_0$ preserves a weak correction path for uncertain evidence.
+
+The gated correction is bounded as
+\begin{equation}
+    \Delta_i(\bm{u})=
+    \operatorname{clip}\!\left(
+    \alpha_{\Delta}A_i(\bm{u})
+    \Delta_i^{\mathrm{raw}}(\bm{u}),
+    -\delta_{\max},\delta_{\max}
+    \right),
+    \label{eq:gated_log_residual}
+\end{equation}
+and the refined depth and point map are
+\begin{align}
+    D_i(\bm{u})
+    &=D_i^{c}(\bm{u})\exp(\Delta_i(\bm{u})),
+    \label{eq:refined_depth}\\
+    \bm{P}_i(\bm{u})
+    &=\bm{P}_i^{c}(\bm{u})
+    \frac{D_i(\bm{u})}{D_i^{c}(\bm{u})}.
+    \label{eq:refined_points}
+\end{align}
+Thus, all events contribute to feature extraction, but only reliable evidence
+can produce a strong geometric correction.
+
+To supervise the correction, we define a target in log-depth space:
+\begin{equation}
+    \Delta_i^{\ast}(\bm{u})=
+    \operatorname{clip}\!\left(
+    \log D_i^{\ast}(\bm{u})-
+    \log D_i^{c}(\bm{u}),
+    -\delta_t,\delta_t
+    \right).
+    \label{eq:residual_target}
+\end{equation}
+With reliability- and geometry-aware weight
+\begin{equation}
+    W_i^{\Delta}(\bm{u})=
+    M_i(\bm{u})G_i(\bm{u})S_i(\bm{u})
+    \left[r_f+(1-r_f)\widehat{R}_i(\bm{u})\right],
+\end{equation}
+the residual objective is
+\begin{equation}
+    \mathcal{L}_{\Delta}=
+    \mathbb{E}_{W^{\Delta}}
+    \left[|\Delta_i-\Delta_i^{\ast}|\right]
+    +\lambda_{\nabla\Delta}
+    \mathbb{E}_{W^{\Delta}}
+    \left[\|\nabla\Delta_i-
+    \nabla\Delta_i^{\ast}\|_1\right].
+    \label{eq:residual_loss}
+\end{equation}
+
+We additionally discourage artificial corrections on geometrically planar
+regions, including planar areas containing non-geometric events. Define
+\begin{equation}
+    W_i^{\mathrm{flat}}(\bm{u})=
+    M_i(\bm{u})[1-G_i(\bm{u})].
+\end{equation}
+The corresponding protection loss is
+\begin{equation}
+    \mathcal{L}_{\mathrm{flat}}=
+    \mathbb{E}_{W^{\mathrm{flat}}}
+    \left[1-\langle
+    \widehat{\bm{N}}_i,\bm{N}_i^{\ast}angle\right]
+    +\lambda_{0}\mathbb{E}_{M_i(1-S_i)}[|\Delta_i|].
+    \label{eq:flat_protection}
+\end{equation}
+This term suppresses spurious normal bands without spatially filtering the
+predicted residual and therefore preserves genuine high-frequency details.
+
+\subsection{Overall Objective and Training Schedule}
+\label{sec:training_objective}
+
+The base geometry loss is
+\begin{equation}
+    \mathcal{L}_{\mathrm{base}}=
+    \lambda_{d}\mathcal{L}_{d}+
+    \lambda_{\mathrm{pts}}\mathcal{L}_{\mathrm{pts}}+
+    \lambda_{\mathrm{pose}}\mathcal{L}_{\mathrm{pose}}.
+\end{equation}
+The geometry-refinement stage optimizes
+\begin{equation}
+    \boxed{
+    \mathcal{L}_{\mathrm{geo}}=
+    \mathcal{L}_{\mathrm{base}}+
+    \mathcal{L}_{\mathrm{det}}+
+    \lambda_{\Delta}\mathcal{L}_{\Delta}+
+    \lambda_{\mathrm{flat}}\mathcal{L}_{\mathrm{flat}}+
+    \lambda_{\mathrm{reg}}\mathcal{L}_{\mathrm{reg}}
+    },
+    \label{eq:geometry_objective}
+\end{equation}
+where $\mathcal{L}_{\mathrm{reg}}$ contains residual-magnitude, first-order,
+second-order, and patch-periodicity regularization.
+
+Training proceeds in three stages. First, the bounded token adapter is trained
+with paired LDR observations and $\mathcal{L}_{\mathrm{tok}}$. Second, the
+paired-token teacher is frozen, $R_i^{\ast}$ is exported, and ReliabilityNet is
+trained with $\mathcal{L}_{R}$. Third, ReliabilityNet and the RGB backbone are
+frozen while the depth/point heads and temporal event refiner are optimized
+with $\mathcal{L}_{\mathrm{geo}}$. During inference, paired exposures,
+ground-truth depth, and all target-construction cues are removed; the model
+consumes only a single LDR sequence and its event voxels.

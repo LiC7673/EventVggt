@@ -63,6 +63,7 @@ class FrozenReliabilityWeightedEventLossMixin:
         reliability_floor: float,
         event_top_fraction: float,
         flat_normal_weight: float,
+        flat_residual_gradient_weight: float,
         no_event_residual_weight: float,
     ) -> None:
         self.stage2_residual_target_weight = float(residual_target_weight)
@@ -73,6 +74,7 @@ class FrozenReliabilityWeightedEventLossMixin:
         self.stage2_target_reliability_floor = float(reliability_floor)
         self.stage2_event_top_fraction = float(event_top_fraction)
         self.stage2_flat_normal_weight = float(flat_normal_weight)
+        self.stage2_flat_residual_gradient_weight = float(flat_residual_gradient_weight)
         self.stage2_no_event_residual_weight = float(no_event_residual_weight)
 
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]):
@@ -114,6 +116,7 @@ class FrozenReliabilityWeightedEventLossMixin:
         predicted_abs = reliability.new_tensor(0.0)
         sign_accuracy = reliability.new_tensor(0.0)
         flat_normal_loss = reliability.new_tensor(0.0)
+        flat_residual_gradient_loss = reliability.new_tensor(0.0)
         no_event_residual_loss = reliability.new_tensor(0.0)
         if predicted_delta is not None and (
             self.stage2_residual_target_weight > 0.0
@@ -190,7 +193,6 @@ class FrozenReliabilityWeightedEventLossMixin:
             flat_weight = (
                 valid.to(dtype=predicted_delta.dtype)
                 * (1.0 - geometry).clamp(0.0, 1.0)
-                * (1.0 - event_support).clamp(0.0, 1.0)
             )
             if self.stage2_flat_normal_weight > 0.0:
                 final_normals = fe.depth_to_normals(
@@ -201,6 +203,16 @@ class FrozenReliabilityWeightedEventLossMixin:
                 normal_error = 1.0 - (final_normals * target_normals).sum(dim=-1).clamp(-1.0, 1.0)
                 flat_normal_loss = _weighted_mean(normal_error, flat_weight.float())
                 total = total + self.stage2_flat_normal_weight * flat_normal_loss
+            if self.stage2_flat_residual_gradient_weight > 0.0:
+                flat_residual_gradient_loss = _weighted_gradient_loss(
+                    predicted_delta,
+                    target_delta.detach(),
+                    flat_weight,
+                )
+                total = total + (
+                    self.stage2_flat_residual_gradient_weight
+                    * flat_residual_gradient_loss
+                )
             if self.stage2_no_event_residual_weight > 0.0:
                 no_event_weight = valid.to(dtype=predicted_delta.dtype) * (
                     1.0 - event_support
@@ -209,6 +221,8 @@ class FrozenReliabilityWeightedEventLossMixin:
                 total = total + self.stage2_no_event_residual_weight * no_event_residual_loss
             artifact_supervision = (
                 self.stage2_flat_normal_weight * flat_normal_loss
+                + self.stage2_flat_residual_gradient_weight
+                * flat_residual_gradient_loss
                 + self.stage2_no_event_residual_weight * no_event_residual_loss
             )
 
@@ -254,6 +268,9 @@ class FrozenReliabilityWeightedEventLossMixin:
                 "stage2_predicted_delta_abs": float(predicted_abs.detach()),
                 "stage2_delta_sign_accuracy": float(sign_accuracy.detach()),
                 "stage2_flat_normal_loss": float(flat_normal_loss.detach()),
+                "stage2_flat_residual_gradient_loss": float(
+                    flat_residual_gradient_loss.detach()
+                ),
                 "stage2_no_event_residual_loss": float(no_event_residual_loss.detach()),
             }
         )
@@ -295,7 +312,10 @@ def make_stage2_reliability_weighted_loss(cfg):
                     getattr(cfg.loss, "stage2_event_top_fraction", 0.50)
                 ),
                 flat_normal_weight=float(
-                    getattr(cfg.loss, "stage2_flat_normal_weight", 0.25)
+                    getattr(cfg.loss, "stage2_flat_normal_weight", 0.50)
+                ),
+                flat_residual_gradient_weight=float(
+                    getattr(cfg.loss, "stage2_flat_residual_gradient_weight", 0.50)
                 ),
                 no_event_residual_weight=float(
                     getattr(cfg.loss, "stage2_no_event_residual_weight", 0.20)

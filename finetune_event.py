@@ -935,6 +935,32 @@ def depth_to_uint8(depth: torch.Tensor, mask: Optional[torch.Tensor] = None) -> 
     return rgb
 
 
+def signed_relative_residual_to_uint8(
+    residual: torch.Tensor,
+    reference: torch.Tensor,
+    mask: Optional[torch.Tensor] = None,
+    limit: float = 0.005,
+) -> np.ndarray:
+    """Fixed-scale diverging view: blue=negative, gray=zero, red=positive."""
+    relative = (
+        residual.detach().float()
+        / reference.detach().float().abs().clamp_min(1.0e-6)
+    ).cpu().numpy()
+    scale = max(float(limit), 1.0e-6)
+    value = np.clip(relative / scale, -1.0, 1.0)
+    magnitude = np.abs(value)
+    neutral = 0.5 * (1.0 - magnitude)
+    rgb = np.stack(
+        [neutral + np.clip(value, 0.0, 1.0), neutral, neutral + np.clip(-value, 0.0, 1.0)],
+        axis=-1,
+    )
+    rgb = (np.clip(rgb, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    if mask is not None:
+        mask_np = mask.detach().cpu().numpy().astype(bool)
+        rgb[~mask_np] = 0
+    return rgb
+
+
 def normal_to_uint8(normal: torch.Tensor, mask: Optional[torch.Tensor] = None) -> np.ndarray:
     # Always normalize normals for visualization
     normal = F.normalize(normal.detach().float(), dim=-1, eps=1e-6).cpu()
@@ -1356,10 +1382,22 @@ def save_training_visuals(
                 )
             )
         if "depth_residual" in aux:
+            residual = aux["depth_residual"][sample_idx, frame_id]
             panels.append(
                 make_labeled_panel(
                     "delta_depth",
-                    depth_to_uint8(aux["depth_residual"][sample_idx, frame_id], valid_mask),
+                    depth_to_uint8(residual, valid_mask),
+                )
+            )
+            panels.append(
+                make_labeled_panel(
+                    "delta_rel_signed_0.5pct",
+                    signed_relative_residual_to_uint8(
+                        residual,
+                        aux.get("depth_coarse", aux["depth_pred"])[sample_idx, frame_id],
+                        valid_mask,
+                        limit=0.005,
+                    ),
                 )
             )
         if "event_motion_density" in aux:

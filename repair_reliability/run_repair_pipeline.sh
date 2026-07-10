@@ -94,7 +94,8 @@ CUDA_VISIBLE_DEVICES="${STAGE2_GPUS}" accelerate launch \
   ++loss.stage2_target_abs_limit=0.06 \
   ++loss.stage2_target_highpass_kernel=0 \
   ++loss.stage2_event_top_fraction=0.50 \
-  ++loss.stage2_flat_normal_weight=0.25 \
+  ++loss.stage2_flat_normal_weight=0.50 \
+  ++loss.stage2_flat_residual_gradient_weight=0.50 \
   ++loss.stage2_no_event_residual_weight=0.20 \
   ++vis.save_every_steps=3000 \
   2>&1 | tee "${OUT_ROOT}/logs/finetune_stage2_repair.log"

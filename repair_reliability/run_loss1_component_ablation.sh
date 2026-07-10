@@ -82,13 +82,30 @@ actual_stage1 = model_cfg.get("reliability_checkpoint", "")
 actual_output = cfg.get("output_dir", "") if isinstance(cfg, dict) else ""
 same_stage1 = os.path.realpath(actual_stage1) == os.path.realpath(expected_stage1)
 same_output = os.path.realpath(actual_output) == os.path.realpath(expected_output)
-if not same_stage1 or not same_output:
+loss_cfg = cfg.get("loss", {}) if isinstance(cfg, dict) else {}
+expected_values = {
+    "reliability_gate_floor": (model_cfg.get("reliability_gate_floor"), 0.05),
+    "repair_reliability_threshold": (model_cfg.get("repair_reliability_threshold"), 0.58),
+    "repair_reliability_temperature": (model_cfg.get("repair_reliability_temperature"), 0.12),
+    "repair_reliability_top_fraction": (model_cfg.get("repair_reliability_top_fraction"), 0.35),
+    "repair_event_support_floor": (model_cfg.get("repair_event_support_floor"), 0.05),
+    "repair_residual_gain": (model_cfg.get("repair_residual_gain"), 1.6),
+    "stage2_flat_normal_weight": (loss_cfg.get("stage2_flat_normal_weight"), 0.50),
+    "stage2_flat_residual_gradient_weight": (loss_cfg.get("stage2_flat_residual_gradient_weight"), 0.50),
+}
+mismatched_values = {
+    key: {"actual": actual, "expected": expected}
+    for key, (actual, expected) in expected_values.items()
+    if actual is None or abs(float(actual) - expected) > 1.0e-8
+}
+if not same_stage1 or not same_output or mismatched_values:
     raise SystemExit(
         "Stage2 checkpoint binding mismatch:\n"
         f"  reliability actual={actual_stage1}\n"
         f"  reliability expected={os.path.realpath(expected_stage1)}\n"
         f"  output actual={actual_output}\n"
-        f"  output expected={os.path.realpath(expected_output)}"
+        f"  output expected={os.path.realpath(expected_output)}\n"
+        f"  config mismatches={mismatched_values}"
     )
 PY
 }
@@ -142,7 +159,9 @@ for ablation in ${ABLATIONS}; do
   factors="$(factors_for "${ablation}")"
   reliability_dir="${OUT_ROOT}/stage1_${ablation}"
   stage1_checkpoint="${reliability_dir}/checkpoint-best.pth"
-  exp_name="loss1_${ablation}_repair_stage2"
+  # Version the Stage2 output whenever its gate/loss semantics change so an
+  # older geometry checkpoint cannot be silently reused with new Stage1 runs.
+  exp_name="loss1_${ablation}_repair_stage2_flatguard_v3"
   stage2_dir="${OUT_ROOT}/${exp_name}"
   checkpoint="${stage2_dir}/checkpoint-last.pth"
   port=$((BASE_PORT + mode_index))
@@ -204,13 +223,13 @@ for ablation in ${ABLATIONS}; do
       ++data.test_scene_count=4 \
       ++data.heldout_test_frame_count=120 \
       ++model.reliability_checkpoint="${stage1_checkpoint}" \
-      ++model.reliability_gate_floor=0.20 \
-      ++model.repair_reliability_threshold=0.45 \
-      ++model.repair_reliability_temperature=0.18 \
-      ++model.repair_reliability_top_fraction=0.80 \
+      ++model.reliability_gate_floor=0.05 \
+      ++model.repair_reliability_threshold=0.58 \
+      ++model.repair_reliability_temperature=0.12 \
+      ++model.repair_reliability_top_fraction=0.35 \
       ++model.repair_event_support_dilate_kernel=5 \
-      ++model.repair_event_support_floor=0.25 \
-      ++model.repair_residual_gain=2.0 \
+      ++model.repair_event_support_floor=0.05 \
+      ++model.repair_residual_gain=1.6 \
       ++model.repair_output_abs_limit=0.06 \
       ++model.repair_refiner_residual_scale=0.05 \
       ++model.repair_event_delta_highpass_kernel=0 \
@@ -222,7 +241,8 @@ for ablation in ${ABLATIONS}; do
       ++loss.stage2_target_abs_limit=0.06 \
       ++loss.stage2_target_highpass_kernel=0 \
       ++loss.stage2_event_top_fraction=0.50 \
-      ++loss.stage2_flat_normal_weight=0.25 \
+      ++loss.stage2_flat_normal_weight=0.50 \
+      ++loss.stage2_flat_residual_gradient_weight=0.50 \
       ++loss.stage2_no_event_residual_weight=0.20 \
       ++vis.save_every_steps=3000 \
       2>&1 | tee "${OUT_ROOT}/logs/stage2_${ablation}.log"

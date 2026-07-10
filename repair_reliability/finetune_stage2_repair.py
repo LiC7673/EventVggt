@@ -161,7 +161,10 @@ def _prepare_cfg(cfg):
         getattr(cfg.loss, "stage2_event_top_fraction", 0.50)
     )
     cfg.loss.stage2_flat_normal_weight = float(
-        getattr(cfg.loss, "stage2_flat_normal_weight", 0.25)
+        getattr(cfg.loss, "stage2_flat_normal_weight", 0.50)
+    )
+    cfg.loss.stage2_flat_residual_gradient_weight = float(
+        getattr(cfg.loss, "stage2_flat_residual_gradient_weight", 0.50)
     )
     cfg.loss.stage2_no_event_residual_weight = float(
         getattr(cfg.loss, "stage2_no_event_residual_weight", 0.20)
