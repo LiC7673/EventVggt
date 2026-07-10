@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 ACCELERATE_BIN="${ACCELERATE_BIN:-accelerate}"
-GPUS="${GPUS:-2,3,4,5,6,7}"
+GPUS="${GPUS:-6}"
 PORT="${PORT:-29627}"
 STAGE1_CKPT="${STAGE1_CKPT:-${ROOT}/abl_event_exp/event_contribution_stage1/checkpoint-best.pth}"
 BASE_VGGT_CKPT="${BASE_VGGT_CKPT:-${ROOT}/ckpt/model.pt}"
