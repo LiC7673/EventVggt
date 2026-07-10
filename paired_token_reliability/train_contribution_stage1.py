@@ -310,7 +310,9 @@ def prepare_pair(batch, device: torch.device, args):
 
 def autocast_context(device: torch.device, precision: str):
     enabled = device.type == "cuda" and precision != "none"
-    dtype = torch.bfloat32 if precision == "bf16" else torch.float32
+    # dtype = torch.bfloat32 if precision == "bf16" else torch.float32
+    dtype = torch.float32
+
     return torch.autocast(device_type=device.type, dtype=dtype, enabled=enabled)
 
 
