@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import json
 import sys
 import time
@@ -65,6 +66,22 @@ def build_model(checkpoint: Path, reliability_checkpoint: str | None, device: to
     reliability_source = Path(reliability_checkpoint).expanduser() if reliability_checkpoint else checkpoint
     if not reliability_source.is_absolute():
         reliability_source = ROOT_DIR / reliability_source
+    repair_kwargs = {}
+    constructor_parameters = inspect.signature(StreamVGGT.__init__).parameters
+    repair_defaults = {
+        "repair_reliability_threshold": 0.58,
+        "repair_reliability_temperature": 0.12,
+        "repair_reliability_top_fraction": 0.35,
+        "repair_event_support_threshold": 0.0,
+        "repair_event_support_dilate_kernel": 5,
+        "repair_event_support_floor": 0.05,
+        "repair_residual_gain": 1.6,
+        "repair_output_abs_limit": 0.06,
+    }
+    for name, default in repair_defaults.items():
+        if name in constructor_parameters:
+            repair_kwargs[name] = _cfg_value(model_cfg, name, default)
+
     model = StreamVGGT(
         img_size=int(_cfg_value(model_cfg, "img_size", 518)),
         patch_size=int(_cfg_value(model_cfg, "patch_size", 14)),
@@ -97,6 +114,7 @@ def build_model(checkpoint: Path, reliability_checkpoint: str | None, device: to
             _cfg_value(model_cfg, "causal_support_dilate_kernel", 5)
         ),
         causal_support_blur_kernel=int(_cfg_value(model_cfg, "causal_support_blur_kernel", 3)),
+        **repair_kwargs,
     )
     state = strip_module_prefix(fe.unwrap_state_dict(raw_checkpoint))
     message = model.load_state_dict(state, strict=False)
@@ -104,6 +122,8 @@ def build_model(checkpoint: Path, reliability_checkpoint: str | None, device: to
         f"[load] missing={len(message.missing_keys)} unexpected={len(message.unexpected_keys)} "
         f"checkpoint={checkpoint}"
     )
+    if repair_kwargs:
+        print(f"[load] repair parameters from checkpoint cfg: {repair_kwargs}")
     if message.missing_keys:
         print(f"[load] missing sample: {message.missing_keys[:8]}")
     if message.unexpected_keys:
@@ -173,6 +193,11 @@ def evaluate(model, loader, cfg, args, device):
     accumulators = {name: ConditionAccumulator() for name in CONDITIONS}
     records = []
     evaluated = 0
+    diagnostic_sums = {
+        name: {"delta_abs": 0.0, "delta_max": 0.0, "clamp_ratio": 0.0, "coarse_diff": 0.0}
+        for name in CONDITIONS
+    }
+    causal_sums = {"full_vs_zero": 0.0, "full_vs_reverse": 0.0, "full_vs_swap": 0.0}
     start = time.time()
     for batch_idx, cpu_views in enumerate(loader):
         if args.max_batches is not None and batch_idx >= args.max_batches:
@@ -208,20 +233,55 @@ def evaluate(model, loader, cfg, args, device):
             _update_condition(
                 accumulators[condition], condition, output, depth, depth_gt, intrinsics, gt_pose, valid
             )
+            delta = stack_output(output, "event_delta_log") if condition != "coarse_rgb" else None
+            delta_abs = float(delta.float().abs().mean().cpu()) if delta is not None else 0.0
+            delta_max = float(delta.float().abs().amax().cpu()) if delta is not None else 0.0
+            output_limit = float(_cfg_value(cfg.model, "repair_output_abs_limit", 0.0))
+            clamp_ratio = (
+                float((delta.float().abs() >= output_limit * 0.999).float().mean().cpu())
+                if delta is not None and output_limit > 0.0
+                else 0.0
+            )
+            coarse_diff = float((depth.float() - coarse_depth.float()).abs().mean().cpu())
+            diagnostics = diagnostic_sums[condition]
+            diagnostics["delta_abs"] += delta_abs
+            diagnostics["delta_max"] = max(diagnostics["delta_max"], delta_max)
+            diagnostics["clamp_ratio"] += clamp_ratio
+            diagnostics["coarse_diff"] += coarse_diff
             records.append(
                 {
                     "batch_index": batch_idx,
                     "condition": condition,
                     **_sample_metrics(depth, depth_gt, intrinsics, valid),
+                    "event_delta_abs_mean": delta_abs,
+                    "event_delta_abs_max": delta_max,
+                    "event_delta_clamp_ratio": clamp_ratio,
+                    "depth_abs_change_from_coarse": coarse_diff,
                 }
             )
+        causal_sums["full_vs_zero"] += float((cache["full_event"][1].float() - cache["zero_event"][1].float()).abs().mean().cpu())
+        causal_sums["full_vs_reverse"] += float((cache["full_event"][1].float() - cache["reverse_time"][1].float()).abs().mean().cpu())
+        causal_sums["full_vs_swap"] += float((cache["full_event"][1].float() - cache["swap_polarity"][1].float()).abs().mean().cpu())
         evaluated += 1
         if (batch_idx + 1) % args.print_freq == 0:
             print(f"[eval] {batch_idx + 1}/{len(loader)} elapsed={time.time() - start:.1f}s")
-    return {name: accumulator.compute() for name, accumulator in accumulators.items()}, records, evaluated
+    denominator = max(evaluated, 1)
+    diagnostics = {
+        name: {
+            "event_delta_abs_mean": values["delta_abs"] / denominator,
+            "event_delta_abs_max": values["delta_max"],
+            "event_delta_clamp_ratio": values["clamp_ratio"] / denominator,
+            "depth_abs_change_from_coarse": values["coarse_diff"] / denominator,
+        }
+        for name, values in diagnostic_sums.items()
+    }
+    diagnostics["causal_prediction_differences"] = {
+        name: value / denominator for name, value in causal_sums.items()
+    }
+    return {name: accumulator.compute() for name, accumulator in accumulators.items()}, records, evaluated, diagnostics
 
 
-def write_outputs(args, checkpoint, dataset, metrics, records, evaluated):
+def write_outputs(args, checkpoint, dataset, metrics, records, evaluated, diagnostics):
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pairs = {
@@ -248,6 +308,7 @@ def write_outputs(args, checkpoint, dataset, metrics, records, evaluated):
         "evaluated_batches": evaluated,
         "conditions": metrics,
         "comparisons": comparisons,
+        "diagnostics": diagnostics,
     }
     with (out_dir / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, ensure_ascii=False)
@@ -277,6 +338,16 @@ def write_outputs(args, checkpoint, dataset, metrics, records, evaluated):
         f"delta1={gain['delta1_increase']:.6f}"
     )
     print(f"Saved to {out_dir}")
+    print("\nRepair diagnostics")
+    for name in CONDITIONS:
+        values = diagnostics[name]
+        print(
+            f"{name:14s} |delta|={values['event_delta_abs_mean']:.6f} "
+            f"max={values['event_delta_abs_max']:.6f} "
+            f"clamp={values['event_delta_clamp_ratio']:.4f} "
+            f"|depth-coarse|={values['depth_abs_change_from_coarse']:.6f}"
+        )
+    print(f"causal depth differences: {diagnostics['causal_prediction_differences']}")
 
 
 def parse_args():
@@ -319,8 +390,8 @@ def main():
         f"[dataset] scenes={dataset.get_active_scenes()} windows={len(loader.dataset)} "
         f"batches={len(loader)} stride={args.window_stride}"
     )
-    metrics, records, evaluated = evaluate(model, loader, cfg, args, device)
-    write_outputs(args, checkpoint, dataset, metrics, records, evaluated)
+    metrics, records, evaluated, diagnostics = evaluate(model, loader, cfg, args, device)
+    write_outputs(args, checkpoint, dataset, metrics, records, evaluated, diagnostics)
 
 
 if __name__ == "__main__":

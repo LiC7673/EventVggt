@@ -63,6 +63,7 @@ CUDA_VISIBLE_DEVICES="${STAGE2_GPUS}" accelerate launch \
   --dynamo_backend no \
   -m repair_reliability.finetune_stage2_repair \
   exp_name="${EXP_NAME}" \
+  ++repair_save_dir="${OUT_ROOT}" \
   epochs="${EPOCHS_STAGE2}" \
   num_workers="${NUM_WORKERS}" \
   data.root="${DATA_ROOT}" \
@@ -74,18 +75,24 @@ CUDA_VISIBLE_DEVICES="${STAGE2_GPUS}" accelerate launch \
   ++data.test_scene_count=4 \
   ++data.heldout_test_frame_count=120 \
   ++model.reliability_checkpoint="${RELIABILITY_DIR}/checkpoint-best.pth" \
-  ++model.reliability_gate_floor=0.20 \
-  ++model.repair_reliability_threshold=0.45 \
-  ++model.repair_reliability_temperature=0.18 \
-  ++model.repair_reliability_top_fraction=0.80 \
+  ++model.reliability_gate_floor=0.05 \
+  ++model.repair_reliability_threshold=0.58 \
+  ++model.repair_reliability_temperature=0.12 \
+  ++model.repair_reliability_top_fraction=0.35 \
   ++model.repair_event_support_dilate_kernel=5 \
-  ++model.repair_event_support_floor=0.25 \
-  ++model.repair_residual_gain=2.0 \
+  ++model.repair_event_support_floor=0.05 \
+  ++model.repair_residual_gain=1.6 \
   ++model.repair_output_abs_limit=0.06 \
+  ++model.repair_refiner_residual_scale=0.05 \
+  ++model.repair_event_delta_highpass_kernel=0 \
+  ++model.repair_event_delta_patch_zero_mean=false \
+  ++model.repair_event_delta_abs_limit=0.05 \
   ++loss.stage2_residual_target_weight=2.0 \
   ++loss.stage2_residual_gradient_weight=3.0 \
   ++loss.stage2_target_reliability_floor=0.10 \
   ++loss.stage2_target_abs_limit=0.06 \
+  ++loss.stage2_target_highpass_kernel=0 \
+  ++loss.stage2_event_top_fraction=0.50 \
   ++vis.save_every_steps=3000 \
   2>&1 | tee "${OUT_ROOT}/logs/finetune_stage2_repair.log"
 

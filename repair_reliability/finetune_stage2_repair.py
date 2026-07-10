@@ -84,21 +84,32 @@ def _prepare_cfg(cfg):
     OmegaConf.set_struct(cfg.loss, False)
     cfg.model.variant = "paired_token_reliability_repair"
     cfg.exp_name = str(getattr(cfg, "exp_name", "paired_token_reliability_repair"))
-    cfg.save_dir = str(ROOT / "abl_event_exp/paired_token_reliability_repair")
+    repair_save_dir = Path(
+        str(
+            getattr(
+                cfg,
+                "repair_save_dir",
+                ROOT / "abl_event_exp/paired_token_reliability_repair",
+            )
+        )
+    ).expanduser()
+    if not repair_save_dir.is_absolute():
+        repair_save_dir = ROOT / repair_save_dir
+    cfg.save_dir = str(repair_save_dir.resolve())
     cfg.output_dir = str(Path(cfg.save_dir) / cfg.exp_name)
     cfg.logdir = str(Path(cfg.output_dir) / "logs")
 
-    # Make reliability more selective.  The previous positive ratio near 0.9
-    # diluted event supervision and made the residual branch timid.
-    cfg.model.reliability_gate_floor = float(getattr(cfg.model, "reliability_gate_floor", 0.20))
+    # Keep the repair causal and selective.  A large floor/top-fraction makes
+    # almost every pixel pass the gate and turns event noise into depth noise.
+    cfg.model.reliability_gate_floor = float(getattr(cfg.model, "reliability_gate_floor", 0.05))
     cfg.model.repair_reliability_threshold = float(
-        getattr(cfg.model, "repair_reliability_threshold", 0.45)
+        getattr(cfg.model, "repair_reliability_threshold", 0.58)
     )
     cfg.model.repair_reliability_temperature = float(
-        getattr(cfg.model, "repair_reliability_temperature", 0.18)
+        getattr(cfg.model, "repair_reliability_temperature", 0.12)
     )
     cfg.model.repair_reliability_top_fraction = float(
-        getattr(cfg.model, "repair_reliability_top_fraction", 0.80)
+        getattr(cfg.model, "repair_reliability_top_fraction", 0.35)
     )
     cfg.model.repair_event_support_threshold = float(
         getattr(cfg.model, "repair_event_support_threshold", 0.0)
@@ -107,11 +118,28 @@ def _prepare_cfg(cfg):
         getattr(cfg.model, "repair_event_support_dilate_kernel", 5)
     )
     cfg.model.repair_event_support_floor = float(
-        getattr(cfg.model, "repair_event_support_floor", 0.25)
+        getattr(cfg.model, "repair_event_support_floor", 0.05)
     )
-    cfg.model.repair_residual_gain = float(getattr(cfg.model, "repair_residual_gain", 2.0))
+    cfg.model.repair_residual_gain = float(getattr(cfg.model, "repair_residual_gain", 1.6))
     cfg.model.repair_output_abs_limit = float(
         getattr(cfg.model, "repair_output_abs_limit", 0.06)
+    )
+
+    # The repair gate already localizes the correction.  Applying a high-pass
+    # and patch-wise zero-mean constraint before that gate removes the coherent
+    # depth correction needed by AbsRel/RMSElog and suppresses its amplitude
+    # twice.  Keep a bounded residual, but do not force it to be zero-mean.
+    cfg.model.refiner_residual_scale = float(
+        getattr(cfg.model, "repair_refiner_residual_scale", 0.05)
+    )
+    cfg.model.event_delta_highpass_kernel = int(
+        getattr(cfg.model, "repair_event_delta_highpass_kernel", 0)
+    )
+    cfg.model.event_delta_patch_zero_mean = bool(
+        getattr(cfg.model, "repair_event_delta_patch_zero_mean", False)
+    )
+    cfg.model.event_delta_abs_limit = float(
+        getattr(cfg.model, "repair_event_delta_abs_limit", 0.05)
     )
 
     # The last run predicted only about 24% of the target delta.  Increase the
@@ -126,6 +154,12 @@ def _prepare_cfg(cfg):
         getattr(cfg.loss, "stage2_target_reliability_floor", 0.10)
     )
     cfg.loss.stage2_target_abs_limit = float(getattr(cfg.loss, "stage2_target_abs_limit", 0.06))
+    cfg.loss.stage2_target_highpass_kernel = int(
+        getattr(cfg.loss, "stage2_target_highpass_kernel", 0)
+    )
+    cfg.loss.stage2_event_top_fraction = float(
+        getattr(cfg.loss, "stage2_event_top_fraction", 0.50)
+    )
     cfg.epochs = max(int(getattr(cfg, "epochs", 20)), 20)
     cfg.eval_every_steps = int(getattr(cfg, "eval_every_steps", 0))
     cfg.vis.save_every_steps = int(getattr(cfg.vis, "save_every_steps", 3000))

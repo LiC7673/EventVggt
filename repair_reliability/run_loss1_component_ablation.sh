@@ -51,7 +51,7 @@ PY
 fi
 
 summary_csv="${OUT_ROOT}/component_runs.csv"
-echo "mode,stage1_dir,stage2_dir,eval_dir" > "${summary_csv}"
+echo "mode,stage1_dir,stage2_dir,checkpoint,eval_dir" > "${summary_csv}"
 
 mode_index=0
 for mode in ${MODES}; do
@@ -59,6 +59,9 @@ for mode in ${MODES}; do
   reliability_dir="${OUT_ROOT}/reliability_${mode}"
   exp_name="loss1_${mode}_repair_stage2"
   stage2_dir="${OUT_ROOT}/${exp_name}"
+  checkpoint="${stage2_dir}/checkpoint-last.pth"
+  # Runs made before repair_save_dir was configurable were written here.
+  legacy_checkpoint="abl_event_exp/paired_token_reliability_repair/${exp_name}/checkpoint-last.pth"
   port=$((BASE_PORT + mode_index))
   echo
   echo "=============================="
@@ -78,46 +81,59 @@ for mode in ${MODES}; do
     echo "[mode=${mode}] reuse ${reliability_dir}/checkpoint-best.pth"
   fi
 
-  echo
-  echo "=============================="
-  echo "[mode=${mode}] Stage2 repair VGGT"
-  echo "=============================="
-  CUDA_VISIBLE_DEVICES="${STAGE2_GPUS}" accelerate launch \
-    --multi_gpu \
-    --num_processes "${STAGE2_PROCESSES}" \
-    --main_process_port "${port}" \
-    --gpu_ids all \
-    --mixed_precision bf16 \
-    --dynamo_backend no \
-    -m repair_reliability.finetune_stage2_repair \
-    exp_name="${exp_name}" \
-    epochs="${EPOCHS_STAGE2}" \
-    num_workers="${NUM_WORKERS}" \
-    data.root="${DATA_ROOT}" \
-    data.num_views=4 \
-    ++data.train_initial_scene_idx=0 \
-    ++data.train_scene_count=12 \
-    ++data.train_holdout_frame_count=0 \
-    ++data.test_initial_scene_idx=12 \
-    ++data.test_scene_count=4 \
-    ++data.heldout_test_frame_count=120 \
-    ++model.reliability_checkpoint="${reliability_dir}/checkpoint-best.pth" \
-    ++model.reliability_gate_floor=0.20 \
-    ++model.repair_reliability_threshold=0.45 \
-    ++model.repair_reliability_temperature=0.18 \
-    ++model.repair_reliability_top_fraction=0.80 \
-    ++model.repair_event_support_dilate_kernel=5 \
-    ++model.repair_event_support_floor=0.25 \
-    ++model.repair_residual_gain=2.0 \
-    ++model.repair_output_abs_limit=0.06 \
-    ++loss.stage2_residual_target_weight=2.0 \
-    ++loss.stage2_residual_gradient_weight=3.0 \
-    ++loss.stage2_target_reliability_floor=0.10 \
-    ++loss.stage2_target_abs_limit=0.06 \
-    ++vis.save_every_steps=3000 \
-    2>&1 | tee "${OUT_ROOT}/logs/stage2_${mode}.log"
+  if [[ -f "${checkpoint}" ]]; then
+    echo "[mode=${mode}] reuse Stage2 checkpoint: ${checkpoint}"
+  elif [[ -f "${legacy_checkpoint}" ]]; then
+    checkpoint="${legacy_checkpoint}"
+    echo "[mode=${mode}] recover checkpoint saved by the old hard-coded output path: ${checkpoint}"
+  else
+    echo
+    echo "=============================="
+    echo "[mode=${mode}] Stage2 repair VGGT"
+    echo "=============================="
+    CUDA_VISIBLE_DEVICES="${STAGE2_GPUS}" accelerate launch \
+      --multi_gpu \
+      --num_processes "${STAGE2_PROCESSES}" \
+      --main_process_port "${port}" \
+      --gpu_ids all \
+      --mixed_precision bf16 \
+      --dynamo_backend no \
+      -m repair_reliability.finetune_stage2_repair \
+      exp_name="${exp_name}" \
+      ++repair_save_dir="${OUT_ROOT}" \
+      epochs="${EPOCHS_STAGE2}" \
+      num_workers="${NUM_WORKERS}" \
+      data.root="${DATA_ROOT}" \
+      data.num_views=4 \
+      ++data.train_initial_scene_idx=0 \
+      ++data.train_scene_count=12 \
+      ++data.train_holdout_frame_count=0 \
+      ++data.test_initial_scene_idx=12 \
+      ++data.test_scene_count=4 \
+      ++data.heldout_test_frame_count=120 \
+      ++model.reliability_checkpoint="${reliability_dir}/checkpoint-best.pth" \
+      ++model.reliability_gate_floor=0.20 \
+      ++model.repair_reliability_threshold=0.45 \
+      ++model.repair_reliability_temperature=0.18 \
+      ++model.repair_reliability_top_fraction=0.80 \
+      ++model.repair_event_support_dilate_kernel=5 \
+      ++model.repair_event_support_floor=0.25 \
+      ++model.repair_residual_gain=2.0 \
+      ++model.repair_output_abs_limit=0.06 \
+      ++model.repair_refiner_residual_scale=0.05 \
+      ++model.repair_event_delta_highpass_kernel=0 \
+      ++model.repair_event_delta_patch_zero_mean=false \
+      ++model.repair_event_delta_abs_limit=0.05 \
+      ++loss.stage2_residual_target_weight=2.0 \
+      ++loss.stage2_residual_gradient_weight=3.0 \
+      ++loss.stage2_target_reliability_floor=0.10 \
+      ++loss.stage2_target_abs_limit=0.06 \
+      ++loss.stage2_target_highpass_kernel=0 \
+      ++loss.stage2_event_top_fraction=0.50 \
+      ++vis.save_every_steps=3000 \
+      2>&1 | tee "${OUT_ROOT}/logs/stage2_${mode}.log"
+  fi
 
-  checkpoint="${stage2_dir}/checkpoint-last.pth"
   if [[ ! -f "${checkpoint}" ]]; then
     echo "[error] missing Stage2 checkpoint for mode=${mode}: ${checkpoint}" >&2
     exit 4
@@ -141,7 +157,7 @@ for mode in ${MODES}; do
     --amp bf16 \
     2>&1 | tee "${OUT_ROOT}/logs/eval_${mode}.log"
 
-  echo "${mode},${reliability_dir},${stage2_dir},${stage2_dir}/heldout_eval" >> "${summary_csv}"
+  echo "${mode},${reliability_dir},${stage2_dir},${checkpoint},${stage2_dir}/heldout_eval" >> "${summary_csv}"
 done
 
 echo

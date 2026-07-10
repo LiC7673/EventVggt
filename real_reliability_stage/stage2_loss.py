@@ -61,6 +61,7 @@ class FrozenReliabilityWeightedEventLossMixin:
         target_abs_limit: float,
         geometry_threshold: float,
         reliability_floor: float,
+        event_top_fraction: float,
     ) -> None:
         self.stage2_residual_target_weight = float(residual_target_weight)
         self.stage2_residual_gradient_weight = float(residual_gradient_weight)
@@ -68,6 +69,7 @@ class FrozenReliabilityWeightedEventLossMixin:
         self.stage2_target_abs_limit = float(target_abs_limit)
         self.stage2_geometry_threshold = float(geometry_threshold)
         self.stage2_target_reliability_floor = float(reliability_floor)
+        self.stage2_event_top_fraction = float(event_top_fraction)
 
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]):
         reliability = _stack_output_field(model_output, "event_reliability")
@@ -158,7 +160,7 @@ class FrozenReliabilityWeightedEventLossMixin:
                 dilate_kernel=1,
                 threshold=0.20,
                 power=2.0,
-                top_fraction=0.20,
+                top_fraction=self.stage2_event_top_fraction,
                 mode="temporal_polarity",
             ).detach()
             target_weight = (
@@ -244,6 +246,9 @@ def make_stage2_reliability_weighted_loss(cfg):
                 ),
                 reliability_floor=float(
                     getattr(cfg.loss, "stage2_target_reliability_floor", 0.25)
+                ),
+                event_top_fraction=float(
+                    getattr(cfg.loss, "stage2_event_top_fraction", 0.50)
                 ),
             )
 
