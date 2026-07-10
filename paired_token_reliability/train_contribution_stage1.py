@@ -223,6 +223,13 @@ def frozen_rgb_geometry(
     """Run only the frozen RGB aggregator/depth head and expose patch features."""
     model_dtype = next(model.parameters()).dtype
     images = bad_rgb.to(dtype=model_dtype)
+    print(
+    "input:",
+    bad_rgb.dtype,
+    "weight:",
+    next(model.parameters()).dtype,
+     intrinsics.dtype,
+    )
     tokens_list, patch_start_index = model.aggregator(images)
     depth, _ = model.depth_head(
         tokens_list,

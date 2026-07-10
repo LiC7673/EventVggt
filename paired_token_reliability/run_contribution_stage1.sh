@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-GPU="${GPU:-0}"
+GPU="${GPU:-2,3,4,5,6,7}"
 CONFIG="${CONFIG:-config/finetune_event.yaml}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
 OUTPUT="${OUTPUT:-abl_event_exp/event_contribution_stage1}"
