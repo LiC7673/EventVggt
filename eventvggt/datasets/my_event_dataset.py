@@ -59,6 +59,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         initial_scene_idx=0,
         active_scene_count=1,
         test_frame_count=10,
+        min_train_start_id=0,
         ldr_event_id="auto",
         event_y_flip="auto",
         event_spatial_transform="auto",
@@ -75,6 +76,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.current_scene_index = initial_scene_idx
         self.active_scene_count = active_scene_count
         self.test_frame_count = test_frame_count
+        self.min_train_start_id = max(int(min_train_start_id), 0)
         self.ldr_event_id = ldr_event_id
         self.random_ldr_event = _is_random_ldr_event_id(ldr_event_id)
         self.event_y_flip = event_y_flip
@@ -286,7 +288,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             # So start_id + num_views <= train_frame_count
             # Which means start_id <= train_frame_count - num_views
             max_start_id = max(0, train_frame_count - self.num_views + 1)
-            start_ids = list(range(max_start_id))
+            start_ids = list(range(self.min_train_start_id, max_start_id))
         elif self.split == 'test':
             # For test split: at least one frame must be in test range [train_frame_count, frame_count)
             # So start_id + num_views > train_frame_count
@@ -990,6 +992,7 @@ def get_combined_dataset(
     active_scene_count=1,
     split="train",
     test_frame_count=10,
+    min_train_start_id=0,
     ldr_event_id="auto",
     event_y_flip="auto",
     event_spatial_transform="auto",
@@ -1012,6 +1015,7 @@ def get_combined_dataset(
         initial_scene_idx=initial_scene_idx,
         active_scene_count=active_scene_count,
         test_frame_count=test_frame_count,
+        min_train_start_id=min_train_start_id,
         ldr_event_id=ldr_event_id,
         event_y_flip=event_y_flip,
         event_spatial_transform=event_spatial_transform,

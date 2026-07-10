@@ -64,17 +64,26 @@ def _build_scene_disjoint_loader(cfg, split="train"):
         local_cfg.data.initial_scene_idx = int(cfg.data.train_initial_scene_idx)
         local_cfg.data.active_scene_count = int(cfg.data.train_scene_count)
         local_cfg.data.test_frame_count = int(cfg.data.train_holdout_frame_count)
+        # event_voxel[t] represents the (t-1)->t interval. Synthetic frame 0
+        # is empty by construction and frame 1 (0->1) may also contain no
+        # events, so repair training can begin at a later window start.
+        local_cfg.data.min_train_start_id = int(cfg.data.train_min_start_id)
     else:
         local_cfg.data.initial_scene_idx = int(cfg.data.test_initial_scene_idx)
         local_cfg.data.active_scene_count = int(cfg.data.test_scene_count)
         # Setting this to the full sequence length makes split=test evaluate
         # every valid window of each entirely unseen scene.
         local_cfg.data.test_frame_count = int(cfg.data.heldout_test_frame_count)
+        local_cfg.data.min_train_start_id = 0
 
     loader = _BASE_BUILD_LOADER(local_cfg, split=split)
     scenes = tuple(loader.dataset.get_active_scenes())
     _SPLIT_SCENES[split] = scenes
-    print(f"[stage2 data] split={split} scenes={list(scenes)} samples={len(loader.dataset)}", flush=True)
+    print(
+        f"[stage2 data] split={split} scenes={list(scenes)} samples={len(loader.dataset)} "
+        f"min_train_start_id={int(local_cfg.data.min_train_start_id)}",
+        flush=True,
+    )
     if "train" in _SPLIT_SCENES and "test" in _SPLIT_SCENES:
         overlap = sorted(set(_SPLIT_SCENES["train"]) & set(_SPLIT_SCENES["test"]))
         if overlap:
@@ -178,6 +187,7 @@ def _prepare_cfg(cfg):
     cfg.data.train_initial_scene_idx = int(getattr(cfg.data, "train_initial_scene_idx", 0))
     cfg.data.train_scene_count = int(getattr(cfg.data, "train_scene_count", 12))
     cfg.data.train_holdout_frame_count = int(getattr(cfg.data, "train_holdout_frame_count", 0))
+    cfg.data.train_min_start_id = int(getattr(cfg.data, "train_min_start_id", 2))
     cfg.data.test_initial_scene_idx = int(
         getattr(cfg.data, "test_initial_scene_idx", cfg.data.train_initial_scene_idx + cfg.data.train_scene_count)
     )

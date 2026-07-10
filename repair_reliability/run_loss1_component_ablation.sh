@@ -60,8 +60,6 @@ for mode in ${MODES}; do
   exp_name="loss1_${mode}_repair_stage2"
   stage2_dir="${OUT_ROOT}/${exp_name}"
   checkpoint="${stage2_dir}/checkpoint-last.pth"
-  # Runs made before repair_save_dir was configurable were written here.
-  legacy_checkpoint="abl_event_exp/paired_token_reliability_repair/${exp_name}/checkpoint-last.pth"
   port=$((BASE_PORT + mode_index))
   echo
   echo "=============================="
@@ -83,9 +81,6 @@ for mode in ${MODES}; do
 
   if [[ -f "${checkpoint}" ]]; then
     echo "[mode=${mode}] reuse Stage2 checkpoint: ${checkpoint}"
-  elif [[ -f "${legacy_checkpoint}" ]]; then
-    checkpoint="${legacy_checkpoint}"
-    echo "[mode=${mode}] recover checkpoint saved by the old hard-coded output path: ${checkpoint}"
   else
     echo
     echo "=============================="
@@ -108,6 +103,7 @@ for mode in ${MODES}; do
       ++data.train_initial_scene_idx=0 \
       ++data.train_scene_count=12 \
       ++data.train_holdout_frame_count=0 \
+      ++data.train_min_start_id=2 \
       ++data.test_initial_scene_idx=12 \
       ++data.test_scene_count=4 \
       ++data.heldout_test_frame_count=120 \
@@ -130,6 +126,8 @@ for mode in ${MODES}; do
       ++loss.stage2_target_abs_limit=0.06 \
       ++loss.stage2_target_highpass_kernel=0 \
       ++loss.stage2_event_top_fraction=0.50 \
+      ++loss.stage2_flat_normal_weight=0.25 \
+      ++loss.stage2_no_event_residual_weight=0.20 \
       ++vis.save_every_steps=3000 \
       2>&1 | tee "${OUT_ROOT}/logs/stage2_${mode}.log"
   fi

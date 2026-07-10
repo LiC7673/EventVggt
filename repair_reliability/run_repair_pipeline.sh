@@ -71,6 +71,7 @@ CUDA_VISIBLE_DEVICES="${STAGE2_GPUS}" accelerate launch \
   ++data.train_initial_scene_idx=0 \
   ++data.train_scene_count=12 \
   ++data.train_holdout_frame_count=0 \
+  ++data.train_min_start_id=2 \
   ++data.test_initial_scene_idx=12 \
   ++data.test_scene_count=4 \
   ++data.heldout_test_frame_count=120 \
@@ -93,6 +94,8 @@ CUDA_VISIBLE_DEVICES="${STAGE2_GPUS}" accelerate launch \
   ++loss.stage2_target_abs_limit=0.06 \
   ++loss.stage2_target_highpass_kernel=0 \
   ++loss.stage2_event_top_fraction=0.50 \
+  ++loss.stage2_flat_normal_weight=0.25 \
+  ++loss.stage2_no_event_residual_weight=0.20 \
   ++vis.save_every_steps=3000 \
   2>&1 | tee "${OUT_ROOT}/logs/finetune_stage2_repair.log"
 

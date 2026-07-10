@@ -137,6 +137,7 @@ def build_event_loader(cfg, split="train"):
         active_scene_count=cfg.data.active_scene_count,
         split=split,
         test_frame_count=getattr(cfg.data, "test_frame_count", 10),
+        min_train_start_id=getattr(cfg.data, "min_train_start_id", 0),
         ldr_event_id=getattr(cfg.data, "ldr_event_id", "auto"),
         event_y_flip=getattr(cfg.data, "event_y_flip", "auto"),
         event_spatial_transform=getattr(cfg.data, "event_spatial_transform", "auto"),
@@ -1341,10 +1342,17 @@ def save_training_visuals(
             make_labeled_panel("pred_depth", depth_to_uint8(depth_pred, valid_mask)),
         ]
         if "depth_coarse" in aux:
+            coarse_depth = aux["depth_coarse"][sample_idx, frame_id]
             panels.append(
                 make_labeled_panel(
                     "depth_coarse",
-                    depth_to_uint8(aux["depth_coarse"][sample_idx, frame_id], valid_mask),
+                    depth_to_uint8(coarse_depth, valid_mask),
+                )
+            )
+            panels.append(
+                make_labeled_panel(
+                    "coarse_normal",
+                    normal_to_uint8(depth_to_normals(coarse_depth, intrinsics), valid_mask),
                 )
             )
         if "depth_residual" in aux:

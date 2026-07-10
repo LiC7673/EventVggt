@@ -62,6 +62,8 @@ class FrozenReliabilityWeightedEventLossMixin:
         geometry_threshold: float,
         reliability_floor: float,
         event_top_fraction: float,
+        flat_normal_weight: float,
+        no_event_residual_weight: float,
     ) -> None:
         self.stage2_residual_target_weight = float(residual_target_weight)
         self.stage2_residual_gradient_weight = float(residual_gradient_weight)
@@ -70,6 +72,8 @@ class FrozenReliabilityWeightedEventLossMixin:
         self.stage2_geometry_threshold = float(geometry_threshold)
         self.stage2_target_reliability_floor = float(reliability_floor)
         self.stage2_event_top_fraction = float(event_top_fraction)
+        self.stage2_flat_normal_weight = float(flat_normal_weight)
+        self.stage2_no_event_residual_weight = float(no_event_residual_weight)
 
     def forward(self, model_output, views: List[Dict[str, torch.Tensor]]):
         reliability = _stack_output_field(model_output, "event_reliability")
@@ -109,6 +113,8 @@ class FrozenReliabilityWeightedEventLossMixin:
         target_abs = reliability.new_tensor(0.0)
         predicted_abs = reliability.new_tensor(0.0)
         sign_accuracy = reliability.new_tensor(0.0)
+        flat_normal_loss = reliability.new_tensor(0.0)
+        no_event_residual_loss = reliability.new_tensor(0.0)
         if predicted_delta is not None and (
             self.stage2_residual_target_weight > 0.0
             or self.stage2_residual_gradient_weight > 0.0
@@ -129,8 +135,15 @@ class FrozenReliabilityWeightedEventLossMixin:
             )
             coarse_detached = coarse_depth.detach().clamp_min(self.depth_min)
             raw_target = torch.log(depth_gt.clamp_min(self.depth_min)) - torch.log(coarse_detached)
-            target_low = _masked_lowpass(raw_target, valid, self.stage2_target_highpass_kernel)
-            target_delta = (raw_target - target_low) * valid.to(dtype=raw_target.dtype)
+            if self.stage2_target_highpass_kernel > 1:
+                target_low = _masked_lowpass(
+                    raw_target, valid, self.stage2_target_highpass_kernel
+                )
+                target_delta = raw_target - target_low
+            else:
+                # kernel<=1 means no high-pass, not raw_target-raw_target.
+                target_delta = raw_target
+            target_delta = target_delta * valid.to(dtype=raw_target.dtype)
             if self.stage2_target_abs_limit > 0.0:
                 target_delta = target_delta.clamp(
                     -self.stage2_target_abs_limit, self.stage2_target_abs_limit
@@ -170,6 +183,35 @@ class FrozenReliabilityWeightedEventLossMixin:
                 * event_support
             )
 
+            # Explicitly protect planar/no-event regions.  Detail losses are
+            # concentrated around GT geometry edges and otherwise leave broad
+            # surfaces almost unsupervised, where upsampling ripples show up as
+            # conspicuous normal bands.
+            flat_weight = (
+                valid.to(dtype=predicted_delta.dtype)
+                * (1.0 - geometry).clamp(0.0, 1.0)
+                * (1.0 - event_support).clamp(0.0, 1.0)
+            )
+            if self.stage2_flat_normal_weight > 0.0:
+                final_normals = fe.depth_to_normals(
+                    final_depth.clamp_min(self.depth_min), intrinsics
+                )
+                final_normals = F.normalize(final_normals.float(), dim=-1, eps=1.0e-6)
+                target_normals = F.normalize(gt_normals.detach().float(), dim=-1, eps=1.0e-6)
+                normal_error = 1.0 - (final_normals * target_normals).sum(dim=-1).clamp(-1.0, 1.0)
+                flat_normal_loss = _weighted_mean(normal_error, flat_weight.float())
+                total = total + self.stage2_flat_normal_weight * flat_normal_loss
+            if self.stage2_no_event_residual_weight > 0.0:
+                no_event_weight = valid.to(dtype=predicted_delta.dtype) * (
+                    1.0 - event_support
+                ).clamp(0.0, 1.0)
+                no_event_residual_loss = _weighted_mean(predicted_delta.abs(), no_event_weight)
+                total = total + self.stage2_no_event_residual_weight * no_event_residual_loss
+            artifact_supervision = (
+                self.stage2_flat_normal_weight * flat_normal_loss
+                + self.stage2_no_event_residual_weight * no_event_residual_loss
+            )
+
             residual_target_loss = _weighted_mean(
                 (predicted_delta - target_delta.detach()).abs(), target_weight
             )
@@ -191,7 +233,7 @@ class FrozenReliabilityWeightedEventLossMixin:
                 sign_mask,
             )
             details["extra_loss_total"] = float(details.get("extra_loss_total", 0.0)) + float(
-                residual_supervision.detach()
+                (residual_supervision + artifact_supervision).detach()
             )
             details["total_loss_with_extra"] = float(total.detach())
 
@@ -211,6 +253,8 @@ class FrozenReliabilityWeightedEventLossMixin:
                 "stage2_target_delta_abs": float(target_abs.detach()),
                 "stage2_predicted_delta_abs": float(predicted_abs.detach()),
                 "stage2_delta_sign_accuracy": float(sign_accuracy.detach()),
+                "stage2_flat_normal_loss": float(flat_normal_loss.detach()),
+                "stage2_no_event_residual_loss": float(no_event_residual_loss.detach()),
             }
         )
         aux["event_reliability"] = reliability
@@ -249,6 +293,12 @@ def make_stage2_reliability_weighted_loss(cfg):
                 ),
                 event_top_fraction=float(
                     getattr(cfg.loss, "stage2_event_top_fraction", 0.50)
+                ),
+                flat_normal_weight=float(
+                    getattr(cfg.loss, "stage2_flat_normal_weight", 0.25)
+                ),
+                no_event_residual_weight=float(
+                    getattr(cfg.loss, "stage2_no_event_residual_weight", 0.20)
                 ),
             )
 

@@ -160,6 +160,12 @@ def _prepare_cfg(cfg):
     cfg.loss.stage2_event_top_fraction = float(
         getattr(cfg.loss, "stage2_event_top_fraction", 0.50)
     )
+    cfg.loss.stage2_flat_normal_weight = float(
+        getattr(cfg.loss, "stage2_flat_normal_weight", 0.25)
+    )
+    cfg.loss.stage2_no_event_residual_weight = float(
+        getattr(cfg.loss, "stage2_no_event_residual_weight", 0.20)
+    )
     cfg.epochs = max(int(getattr(cfg, "epochs", 20)), 20)
     cfg.eval_every_steps = int(getattr(cfg, "eval_every_steps", 0))
     cfg.vis.save_every_steps = int(getattr(cfg.vis, "save_every_steps", 3000))
