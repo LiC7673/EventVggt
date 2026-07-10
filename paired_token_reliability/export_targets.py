@@ -33,6 +33,12 @@ def parse_args():
     parser.add_argument("--dilate-kernel", type=int, default=3)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--preview-count", type=int, default=8)
+    parser.add_argument(
+        "--min-start-id",
+        type=int,
+        default=0,
+        help="Skip initial synthetic windows whose first event intervals are empty.",
+    )
     return parser.parse_args()
 
 
@@ -85,7 +91,11 @@ def main():
     val_scenes = set(scenes[-max(args.val_scenes, 0) :]) if args.val_scenes else set()
     pairs = list(itertools.combinations(args.ldr_ids, 2))
     records = []
-    selected = list(range(0, len(dataset), max(args.stride, 1)))
+    selected = [
+        index
+        for index in range(0, len(dataset), max(args.stride, 1))
+        if int(dataset.start_img_ids[index][1]) >= int(args.min_start_id)
+    ]
     if args.max_samples > 0:
         selected = selected[: args.max_samples]
 
@@ -154,6 +164,7 @@ def main():
         "event_y_flip": str(getattr(cfg.data, "event_y_flip", "auto")),
         "event_spatial_transform": str(getattr(cfg.data, "event_spatial_transform", "auto")),
         "test_frame_count": int(cfg.data.test_frame_count),
+        "min_start_id": int(args.min_start_id),
         "records": records,
     }
     write_json(output / "manifest.json", manifest)

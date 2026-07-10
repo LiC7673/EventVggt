@@ -30,6 +30,14 @@ def parse_args():
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--target-mode", choices=TARGET_MODES, default="full")
+    parser.add_argument("--target-dilate-kernel", type=int, default=3)
+    parser.add_argument(
+        "--weight-mode",
+        choices=("common_valid", "event_weighted"),
+        default="common_valid",
+        help="Use identical valid-pixel weights for a clean target-factor ablation.",
+    )
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -46,9 +54,20 @@ def parse_args():
 
 
 class ComponentTargetDataset(Dataset):
-    def __init__(self, manifest: str | Path, split: str, target_mode: str) -> None:
+    def __init__(
+        self,
+        manifest: str | Path,
+        split: str,
+        target_mode: str,
+        target_dilate_kernel: int,
+        weight_mode: str,
+    ) -> None:
         self.base = PairedReliabilityDataset(manifest, split)
         self.target_mode = str(target_mode)
+        self.target_dilate_kernel = max(int(target_dilate_kernel), 1)
+        if self.target_dilate_kernel % 2 == 0:
+            self.target_dilate_kernel += 1
+        self.weight_mode = str(weight_mode)
 
     def __len__(self):
         return len(self.base)
@@ -64,24 +83,31 @@ class ComponentTargetDataset(Dataset):
 
     def _target_from_npz(self, npz) -> torch.Tensor:
         mode = self.target_mode
-        if mode == "full":
-            return torch.from_numpy(npz["target"].astype("float32") / 255.0).unsqueeze(1)
         event = self._load_component(npz, "event_support")
         geometry = self._load_component(npz, "geometry")
         token = self._load_component(npz, "token_agreement")
-        if mode == "event":
-            return event
-        if mode == "geometry":
-            return geometry
-        if mode == "token":
-            return token
-        if mode == "event_geometry":
-            return event * geometry
-        if mode == "event_token":
-            return event * token
-        if mode == "geometry_token":
-            return geometry * token
-        raise ValueError(mode)
+        factors = {
+            "full": (event, geometry, token),
+            "event": (event,),
+            "geometry": (geometry,),
+            "token": (token,),
+            "event_geometry": (event, geometry),
+            "event_token": (event, token),
+            "geometry_token": (geometry, token),
+        }
+        if mode not in factors:
+            raise ValueError(mode)
+        target = torch.ones_like(event)
+        for factor in factors[mode]:
+            target = target * factor
+        if self.target_dilate_kernel > 1:
+            target = F.max_pool2d(
+                target,
+                kernel_size=self.target_dilate_kernel,
+                stride=1,
+                padding=self.target_dilate_kernel // 2,
+            )
+        return target.clamp(0.0, 1.0)
 
     def __getitem__(self, index):
         item = self.base[index]
@@ -89,7 +115,14 @@ class ComponentTargetDataset(Dataset):
         with torch.no_grad():
             npz = __import__("numpy").load(self.base.root / record["target"])
             item["target"] = self._target_from_npz(npz)
-            item["weight"] = torch.from_numpy(npz["weight"].astype("float32") / 255.0).unsqueeze(1)
+            stored_weight = torch.from_numpy(
+                npz["weight"].astype("float32") / 255.0
+            ).unsqueeze(1)
+            item["weight"] = (
+                (stored_weight > 0.0).to(dtype=torch.float32)
+                if self.weight_mode == "common_valid"
+                else stored_weight
+            )
         item["target_mode"] = self.target_mode
         return item
 
@@ -176,16 +209,33 @@ def run_epoch(model, loader, optimizer, scaler, device, args, train):
 
 def main():
     args = parse_args()
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    train_set = ComponentTargetDataset(args.manifest, "train", args.target_mode)
-    val_set = ComponentTargetDataset(args.manifest, "val", args.target_mode)
+    train_set = ComponentTargetDataset(
+        args.manifest,
+        "train",
+        args.target_mode,
+        args.target_dilate_kernel,
+        args.weight_mode,
+    )
+    val_set = ComponentTargetDataset(
+        args.manifest,
+        "val",
+        args.target_mode,
+        args.target_dilate_kernel,
+        args.weight_mode,
+    )
+    train_generator = torch.Generator().manual_seed(args.seed)
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
+        generator=train_generator,
     )
     val_loader = DataLoader(
         val_set,
@@ -207,7 +257,8 @@ def main():
     best_iou = -1.0
     print(
         f"mode={args.target_mode} train={len(train_set)} val={len(val_set)} "
-        f"event_channels={event_channels}",
+        f"event_channels={event_channels} weight_mode={args.weight_mode} "
+        f"target_dilate_kernel={args.target_dilate_kernel} seed={args.seed}",
         flush=True,
     )
     for epoch in range(args.epochs):

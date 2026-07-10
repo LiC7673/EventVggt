@@ -6,9 +6,11 @@ cd "${ROOT_DIR}"
 
 DATA_ROOT="${DATA_ROOT:-/data1/lzh/dataset/reflective_raw}"
 TEACHER="${TEACHER:-abl_event_exp/multildr_token_strategy/paired_token_full/checkpoint-last.pth}"
-OUT_ROOT="${OUT_ROOT:-abl_event_exp/loss1_component_ablation}"
+OUT_ROOT="${OUT_ROOT:-abl_event_exp/loss1_factor_ablation_v2}"
 LABEL_DIR="${LABEL_DIR:-${OUT_ROOT}/labels}"
-MODES="${MODES:-full event geometry token}"
+# Paper Loss1 factorial ablation for R*=E*G*T:
+#   full; remove one factor; retain only one factor.
+ABLATIONS="${ABLATIONS:-full drop_event drop_geometry drop_token only_event only_geometry only_token}"
 STAGE1_GPU="${STAGE1_GPU:-6}"
 STAGE2_GPUS="${STAGE2_GPUS:-6,7}"
 STAGE2_PROCESSES="${STAGE2_PROCESSES:-2}"
@@ -16,6 +18,80 @@ BASE_PORT="${BASE_PORT:-29710}"
 EPOCHS_STAGE1="${EPOCHS_STAGE1:-20}"
 EPOCHS_STAGE2="${EPOCHS_STAGE2:-20}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
+SEED="${SEED:-0}"
+MIN_START_ID="${MIN_START_ID:-2}"
+TARGET_DILATE_KERNEL="${TARGET_DILATE_KERNEL:-3}"
+
+target_mode_for() {
+  case "$1" in
+    full)          echo "full" ;;
+    drop_event)    echo "geometry_token" ;;
+    drop_geometry) echo "event_token" ;;
+    drop_token)    echo "event_geometry" ;;
+    only_event)    echo "event" ;;
+    only_geometry) echo "geometry" ;;
+    only_token)    echo "token" ;;
+    *) echo "[error] unknown ablation: $1" >&2; return 1 ;;
+  esac
+}
+
+factors_for() {
+  case "$1" in
+    full)          echo "E*G*T" ;;
+    drop_event)    echo "G*T" ;;
+    drop_geometry) echo "E*T" ;;
+    drop_token)    echo "E*G" ;;
+    only_event)    echo "E" ;;
+    only_geometry) echo "G" ;;
+    only_token)    echo "T" ;;
+  esac
+}
+
+validate_stage1_checkpoint() {
+  python - "$1" "$2" "${TARGET_DILATE_KERNEL}" "${SEED}" <<'PY'
+import sys, torch
+path, expected_mode, expected_dilate, expected_seed = sys.argv[1:]
+try:
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+except TypeError:
+    checkpoint = torch.load(path, map_location="cpu")
+args = checkpoint.get("args", {})
+actual = (
+    str(checkpoint.get("target_mode", args.get("target_mode", ""))),
+    str(args.get("weight_mode", "")),
+    int(args.get("target_dilate_kernel", -1)),
+    int(args.get("seed", -1)),
+)
+expected = (expected_mode, "common_valid", int(expected_dilate), int(expected_seed))
+if actual != expected:
+    raise SystemExit(f"Stage1 checkpoint config mismatch: actual={actual}, expected={expected}")
+PY
+}
+
+validate_stage2_binding() {
+  python - "$1" "$2" "$3" <<'PY'
+import os, sys, torch
+checkpoint_path, expected_stage1, expected_output = sys.argv[1:]
+try:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+except TypeError:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+cfg = checkpoint.get("cfg", {})
+model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+actual_stage1 = model_cfg.get("reliability_checkpoint", "")
+actual_output = cfg.get("output_dir", "") if isinstance(cfg, dict) else ""
+same_stage1 = os.path.realpath(actual_stage1) == os.path.realpath(expected_stage1)
+same_output = os.path.realpath(actual_output) == os.path.realpath(expected_output)
+if not same_stage1 or not same_output:
+    raise SystemExit(
+        "Stage2 checkpoint binding mismatch:\n"
+        f"  reliability actual={actual_stage1}\n"
+        f"  reliability expected={os.path.realpath(expected_stage1)}\n"
+        f"  output actual={actual_output}\n"
+        f"  output expected={os.path.realpath(expected_output)}"
+    )
+PY
+}
 
 mkdir -p "${OUT_ROOT}/logs"
 
@@ -32,59 +108,78 @@ if [[ ! -f "${LABEL_DIR}/manifest.json" ]]; then
     --val-scenes 2 \
     --token-cosine-floor 0.80 \
     --dilate-kernel 3 \
+    --min-start-id "${MIN_START_ID}" \
     2>&1 | tee "${OUT_ROOT}/logs/export_targets.log"
 else
   echo "[export] reuse ${LABEL_DIR}/manifest.json"
   first_npz="$(find "${LABEL_DIR}/targets" -maxdepth 1 -type f -name '*.npz' -print -quit 2>/dev/null || true)"
   if [[ -n "${first_npz}" ]]; then
-    if ! python - "${first_npz}" <<'PY'
-import sys, numpy as np
-data = np.load(sys.argv[1])
+    if ! python - "${LABEL_DIR}/manifest.json" "${first_npz}" "${MIN_START_ID}" <<'PY'
+import json, sys, numpy as np
+manifest = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+data = np.load(sys.argv[2])
 missing = [k for k in ("event_support", "geometry", "token_agreement") if k not in data]
-raise SystemExit(1 if missing else 0)
+wrong_start = int(manifest.get("min_start_id", -1)) != int(sys.argv[3])
+raise SystemExit(1 if missing or wrong_start else 0)
 PY
     then
-      echo "[error] existing labels do not contain component maps. Remove ${LABEL_DIR} and rerun." >&2
+      echo "[error] existing labels are stale, incomplete, or use a different min_start_id." >&2
+      echo "        Use a new LABEL_DIR (recommended) or remove ${LABEL_DIR} and rerun." >&2
       exit 3
     fi
   fi
 fi
 
 summary_csv="${OUT_ROOT}/component_runs.csv"
-echo "mode,stage1_dir,stage2_dir,checkpoint,eval_dir" > "${summary_csv}"
+echo "ablation,target_mode,factors,stage1_dir,stage2_dir,checkpoint,eval_dir" > "${summary_csv}"
+metrics_csv="${OUT_ROOT}/paper_metrics.csv"
+echo "ablation,target_mode,factors,stage1_best_iou,AbsRel,delta1,RMSElog,normal_mean_deg,normal_11_25,ATE,event_reliability_mean,normal_gain_vs_zero,AbsRel_gain_vs_zero,full_vs_zero_depth_diff" > "${metrics_csv}"
 
 mode_index=0
-for mode in ${MODES}; do
+for ablation in ${ABLATIONS}; do
   mode_index=$((mode_index + 1))
-  reliability_dir="${OUT_ROOT}/reliability_${mode}"
-  exp_name="loss1_${mode}_repair_stage2"
+  target_mode="$(target_mode_for "${ablation}")"
+  factors="$(factors_for "${ablation}")"
+  reliability_dir="${OUT_ROOT}/stage1_${ablation}"
+  stage1_checkpoint="${reliability_dir}/checkpoint-best.pth"
+  exp_name="loss1_${ablation}_repair_stage2"
   stage2_dir="${OUT_ROOT}/${exp_name}"
   checkpoint="${stage2_dir}/checkpoint-last.pth"
   port=$((BASE_PORT + mode_index))
   echo
   echo "=============================="
-  echo "[mode=${mode}] Stage1 ReliabilityNet"
+  echo "[${ablation}] Stage1 ReliabilityNet target=${factors} mode=${target_mode}"
   echo "=============================="
-  if [[ ! -f "${reliability_dir}/checkpoint-best.pth" ]]; then
+  echo "[paths] Stage1=${stage1_checkpoint}"
+  echo "[paths] Stage2=${checkpoint}"
+  if [[ ! -f "${stage1_checkpoint}" ]]; then
     CUDA_VISIBLE_DEVICES="${STAGE1_GPU}" python -m paired_token_reliability.train_reliability_component \
       --manifest "${LABEL_DIR}/manifest.json" \
       --output "${reliability_dir}" \
-      --target-mode "${mode}" \
+      --target-mode "${target_mode}" \
+      --target-dilate-kernel "${TARGET_DILATE_KERNEL}" \
+      --weight-mode common_valid \
+      --seed "${SEED}" \
       --epochs "${EPOCHS_STAGE1}" \
       --batch-size 1 \
       --num-workers "${NUM_WORKERS}" \
       --amp \
-      2>&1 | tee "${OUT_ROOT}/logs/stage1_${mode}.log"
+      2>&1 | tee "${OUT_ROOT}/logs/stage1_${ablation}.log"
   else
-    echo "[mode=${mode}] reuse ${reliability_dir}/checkpoint-best.pth"
+    echo "[${ablation}] validate and reuse ${stage1_checkpoint}"
+  fi
+  if ! validate_stage1_checkpoint "${stage1_checkpoint}" "${target_mode}"; then
+    echo "[error] refusing stale/wrong Stage1 checkpoint for ${ablation}." >&2
+    echo "        Use a new OUT_ROOT or remove only this ablation directory." >&2
+    exit 5
   fi
 
   if [[ -f "${checkpoint}" ]]; then
-    echo "[mode=${mode}] reuse Stage2 checkpoint: ${checkpoint}"
+    echo "[${ablation}] found existing Stage2 checkpoint; binding will be validated: ${checkpoint}"
   else
     echo
     echo "=============================="
-    echo "[mode=${mode}] Stage2 repair VGGT"
+    echo "[${ablation}] Stage2 repair VGGT"
     echo "=============================="
     CUDA_VISIBLE_DEVICES="${STAGE2_GPUS}" accelerate launch \
       --multi_gpu \
@@ -97,6 +192,7 @@ for mode in ${MODES}; do
       exp_name="${exp_name}" \
       ++repair_save_dir="${OUT_ROOT}" \
       epochs="${EPOCHS_STAGE2}" \
+      seed="${SEED}" \
       num_workers="${NUM_WORKERS}" \
       data.root="${DATA_ROOT}" \
       data.num_views=4 \
@@ -107,7 +203,7 @@ for mode in ${MODES}; do
       ++data.test_initial_scene_idx=12 \
       ++data.test_scene_count=4 \
       ++data.heldout_test_frame_count=120 \
-      ++model.reliability_checkpoint="${reliability_dir}/checkpoint-best.pth" \
+      ++model.reliability_checkpoint="${stage1_checkpoint}" \
       ++model.reliability_gate_floor=0.20 \
       ++model.repair_reliability_threshold=0.45 \
       ++model.repair_reliability_temperature=0.18 \
@@ -129,21 +225,27 @@ for mode in ${MODES}; do
       ++loss.stage2_flat_normal_weight=0.25 \
       ++loss.stage2_no_event_residual_weight=0.20 \
       ++vis.save_every_steps=3000 \
-      2>&1 | tee "${OUT_ROOT}/logs/stage2_${mode}.log"
+      2>&1 | tee "${OUT_ROOT}/logs/stage2_${ablation}.log"
   fi
 
   if [[ ! -f "${checkpoint}" ]]; then
-    echo "[error] missing Stage2 checkpoint for mode=${mode}: ${checkpoint}" >&2
+    echo "[error] missing Stage2 checkpoint for ablation=${ablation}: ${checkpoint}" >&2
     exit 4
   fi
+  if ! validate_stage2_binding "${checkpoint}" "${stage1_checkpoint}" "${stage2_dir}"; then
+    echo "[error] Stage2 checkpoint is bound to another Stage1/output path." >&2
+    echo "        Use a new OUT_ROOT or remove only this Stage2 ablation directory." >&2
+    exit 6
+  fi
+  echo "[${ablation}] validated Stage2 -> Stage1 binding"
 
   echo
   echo "=============================="
-  echo "[mode=${mode}] held-out causal eval"
+  echo "[${ablation}] held-out causal eval"
   echo "=============================="
   CUDA_VISIBLE_DEVICES="${STAGE1_GPU}" python -m repair_reliability.evaluate_stage2_repair \
     --checkpoint "${checkpoint}" \
-    --reliability-checkpoint "${reliability_dir}/checkpoint-best.pth" \
+    --reliability-checkpoint "${stage1_checkpoint}" \
     --output-dir "${stage2_dir}/heldout_eval" \
     --root "${DATA_ROOT}" \
     --initial-scene-idx 12 \
@@ -153,10 +255,44 @@ for mode in ${MODES}; do
     --num-views 4 \
     --event-resize-bins 10 \
     --amp bf16 \
-    2>&1 | tee "${OUT_ROOT}/logs/eval_${mode}.log"
+    2>&1 | tee "${OUT_ROOT}/logs/eval_${ablation}.log"
 
-  echo "${mode},${reliability_dir},${stage2_dir},${checkpoint},${stage2_dir}/heldout_eval" >> "${summary_csv}"
+  echo "${ablation},${target_mode},${factors},${reliability_dir},${stage2_dir},${checkpoint},${stage2_dir}/heldout_eval" >> "${summary_csv}"
+  python - \
+    "${ablation}" "${target_mode}" "${factors}" \
+    "${reliability_dir}/history.json" \
+    "${stage2_dir}/heldout_eval/summary.json" \
+    "${metrics_csv}" <<'PY'
+import csv, json, sys
+
+ablation, target_mode, factors, history_path, summary_path, output_path = sys.argv[1:]
+history = json.load(open(history_path, "r", encoding="utf-8"))
+summary = json.load(open(summary_path, "r", encoding="utf-8"))
+best_iou = max((float(row["val"]["iou"]) for row in history), default=float("nan"))
+full = summary["conditions"]["full_event"]
+gain = summary["comparisons"]["full_event_net_gain"]
+causal = summary.get("diagnostics", {}).get("causal_prediction_differences", {})
+row = [
+    ablation,
+    target_mode,
+    factors,
+    best_iou,
+    full.get("abs_rel"),
+    full.get("delta1"),
+    full.get("rmse_log"),
+    full.get("normal_mean_deg"),
+    full.get("normal_11_25"),
+    full.get("ate"),
+    full.get("event_reliability_mean"),
+    gain.get("normal_mean_deg_reduction"),
+    gain.get("abs_rel_reduction"),
+    causal.get("full_vs_zero"),
+]
+with open(output_path, "a", newline="", encoding="utf-8") as handle:
+    csv.writer(handle).writerow(row)
+PY
 done
 
 echo
 echo "done. summary: ${summary_csv}"
+echo "paper metrics: ${metrics_csv}"
