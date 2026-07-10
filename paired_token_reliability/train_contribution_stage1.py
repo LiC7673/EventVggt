@@ -310,7 +310,7 @@ def prepare_pair(batch, device: torch.device, args):
 
 def autocast_context(device: torch.device, precision: str):
     enabled = device.type == "cuda" and precision != "none"
-    dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+    dtype = torch.bfloat32 if precision == "bf16" else torch.float32
     return torch.autocast(device_type=device.type, dtype=dtype, enabled=enabled)
 
 
@@ -590,10 +590,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
 
     rgb_dtype = torch.float32
-    if device.type == "cuda" and args.mixed_precision == "bf16":
-        rgb_dtype = torch.bfloat16
-    elif device.type == "cuda" and args.mixed_precision == "fp16":
-        rgb_dtype = torch.float16
+    # if device.type == "cuda" and args.mixed_precision == "bf16":
+    #     rgb_dtype = torch.bfloat32
+    # elif device.type == "cuda" and args.mixed_precision == "fp16":
+    #     rgb_dtype = torch.float32
     rgb_model = build_frozen_rgb_model(cfg, args.pretrained, device, rgb_dtype)
     feature_dim = 2 * int(cfg.model.embed_dim)
     model = MultiLdrEventContributionModel(
