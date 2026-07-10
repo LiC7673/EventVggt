@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional
 
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
@@ -145,6 +148,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proxy-checkpoint", default=None)
     parser.add_argument("--contribution-checkpoint", default=None)
     parser.add_argument("--collapse-std-threshold", type=float, default=0.01)
+    parser.add_argument(
+        "--visualize-every-batches",
+        type=int,
+        default=40,
+        help="Save a training visualization every N batches; 0 disables it",
+    )
+    parser.add_argument("--visualize-view-index", type=int, default=0)
     return parser
 
 
@@ -440,6 +450,74 @@ def metric_values(prepared, prediction, loss_output) -> Dict[str, float]:
     }
 
 
+def _visual_map(value: torch.Tensor, *, fixed_unit_range: bool = False) -> np.ndarray:
+    array = value.detach().float().cpu().numpy()
+    if fixed_unit_range:
+        return np.clip(array, 0.0, 1.0)
+    finite = np.isfinite(array)
+    if not finite.any():
+        return np.zeros_like(array)
+    low, high = np.percentile(array[finite], (2.0, 98.0))
+    return np.clip((array - low) / max(float(high - low), 1.0e-8), 0.0, 1.0)
+
+
+@torch.no_grad()
+def save_batch_visualization(
+    prepared,
+    prediction,
+    args,
+    *,
+    phase: str,
+    epoch: int,
+    batch_index: int,
+) -> Path:
+    """Save the already-computed batch, without an extra VGGT forward."""
+    sample_index = 0
+    view_index = min(
+        max(int(args.visualize_view_index), 0), prepared["rgb_bad"].shape[1] - 1
+    )
+    rgb_bad = prepared["rgb_bad"][sample_index, view_index].detach().float()
+    rgb_reference = prepared["rgb_reference"][sample_index, view_index].detach().float()
+    event = prepared["event"][sample_index, view_index].detach().float()
+    contribution = prediction["contribution"][sample_index, view_index].detach().float()
+    selected = prediction["selected_event"][sample_index, view_index].detach().float()
+    pred_depth = prediction["depth"][sample_index, view_index].detach().float()
+    gt_depth = prepared["depth_gt"][sample_index, view_index].detach().float()
+    bridge = prepared["bridge"].bridge[sample_index, view_index].detach().float()
+
+    panels = (
+        (rgb_bad.permute(1, 2, 0).cpu().numpy().clip(0.0, 1.0), "target RGB", None),
+        (rgb_reference.permute(1, 2, 0).cpu().numpy().clip(0.0, 1.0), "reference RGB", None),
+        (_visual_map(event.abs().sum(dim=0)), "event projection", "gray"),
+        (_visual_map(contribution, fixed_unit_range=True), "contribution [0,1]", "magma"),
+        (_visual_map(selected.abs().sum(dim=0)), "selected event", "gray"),
+        (_visual_map(pred_depth), "predicted depth", "viridis"),
+        (_visual_map(gt_depth), "GT depth", "viridis"),
+        (_visual_map(bridge, fixed_unit_range=True), "bridge mask", "gray"),
+    )
+    figure, axes = plt.subplots(2, 4, figsize=(16, 8))
+    for axis, (image, title, cmap) in zip(axes.flat, panels):
+        axis.imshow(image, cmap=cmap, vmin=0.0, vmax=1.0)
+        axis.set_title(title)
+        axis.axis("off")
+    pair = prepared["pair_labels"][sample_index]
+    figure.suptitle(
+        f"phase={phase} epoch={epoch + 1} batch={batch_index + 1} pair={pair}"
+    )
+    figure.tight_layout()
+    output = (
+        Path(args.output)
+        / "train_visualizations"
+        / phase
+        / f"epoch_{epoch + 1:03d}"
+        / f"batch_{batch_index + 1:06d}.png"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output, dpi=130, bbox_inches="tight")
+    plt.close(figure)
+    return output
+
+
 def run_epoch(
     model,
     rgb_model,
@@ -448,6 +526,7 @@ def run_epoch(
     args,
     *,
     phase: str,
+    epoch: int = 0,
     optimizer=None,
     max_batches: int = 0,
 ) -> Dict[str, float]:
@@ -474,6 +553,20 @@ def run_epoch(
                 optimizer.step()
                 optimized += 1
         values = metric_values(prepared, prediction, loss_output)
+        if (
+            training
+            and args.visualize_every_batches > 0
+            and (batch_index + 1) % args.visualize_every_batches == 0
+        ):
+            visual_path = save_batch_visualization(
+                prepared,
+                prediction,
+                args,
+                phase=phase,
+                epoch=epoch,
+                batch_index=batch_index,
+            )
+            print(f"  [visual] {visual_path}", flush=True)
         for sample_index, pair_label in enumerate(prepared["pair_labels"]):
             pair_record = pair_totals.setdefault(
                 pair_label,
@@ -682,6 +775,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 device,
                 args,
                 phase=phase,
+                epoch=epoch,
                 optimizer=optimizer,
                 max_batches=args.max_train_batches,
             )
@@ -698,6 +792,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                     device,
                     args,
                     phase=phase,
+                    epoch=epoch,
                     max_batches=args.max_val_batches,
                 )
             if phase in {"contribution", "joint"} and (

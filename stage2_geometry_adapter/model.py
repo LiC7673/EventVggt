@@ -346,6 +346,7 @@ class StreamVGGT(nn.Module):
         adapter_hidden_channels: int = 128,
         # Alias used by the historical held-out evaluator CLI.
         reliability_checkpoint: Optional[str] = None,
+        allow_non_bridge_stage1: bool = False,
         **_legacy_unused,
     ) -> None:
         super().__init__()
@@ -354,7 +355,7 @@ class StreamVGGT(nn.Module):
             raise ValueError("A Stage-1 event-contribution checkpoint is required.")
         self.stage1_checkpoint = str(Path(stage1_checkpoint).expanduser().resolve())
         raw_stage1 = torch_load(self.stage1_checkpoint)
-        if raw_stage1.get("supervision_region") != "bridge":
+        if raw_stage1.get("supervision_region") != "bridge" and not allow_non_bridge_stage1:
             raise ValueError(
                 "Stage 2 requires the full Stage-1 bridge checkpoint, not the event-support-only ablation."
             )
@@ -462,19 +463,21 @@ class StreamVGGT(nn.Module):
         coarse_features = self._coarse_patch_features(
             tokens_list, patch_start_idx, images.shape[-2], images.shape[-1]
         )
-        contribution = self.contribution_net(
-            event_voxel,
-            images,
-            coarse_depth_map,
-            coarse_normals,
-            coarse_features if self.contribution_net.coarse_feature_dim > 0 else None,
-        )
-        if contribution_override is not None:
-            if contribution_override.shape != contribution.shape:
+        if contribution_override is None:
+            contribution = self.contribution_net(
+                event_voxel,
+                images,
+                coarse_depth_map,
+                coarse_normals,
+                coarse_features if self.contribution_net.coarse_feature_dim > 0 else None,
+            )
+        else:
+            expected_shape = event_voxel.shape[:2] + event_voxel.shape[-2:]
+            if contribution_override.shape != expected_shape:
                 raise ValueError(
-                    f"Contribution override {contribution_override.shape} != {contribution.shape}"
+                    f"Contribution override {contribution_override.shape} != {expected_shape}"
                 )
-            contribution = contribution_override.to(contribution).clamp(0.0, 1.0)
+            contribution = contribution_override.to(event_voxel).clamp(0.0, 1.0)
         selected_event = contribution.unsqueeze(2) * event_voxel
         shapes = dpt_feature_shapes(images.shape[-2], images.shape[-1], self.patch_size)
         event_pyramid, contribution_pyramid = self.event_encoder(

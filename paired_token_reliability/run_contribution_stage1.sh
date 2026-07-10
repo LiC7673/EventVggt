@@ -21,6 +21,7 @@ RUN_NO_BRIDGE="${RUN_NO_BRIDGE:-0}"
 NO_BRIDGE_OUTPUT="${NO_BRIDGE_OUTPUT:-${OUTPUT}_no_bridge}"
 EXPOSURES="${EXPOSURES:-0,1,2,5,10}"
 PAIR_MODE="${PAIR_MODE:-anchor}"
+VISUALIZE_EVERY_BATCHES="${VISUALIZE_EVERY_BATCHES:-40}"
 
 mkdir -p "${OUTPUT}/logs"
 
@@ -31,7 +32,7 @@ python -m paired_token_reliability.test_contribution_stage1 \
 if [[ "${RUN_NO_BRIDGE}" == "1" ]]; then
   mkdir -p "${NO_BRIDGE_OUTPUT}/logs"
   echo "[ablation] train ContributionNet without the bridge mask"
-  CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.train_contribution_stage1_with_vis \
+  CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.train_contribution_stage1 \
     --config "${CONFIG}" \
     --pretrained "${PRETRAINED}" \
     --output "${NO_BRIDGE_OUTPUT}" \
@@ -47,6 +48,7 @@ if [[ "${RUN_NO_BRIDGE}" == "1" ]]; then
     --supervision-region event_support \
     --exposures "${EXPOSURES}" \
     --pair-mode "${PAIR_MODE}" \
+    --visualize-every-batches "${VISUALIZE_EVERY_BATCHES}" \
     "$@" \
     2>&1 | tee "${NO_BRIDGE_OUTPUT}/logs/train.log"
 fi
@@ -67,6 +69,7 @@ CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.train_contribut
   --mixed-precision "${MIXED_PRECISION}" \
   --exposures "${EXPOSURES}" \
   --pair-mode "${PAIR_MODE}" \
+  --visualize-every-batches "${VISUALIZE_EVERY_BATCHES}" \
   "$@" \
   2>&1 | tee "${OUTPUT}/logs/train.log"
 
