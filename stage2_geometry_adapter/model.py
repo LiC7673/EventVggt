@@ -626,16 +626,16 @@ class StreamVGGT(nn.Module):
         event_pyramid, contribution_pyramid = self.event_encoder(
             selected_event, spatial_contribution, shapes
         )
-        batch, views = images.shape[:2]
+        batch_size, num_views = images.shape[:2]
         event_normal = event_normal_reliability = event_normal_support = None
         if decode_event_normal:
             event_normal_feature = event_pyramid[0].reshape(
-                batch * views,
+                batch_size * num_views,
                 event_pyramid[0].shape[2],
                 *event_pyramid[0].shape[-2:],
             )
             event_normal_reliability = contribution_pyramid[0].reshape(
-                batch * views, 1, *contribution_pyramid[0].shape[-2:]
+                batch_size * num_views, 1, *contribution_pyramid[0].shape[-2:]
             )
             event_normal, event_normal_reliability = self.event_normal_decoder(
                 event_normal_feature,
@@ -643,10 +643,10 @@ class StreamVGGT(nn.Module):
                 output_size=images.shape[-2:],
             )
             event_normal = event_normal.reshape(
-                batch, views, 3, *images.shape[-2:]
+                batch_size, num_views, 3, *images.shape[-2:]
             ).movedim(2, -1)
             event_normal_reliability = event_normal_reliability.reshape(
-                batch, views, *images.shape[-2:]
+                batch_size, num_views, *images.shape[-2:]
             )
             event_normal_support = selected_event.abs().sum(dim=2) > 0.0
 
