@@ -69,6 +69,11 @@ class MyEventDataset(BaseEventMultiViewDataset):
         event_resize_method="voxel_antialias",
         event_resize_bins=10,
         event_voxel_cache_size=0,
+        event_source_mode="current",
+        decomposition_supervision=False,
+        decomposition_event_root="events_additive",
+        decomposition_geo_branch="geometry_motion",
+        decomposition_full_branch="full",
         return_normal_gt=False,
         return_debug_event_fields=False,
         **kwargs,
@@ -89,6 +94,16 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.event_resize_bins = event_resize_bins
         self.event_voxel_cache_size = max(int(event_voxel_cache_size), 0)
         self._event_voxel_cache = OrderedDict()
+        self.event_source_mode = str(event_source_mode).strip().lower()
+        if self.event_source_mode not in {"current", "cur_best", "decomposition_full"}:
+            raise ValueError(
+                "event_source_mode must be current, cur_best, or decomposition_full, "
+                f"got {event_source_mode!r}"
+            )
+        self.decomposition_supervision = bool(decomposition_supervision)
+        self.decomposition_event_root = str(decomposition_event_root)
+        self.decomposition_geo_branch = str(decomposition_geo_branch)
+        self.decomposition_full_branch = str(decomposition_full_branch)
         self.return_normal_gt = return_normal_gt
         self.return_debug_event_fields = return_debug_event_fields
         self.start_img_ids = []
@@ -183,15 +198,41 @@ class MyEventDataset(BaseEventMultiViewDataset):
     def _probe_scene(self, scene_name):
         scene_dir = osp.join(self.ROOT, scene_name)
         ldr_dirs = self._resolve_ldr_dirs(scene_dir)
-        event_candidates = [
-            osp.join(scene_dir, "cur_event", "events.h5"),
-            osp.join(scene_dir, "cur_best_event", "events.h5"),
-            osp.join(scene_dir, "esim_event", "events.h5"),
-        ]
+        if self.event_source_mode == "decomposition_full":
+            # Strict isolation: this mode never probes or opens cur_event,
+            # cur_best_event, or esim_event.
+            event_candidates = [
+                osp.join(
+                    scene_dir,
+                    self.decomposition_event_root,
+                    self.decomposition_full_branch,
+                    "events.h5",
+                )
+            ]
+        elif self.event_source_mode == "cur_best":
+            # Strict isolation for the cur-best-as-full experiment.
+            event_candidates = [osp.join(scene_dir, "cur_best_event", "events.h5")]
+        else:
+            event_candidates = [
+                osp.join(scene_dir, "cur_event", "events.h5"),
+                osp.join(scene_dir, "cur_best_event", "events.h5"),
+                osp.join(scene_dir, "esim_event", "events.h5"),
+            ]
         event_path = next((path for path in event_candidates if osp.isfile(path)), event_candidates[0])
+        geo_event_path = osp.join(
+            scene_dir,
+            self.decomposition_event_root,
+            self.decomposition_geo_branch,
+            "events.h5",
+        )
         pose_json = osp.join(scene_dir, "transforms.json")
 
-        if not ldr_dirs or not osp.isfile(event_path) or not osp.isfile(pose_json):
+        if (
+            not ldr_dirs
+            or not osp.isfile(event_path)
+            or not osp.isfile(pose_json)
+            or (self.decomposition_supervision and not osp.isfile(geo_event_path))
+        ):
             return None
 
         intrinsics, poses = self._load_camera_matrices(pose_json)
@@ -228,6 +269,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             "frame_count": frame_count,
             "event_h5": event_path,
             "event_dir": osp.basename(osp.dirname(event_path)),
+            "geo_event_h5": geo_event_path if self.decomposition_supervision else None,
             "pose_json": pose_json,
         }
 
@@ -300,6 +342,14 @@ class MyEventDataset(BaseEventMultiViewDataset):
         frame_event_index, event_time_bounds, event_time_info = self.build_frame_event_index(
             record["event_h5"], frame_count, return_time_info=True
         )
+        geo_event_h5 = record.get("geo_event_h5")
+        if geo_event_h5:
+            geo_frame_event_index, _, geo_event_time_info = self.build_frame_event_index(
+                geo_event_h5, frame_count, return_time_info=True
+            )
+        else:
+            geo_frame_event_index = None
+            geo_event_time_info = None
 
         # Split dataset: last test_frame_count frames for test, rest for train
         train_frame_count = frame_count - self.test_frame_count
@@ -346,6 +396,23 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 dtype=np.int32,
             ),
             "start_ids": start_ids,
+            "geo_event_h5": geo_event_h5,
+            "geo_frame_event_index": geo_frame_event_index,
+            "geo_event_time_info": geo_event_time_info,
+            "geo_event_columns": (
+                geo_event_time_info["columns"] if geo_event_time_info is not None else None
+            ),
+            "geo_event_resolution": (
+                np.array(
+                    [
+                        geo_event_time_info.get("event_width") or 0,
+                        geo_event_time_info.get("event_height") or 0,
+                    ],
+                    dtype=np.int32,
+                )
+                if geo_event_time_info is not None
+                else None
+            ),
         }
 
     def _ensure_scene_loaded(self, scene_name):
@@ -954,6 +1021,58 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 event_data["event_p"] = event_data["event_p"][valid_events]
                 event_data["events"] = event_data["events"][valid_events]
 
+            contribution_target = None
+            geo_event_voxel = None
+            if self.decomposition_supervision:
+                geo_start, geo_end = scene_meta["geo_frame_event_index"][frame_idx]
+                geo_src_resolution = scene_meta.get("geo_event_resolution")
+                if (
+                    geo_src_resolution is None
+                    or np.asarray(geo_src_resolution).reshape(-1).size < 2
+                    or np.any(np.asarray(geo_src_resolution) <= 0)
+                ):
+                    geo_src_resolution = event_src_resolution
+                geo_cache_key = (
+                    scene_meta["geo_event_h5"],
+                    int(geo_start),
+                    int(geo_end),
+                    tuple(np.asarray(geo_src_resolution).reshape(-1)[:2].tolist()),
+                    tuple(np.asarray(resized["dst_resolution"]).reshape(-1)[:2].tolist()),
+                    str(event_spatial_transform),
+                    str(self.event_resize_method),
+                    int(self.event_resize_bins),
+                )
+                geo_event_data = self._cached_resized_event(geo_cache_key)
+                if geo_event_data is None:
+                    geo_event_data = self.load_event_slice(
+                        scene_meta["geo_event_h5"],
+                        geo_start,
+                        geo_end,
+                        event_columns=scene_meta.get("geo_event_columns"),
+                        time_origin=scene_meta.get("geo_event_time_info", {}).get("origin", 0.0),
+                    )
+                    geo_event_data = self._resize_event_data(
+                        geo_event_data,
+                        src_resolution=geo_src_resolution,
+                        dst_resolution=resized["dst_resolution"],
+                        spatial_transform=event_spatial_transform,
+                        resize_method=self.event_resize_method,
+                        resize_bins=self.event_resize_bins,
+                    )
+                    self._store_resized_event(geo_cache_key, geo_event_data)
+                geo_event_voxel = geo_event_data.get("event_voxel")
+                if geo_event_voxel is None:
+                    geo_event_voxel = np.zeros_like(event_data["event_voxel"], dtype=np.float32)
+                if "mask" in resized:
+                    geo_event_voxel = (
+                        geo_event_voxel * resized["mask"][None].astype(np.float32, copy=False)
+                    )
+                full_mass = np.abs(event_data["event_voxel"]).sum(axis=0)
+                geo_mass = np.abs(geo_event_voxel).sum(axis=0)
+                contribution_target = np.clip(
+                    geo_mass / (full_mass + 1.0e-6), 0.0, 1.0
+                ).astype(np.float32, copy=False)
+
             if frame_idx == 0:
                 time_range = np.array([0.0, 0.0], dtype=np.float32)
             else:
@@ -1001,6 +1120,13 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 img_mask=np.array(True, dtype=bool),
                 reset=np.array(frame_idx == start_id, dtype=bool),
             )
+            if self.decomposition_supervision:
+                view.update(
+                    event_geo_voxel=geo_event_voxel.astype(np.float32, copy=False),
+                    contribution_target=contribution_target,
+                    decomposition_valid=np.array(True, dtype=bool),
+                    event_source_mode=self.event_source_mode,
+                )
             if self.return_normal_gt:
                 view["normal_gt"] = (
                     resized["normal"].astype(np.float32)
@@ -1035,6 +1161,11 @@ def get_combined_dataset(
     event_resize_method="voxel_antialias",
     event_resize_bins=10,
     event_voxel_cache_size=0,
+    event_source_mode="current",
+    decomposition_supervision=False,
+    decomposition_event_root="events_additive",
+    decomposition_geo_branch="geometry_motion",
+    decomposition_full_branch="full",
     return_normal_gt=False,
     return_debug_event_fields=False,
 ):
@@ -1059,6 +1190,11 @@ def get_combined_dataset(
         event_resize_method=event_resize_method,
         event_resize_bins=event_resize_bins,
         event_voxel_cache_size=event_voxel_cache_size,
+        event_source_mode=event_source_mode,
+        decomposition_supervision=decomposition_supervision,
+        decomposition_event_root=decomposition_event_root,
+        decomposition_geo_branch=decomposition_geo_branch,
+        decomposition_full_branch=decomposition_full_branch,
         return_normal_gt=return_normal_gt,
         return_debug_event_fields=return_debug_event_fields,
         # normalize=True

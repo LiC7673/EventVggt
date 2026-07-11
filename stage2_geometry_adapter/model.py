@@ -21,6 +21,7 @@ from transformers.file_utils import ModelOutput
 
 from paired_token_reliability.common import infer_patch_grid, torch_load
 from paired_token_reliability.contribution_stage1 import (
+    ContributionNet,
     MultiLdrEventContributionModel,
     build_model_from_checkpoint,
     normalize_event_voxel,
@@ -185,9 +186,10 @@ class GeometryFeatureAdapter(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         raw_update = self.adapter(torch.cat((rgb_feature, event_feature), dim=1))
         alpha = torch.tanh(self.alpha_logit)
-        applied_update = alpha * contribution * raw_update
+        ungated_update = alpha * raw_update
+        applied_update = contribution * ungated_update
         refined = rgb_feature + applied_update
-        low_contribution_penalty = ((1.0 - contribution) * applied_update).abs().mean()
+        low_contribution_penalty = ((1.0 - contribution) * ungated_update).abs().mean()
         return refined, applied_update, low_contribution_penalty
 
 
@@ -332,6 +334,10 @@ def dpt_feature_shapes(height: int, width: int, patch_size: int) -> List[Tuple[i
 class StreamVGGT(nn.Module):
     """VGGT with Stage-1 contribution and DPT-only multi-scale event adapters."""
 
+    # Unified A/B/C training constructs ContributionNet from scratch. Older
+    # Stage-2-only copies lack this capability and require a legacy checkpoint.
+    supports_unified_training = True
+
     def __init__(
         self,
         img_size: int = 518,
@@ -344,6 +350,9 @@ class StreamVGGT(nn.Module):
         stage1_checkpoint: Optional[str] = None,
         event_pyramid_channels: int = 64,
         adapter_hidden_channels: int = 128,
+        contribution_channels: int = 32,
+        contribution_initial_value: float = 1.0,
+        contribution_use_geometry_prior: bool = True,
         # Alias used by the historical held-out evaluator CLI.
         reliability_checkpoint: Optional[str] = None,
         allow_non_bridge_stage1: bool = False,
@@ -351,37 +360,52 @@ class StreamVGGT(nn.Module):
     ) -> None:
         super().__init__()
         stage1_checkpoint = stage1_checkpoint or reliability_checkpoint
-        if not stage1_checkpoint:
-            raise ValueError("A Stage-1 event-contribution checkpoint is required.")
-        self.stage1_checkpoint = str(Path(stage1_checkpoint).expanduser().resolve())
-        raw_stage1 = torch_load(self.stage1_checkpoint)
-        if raw_stage1.get("supervision_region") != "bridge" and not allow_non_bridge_stage1:
-            raise ValueError(
-                "Stage 2 requires the full Stage-1 bridge checkpoint, not the event-support-only ablation."
+        self.contribution_use_geometry_prior = bool(contribution_use_geometry_prior)
+        if stage1_checkpoint:
+            self.stage1_checkpoint = str(Path(stage1_checkpoint).expanduser().resolve())
+            raw_stage1 = torch_load(self.stage1_checkpoint)
+            if raw_stage1.get("supervision_region") != "bridge" and not allow_non_bridge_stage1:
+                raise ValueError(
+                    "Stage 2 requires the full Stage-1 bridge checkpoint, not the event-support-only ablation."
+                )
+            if raw_stage1.get("training_phase") not in {"contribution", "joint"}:
+                raise ValueError(
+                    "Stage 2 requires Stage 1-B checkpoint-best.pth or an explicitly selected "
+                    "short Stage 1-C joint checkpoint. A proxy-only checkpoint has no learned contribution map."
+                )
+            stage1_model = build_model_from_checkpoint(raw_stage1)
+            if int(stage1_model.architecture["num_bins"]) != int(event_num_bins):
+                raise ValueError(
+                    f"Stage-1 bins={stage1_model.architecture['num_bins']} but Stage-2 bins={event_num_bins}"
+                )
+            expected_feature_dim = int(stage1_model.architecture["coarse_feature_dim"])
+            if expected_feature_dim not in (0, 2 * int(embed_dim)):
+                raise ValueError(
+                    f"Stage-1 coarse feature dim={expected_feature_dim}, expected 0 or {2 * int(embed_dim)}"
+                )
+            self.contribution_net = stage1_model.contribution_net
+            self.contribution_net.requires_grad_(False).eval()
+            self.stage1_metadata = {
+                "schema": raw_stage1.get("schema"),
+                "frozen_rgb_checkpoint": raw_stage1.get("frozen_rgb_checkpoint"),
+                "supervision_region": raw_stage1.get("supervision_region"),
+                "training_phase": raw_stage1.get("training_phase"),
+            }
+        else:
+            self.stage1_checkpoint = None
+            self.contribution_net = ContributionNet(
+                num_bins=event_num_bins,
+                base_channels=contribution_channels,
+                coarse_feature_dim=2 * int(embed_dim),
+                count_cmax=event_count_cmax,
+                initial_contribution=contribution_initial_value,
             )
-        if raw_stage1.get("training_phase") not in {"contribution", "joint"}:
-            raise ValueError(
-                "Stage 2 requires Stage 1-B checkpoint-best.pth or an explicitly selected "
-                "short Stage 1-C joint checkpoint. A proxy-only checkpoint has no learned contribution map."
-            )
-        stage1_model = build_model_from_checkpoint(raw_stage1)
-        if int(stage1_model.architecture["num_bins"]) != int(event_num_bins):
-            raise ValueError(
-                f"Stage-1 bins={stage1_model.architecture['num_bins']} but Stage-2 bins={event_num_bins}"
-            )
-        expected_feature_dim = int(stage1_model.architecture["coarse_feature_dim"])
-        if expected_feature_dim not in (0, 2 * int(embed_dim)):
-            raise ValueError(
-                f"Stage-1 coarse feature dim={expected_feature_dim}, expected 0 or {2 * int(embed_dim)}"
-            )
-        self.contribution_net = stage1_model.contribution_net
-        self.contribution_net.requires_grad_(False).eval()
-        self.stage1_metadata = {
-            "schema": raw_stage1.get("schema"),
-            "frozen_rgb_checkpoint": raw_stage1.get("frozen_rgb_checkpoint"),
-            "supervision_region": raw_stage1.get("supervision_region"),
-            "training_phase": raw_stage1.get("training_phase"),
-        }
+            self.stage1_metadata = {
+                "schema": "unified_geometry_contribution_v1",
+                "frozen_rgb_checkpoint": None,
+                "supervision_region": "weight_only",
+                "training_phase": None,
+            }
 
         self.patch_size = int(patch_size)
         self.head_frames_chunk_size = int(head_frames_chunk_size)
@@ -435,6 +459,39 @@ class StreamVGGT(nn.Module):
             tokens.shape[0], tokens.shape[1], grid_h, grid_w, tokens.shape[-1]
         ).permute(0, 1, 4, 2, 3)
 
+    def predict_contribution(self, views) -> torch.Tensor:
+        """Predict C without running camera, event encoder, or final geometry decoding."""
+        images, event_voxel, intrinsics = self._stack_inputs(views)
+        event_voxel = event_voxel.to(images.device)
+        intrinsics = intrinsics.to(images.device)
+        tokens_list, patch_start_idx = self.aggregator(images)
+        coarse_depth, _ = self.depth_head(
+            tokens_list,
+            images=images,
+            patch_start_idx=patch_start_idx,
+            frames_chunk_size=self.head_frames_chunk_size,
+        )
+        coarse_depth_map = (
+            coarse_depth[..., 0]
+            if coarse_depth.shape[-1] == 1
+            else coarse_depth.squeeze(2)
+        )
+        coarse_normals = depth_to_normals(coarse_depth_map.float(), intrinsics.float())
+        coarse_features = self._coarse_patch_features(
+            tokens_list, patch_start_idx, images.shape[-2], images.shape[-1]
+        )
+        if not self.contribution_use_geometry_prior:
+            coarse_depth_map = torch.ones_like(coarse_depth_map)
+            coarse_normals = torch.zeros_like(coarse_normals)
+            coarse_features = torch.zeros_like(coarse_features)
+        return self.contribution_net(
+            event_voxel,
+            images,
+            coarse_depth_map,
+            coarse_normals,
+            coarse_features if self.contribution_net.coarse_feature_dim > 0 else None,
+        )
+
     def forward(
         self,
         views,
@@ -464,24 +521,42 @@ class StreamVGGT(nn.Module):
             tokens_list, patch_start_idx, images.shape[-2], images.shape[-1]
         )
         if contribution_override is None:
+            contribution_depth = coarse_depth_map
+            contribution_normals = coarse_normals
+            contribution_features = coarse_features
+            if not self.contribution_use_geometry_prior:
+                contribution_depth = torch.ones_like(coarse_depth_map)
+                contribution_normals = torch.zeros_like(coarse_normals)
+                contribution_features = torch.zeros_like(coarse_features)
             contribution = self.contribution_net(
                 event_voxel,
                 images,
-                coarse_depth_map,
-                coarse_normals,
-                coarse_features if self.contribution_net.coarse_feature_dim > 0 else None,
+                contribution_depth,
+                contribution_normals,
+                contribution_features if self.contribution_net.coarse_feature_dim > 0 else None,
             )
         else:
-            expected_shape = event_voxel.shape[:2] + event_voxel.shape[-2:]
-            if contribution_override.shape != expected_shape:
+            spatial_shape = event_voxel.shape[:2] + event_voxel.shape[-2:]
+            temporal_shape = event_voxel.shape
+            if contribution_override.shape not in (spatial_shape, temporal_shape):
                 raise ValueError(
-                    f"Contribution override {contribution_override.shape} != {expected_shape}"
+                    f"Contribution override {contribution_override.shape} must be "
+                    f"{spatial_shape} or {temporal_shape}"
                 )
             contribution = contribution_override.to(event_voxel).clamp(0.0, 1.0)
-        selected_event = contribution.unsqueeze(2) * event_voxel
+        if contribution.ndim == event_voxel.ndim:
+            selected_event = contribution * event_voxel
+            event_mass = event_voxel.abs()
+            spatial_contribution = (
+                (contribution * event_mass).sum(dim=2)
+                / event_mass.sum(dim=2).clamp_min(1.0e-6)
+            )
+        else:
+            selected_event = contribution.unsqueeze(2) * event_voxel
+            spatial_contribution = contribution
         shapes = dpt_feature_shapes(images.shape[-2], images.shape[-1], self.patch_size)
         event_pyramid, contribution_pyramid = self.event_encoder(
-            selected_event, contribution, shapes
+            selected_event, spatial_contribution, shapes
         )
 
         with nullcontext():
@@ -522,17 +597,21 @@ class StreamVGGT(nn.Module):
         )
         depth_update_magnitudes = torch.stack(self.depth_head.last_update_magnitudes)
         point_update_magnitudes = torch.stack(self.point_head.last_update_magnitudes)
+        final_depth_map = depth[..., 0] if depth.shape[-1] == 1 else depth.squeeze(2)
+        final_normals = depth_to_normals(final_depth_map.float(), intrinsics.float())
         results = []
         for frame_index in range(images.shape[1]):
             item = {
                 "pts3d_in_other_view": world_points[:, frame_index],
                 "conf": point_confidence[:, frame_index],
                 "depth": depth[:, frame_index],
+                "normal": final_normals[:, frame_index],
                 "depth_conf": depth_confidence[:, frame_index],
                 "depth_coarse": coarse_depth[:, frame_index],
                 "depth_coarse_conf": coarse_depth_conf[:, frame_index],
                 "camera_pose": pose_encoding[:, frame_index],
                 "event_contribution": contribution[:, frame_index],
+                "event_contribution_spatial": spatial_contribution[:, frame_index],
                 "selected_event_mass": selected_event[:, frame_index].abs().sum(dim=1),
                 "adapter_update_loss": update_loss,
                 "adapter_alpha_depth": alpha_depth,
