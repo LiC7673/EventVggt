@@ -7,7 +7,9 @@ cd "${ROOT}"
 GPUS="${GPUS:-${GPU:-2}}"
 IFS=',' read -r -a GPU_ARRAY <<< "${GPUS}"
 NPROC="${#GPU_ARRAY[@]}"
-MASTER_PORT="${MASTER_PORT:-29644}"
+if [[ -z "${MASTER_PORT:-}" ]]; then
+  MASTER_PORT="$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"
+fi
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
 EXP_NAME="${EXP_NAME:-decomp_full_as_event_12train_4test}"
 OUTPUT="${OUTPUT:-exp/${EXP_NAME}}"

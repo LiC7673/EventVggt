@@ -7,8 +7,12 @@ cd "${ROOT}"
 # The two jobs are completely independent. Never overlap these GPU lists.
 CUR_BEST_GPUS="${CUR_BEST_GPUS:-0}"
 FULL_GPUS="${FULL_GPUS:-6,7}"
-CUR_BEST_PORT="${CUR_BEST_PORT:-29701}"
-FULL_PORT="${FULL_PORT:-29702}"
+if [[ -z "${CUR_BEST_PORT:-}" ]]; then
+  CUR_BEST_PORT="$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"
+fi
+if [[ -z "${FULL_PORT:-}" ]]; then
+  FULL_PORT="$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"
+fi
 
 EPOCHS_A="${EPOCHS_A:-10}"
 EPOCHS_B="${EPOCHS_B:-20}"
