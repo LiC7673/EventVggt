@@ -124,6 +124,11 @@ class MultiLdrContributionDataset(Dataset):
         event_spatial_transform="auto",
         event_resize_method: str = "voxel_antialias",
         event_resize_bins: int = 10,
+        event_source_mode: str = "current",
+        decomposition_supervision: bool = False,
+        decomposition_event_root: str = "events_additive",
+        decomposition_geo_branch: str = "geometry_motion",
+        decomposition_full_branch: str = "full",
     ) -> None:
         super().__init__()
         self.num_views = int(num_views)
@@ -147,6 +152,11 @@ class MultiLdrContributionDataset(Dataset):
             event_spatial_transform=event_spatial_transform,
             event_resize_method=event_resize_method,
             event_resize_bins=int(event_resize_bins),
+            event_source_mode=event_source_mode,
+            decomposition_supervision=decomposition_supervision,
+            decomposition_event_root=decomposition_event_root,
+            decomposition_geo_branch=decomposition_geo_branch,
+            decomposition_full_branch=decomposition_full_branch,
             # Enough to retain one complete multi-view window. The second
             # exposure then reuses exactly the same resized event voxels.
             event_voxel_cache_size=self.num_views,

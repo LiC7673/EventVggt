@@ -20,7 +20,8 @@ import finetune_event as fe
 from paired_token_reliability.common import move_views_to_device, strip_module_prefix, torch_load
 from paired_token_reliability.contribution_dataset import generate_ordered_pairs, parse_exposure_sequence
 from paired_token_reliability.contribution_stage1 import build_bridge_masks, geometry_emphasis_weight, orient_exposure_pair
-from paired_token_reliability.train_contribution_stage1 import make_dataset, make_loader
+from paired_token_reliability.contribution_dataset import MultiLdrContributionDataset
+from paired_token_reliability.train_contribution_stage1 import make_loader
 from paired_token_reliability.unified_loss import UnifiedGeometryContributionLoss
 from paired_token_reliability.unified_model import (
     UnifiedGeometryContributionModel,
@@ -56,6 +57,7 @@ def parser():
     value.add_argument("--budget-weight", type=float, default=0.05)
     value.add_argument("--pair-weight", type=float, default=0.2)
     value.add_argument("--update-weight", type=float, default=0.01)
+    value.add_argument("--decomposition-weight", type=float, default=0.2)
     value.add_argument("--no-pair-consistency", action="store_true")
     value.add_argument("--no-budget", action="store_true")
     value.add_argument("--no-geometry-prior", action="store_true")
@@ -75,6 +77,53 @@ def load_cfg(path, overrides):
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
     OmegaConf.set_struct(cfg, False)
     return cfg
+
+
+def make_unified_dataset(cfg, split, pairs):
+    """Build disjoint scene-level train/test splits when configured.
+
+    This intentionally leaves the legacy Stage-1 dataset builder unchanged.
+    """
+    data = cfg.data
+    is_train = split == "train"
+    initial_scene_idx = int(getattr(
+        data,
+        "train_initial_scene_idx" if is_train else "test_initial_scene_idx",
+        getattr(data, "initial_scene_idx", 0),
+    ))
+    active_scene_count = int(getattr(
+        data,
+        "train_scene_count" if is_train else "test_scene_count",
+        getattr(data, "active_scene_count", 3),
+    ))
+    frame_count = int(getattr(
+        data,
+        "train_holdout_frame_count" if is_train else "heldout_test_frame_count",
+        0 if is_train else getattr(data, "test_frame_count", 10),
+    ))
+    return MultiLdrContributionDataset(
+        root=str(data.root),
+        split=split,
+        num_views=int(data.num_views),
+        resolution=tuple(data.resolution),
+        fps=int(data.fps),
+        seed=int(cfg.seed),
+        ordered_pairs=pairs,
+        scene_names=list(data.scene_names) if getattr(data, "scene_names", None) else None,
+        initial_scene_idx=initial_scene_idx,
+        active_scene_count=active_scene_count,
+        test_frame_count=frame_count,
+        min_train_start_id=int(getattr(data, "min_train_start_id", 0)),
+        event_y_flip=getattr(data, "event_y_flip", "auto"),
+        event_spatial_transform=getattr(data, "event_spatial_transform", "auto"),
+        event_resize_method=str(getattr(data, "event_resize_method", "voxel_antialias")),
+        event_resize_bins=int(getattr(data, "event_resize_bins", 10)),
+        event_source_mode=str(getattr(data, "event_source_mode", "current")),
+        decomposition_supervision=bool(getattr(data, "decomposition_supervision", False)),
+        decomposition_event_root=str(getattr(data, "decomposition_event_root", "events_additive")),
+        decomposition_geo_branch=str(getattr(data, "decomposition_geo_branch", "geometry_motion")),
+        decomposition_full_branch=str(getattr(data, "decomposition_full_branch", "full")),
+    )
 
 
 def build_model(cfg, args, device):
@@ -229,6 +278,7 @@ def criterion_for(args, phase):
         budget_weight=(0.0 if phase == "adapter" or args.no_budget else args.budget_weight),
         pair_weight=(0.0 if phase == "adapter" or args.no_pair_consistency else args.pair_weight),
         update_weight=(0.0 if phase == "adapter" else args.update_weight),
+        decomposition_weight=(0.0 if phase == "adapter" else args.decomposition_weight),
         points_loss_type="l1",
     )
 
@@ -263,6 +313,11 @@ def save_visual(output_root, phase, epoch, batch_index, views, event, bridge, ou
         (visual_map(geometry), "geometry score", "magma"),
         (visual_map(pred * valid), "pred depth", "viridis"),
         (visual_map(gt * valid), "GT depth", "viridis"),
+        *(
+            ((visual_map(aux["decomposition_target"][0, 0], True), "decomp target", "magma"),)
+            if aux.get("decomposition_target") is not None
+            else ()
+        ),
     )
     figure, axes = plt.subplots(2, 4, figsize=(16, 8))
     for axis in axes.flat:
@@ -325,6 +380,7 @@ def run_epoch(model, loader, optimizer, criterion, device, args, phase, epoch, e
                 f"[{phase}] batch={batch_index:05d} loss={values['loss']:.5f} "
                 f"D={values['depth']:.5f} N={values['normal']:.5f} P={values['point']:.5f} "
                 f"budget={values['budget']:.5f} pair={values['pair']:.5f} "
+                f"decomp={values['decomposition']:.5f} "
                 f"Cmean={values['contribution_mean']:.4f} Cstd={values['contribution_std']:.4f}",
                 flush=True,
             )
@@ -362,8 +418,17 @@ def main(argv=None):
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
     exposures = parse_exposure_sequence(args.exposures)
     pairs = generate_ordered_pairs(exposures, args.pair_mode)
-    train_dataset = make_dataset(cfg, "train", pairs)
-    val_dataset = make_dataset(cfg, "test", pairs)
+    train_dataset = make_unified_dataset(cfg, "train", pairs)
+    val_dataset = make_unified_dataset(cfg, "test", pairs)
+    print(f"train scenes={train_dataset.dataset.get_active_scenes()}", flush=True)
+    print(f"test scenes={val_dataset.dataset.get_active_scenes()}", flush=True)
+    print(
+        "event source="
+        f"{getattr(cfg.data, 'event_source_mode', 'current')} "
+        "decomposition="
+        f"{bool(getattr(cfg.data, 'decomposition_supervision', False))}",
+        flush=True,
+    )
     train_loader = make_loader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, train=True)
     val_loader = make_loader(val_dataset, batch_size=args.batch_size, num_workers=args.num_workers, train=False)
     model = build_model(cfg, args, device)

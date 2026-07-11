@@ -50,6 +50,7 @@ class UnifiedGeometryContributionLoss:
         budget_weight=0.05,
         pair_weight=0.2,
         update_weight=0.01,
+        decomposition_weight=0.0,
         points_loss_type="l1",
     ):
         self.depth_weight = float(depth_weight)
@@ -58,6 +59,7 @@ class UnifiedGeometryContributionLoss:
         self.budget_weight = float(budget_weight)
         self.pair_weight = float(pair_weight)
         self.update_weight = float(update_weight)
+        self.decomposition_weight = float(decomposition_weight)
         # Reuse the established point-map alignment/loss implementation. Depth
         # and normal are replaced below by explicitly Bridge-weighted versions.
         self.point_criterion = fe.EventSupervisedLoss(
@@ -119,6 +121,31 @@ class UnifiedGeometryContributionLoss:
             [item.get("event_contribution_spatial", item["event_contribution"])
              for item in output_target.ress], dim=1
         )
+        if self.decomposition_weight > 0.0 and all(
+            "contribution_target" in view for view in target_views
+        ):
+            decomposition_target = fe.stack_view_field(
+                target_views, "contribution_target"
+            ).to(contribution_spatial)
+            if decomposition_target.ndim == contribution_spatial.ndim + 1:
+                decomposition_target = decomposition_target.squeeze(2)
+            decomposition_valid = event_voxel.float().abs().sum(dim=2) > 0.0
+            if all("decomposition_valid" in view for view in target_views):
+                sample_valid = fe.stack_view_field(
+                    target_views, "decomposition_valid"
+                ).to(device=contribution_spatial.device).bool()
+                while sample_valid.ndim < decomposition_valid.ndim:
+                    sample_valid = sample_valid.unsqueeze(-1)
+                decomposition_valid = decomposition_valid & sample_valid
+            decomposition_error = F.smooth_l1_loss(
+                contribution_spatial.float(), decomposition_target.float(), reduction="none"
+            )
+            decomposition_loss = _weighted_mean(
+                decomposition_error, decomposition_valid.float()
+            )
+        else:
+            decomposition_target = None
+            decomposition_loss = contribution.new_zeros(())
         budget_loss, ratio = event_mass_budget(contribution, event_voxel, rho)
         if contribution_reference is None:
             pair_loss = contribution.new_zeros(())
@@ -130,6 +157,7 @@ class UnifiedGeometryContributionLoss:
             + self.budget_weight * budget_loss
             + self.pair_weight * pair_loss
             + self.update_weight * update_loss
+            + self.decomposition_weight * decomposition_loss
         )
         details = {
             **geometry_details,
@@ -137,6 +165,7 @@ class UnifiedGeometryContributionLoss:
             "budget": budget_loss,
             "pair": pair_loss,
             "update": update_loss,
+            "decomposition": decomposition_loss,
             "rho": contribution.new_tensor(float(rho)),
             "contribution_mean": ratio.mean(),
             "contribution_std": contribution.float().std(unbiased=False),
@@ -145,6 +174,7 @@ class UnifiedGeometryContributionLoss:
             "contribution": contribution,
             "contribution_spatial": contribution_spatial,
             "bridge": bridge_mask,
+            "decomposition_target": decomposition_target,
         })
         return UnifiedLossOutput(total, details, aux)
 

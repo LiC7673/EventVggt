@@ -35,3 +35,21 @@ Useful ablations are `--no-pair-consistency`, `--no-geometry-prior`, and
 `--no-budget`. Programmatic inference supports `learned`, `full`, `random`,
 `no_contribution` (bypass with all events), and `zero` via
 `contribution_override()`.
+
+## Decomposition supervision experiments
+
+Both experiments use scenes 0--11 for training and scenes 12--15 for
+validation. They load only the geometry-motion decomposition branch in
+addition to the selected main event stream.
+
+```bash
+# denominator/model input = cur_best_event; does not load additive full
+bash paired_token_reliability/run_decomp_cur_best_as_full_12train_4test.sh
+
+# denominator/model input = events_additive/full; does not load cur_* events
+bash paired_token_reliability/run_decomp_full_as_event_12train_4test.sh
+```
+
+The target is the clipped soft mass ratio `sum(abs(E_geo)) /
+(sum(abs(E_input)) + eps)`. It supervises the mass-weighted spatial projection
+of temporal contribution using Smooth-L1 during phases B/C only.
