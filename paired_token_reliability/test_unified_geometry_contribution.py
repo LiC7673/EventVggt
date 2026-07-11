@@ -2,7 +2,11 @@
 
 import torch
 
-from paired_token_reliability.unified_loss import event_mass_budget, pair_consistency
+from paired_token_reliability.unified_loss import (
+    event_mass_budget,
+    geometry_contribution_rank_loss,
+    pair_consistency,
+)
 from paired_token_reliability.unified_model import contribution_override
 
 
@@ -33,3 +37,18 @@ def test_contribution_ablation_shapes_and_values():
     random_mask = contribution_override(event, "random", 0.5, 0.5)
     assert random_mask.shape == event.shape
     assert torch.all((random_mask == 0) | (random_mask == 1))
+
+
+def test_geometry_rank_prefers_matching_order():
+    geometry = torch.tensor([[[[0.0, 1.0]]]])
+    valid = torch.ones_like(geometry, dtype=torch.bool)
+    event = torch.ones(1, 1, 2, 1, 2)
+    matching = torch.tensor([[[[0.1, 0.9]]]])
+    reversed_order = torch.tensor([[[[0.9, 0.1]]]])
+    good = geometry_contribution_rank_loss(
+        matching, geometry, valid, event, margin=0.1, difference_threshold=0.1
+    )
+    bad = geometry_contribution_rank_loss(
+        reversed_order, geometry, valid, event, margin=0.1, difference_threshold=0.1
+    )
+    assert good < bad

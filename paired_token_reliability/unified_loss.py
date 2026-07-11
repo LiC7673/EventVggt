@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 import finetune_event as fe
+from paired_token_reliability.contribution_stage1 import geometry_emphasis_weight
 
 
 def _weighted_mean(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -30,6 +31,134 @@ def pair_consistency(contribution_a, contribution_b, event_voxel):
     return _weighted_mean((contribution_a.float() - contribution_b.float()).abs(), support)
 
 
+# def geometry_contribution_rank_loss(
+#     contribution,
+#     geometry_score,
+#     valid,
+#     event_voxel,
+#     *,
+#     margin=0.05,
+#     difference_threshold=0.10,
+# ):
+#     """Enforce ordering, not equality, between GT geometry detail and C."""
+#     support = event_voxel.float().abs().sum(dim=2) > 0.0
+#     eligible = valid.bool() & support
+#     losses = []
+#     for dimension in (-1, -2):
+#         geo_left = geometry_score.narrow(dimension, 0, geometry_score.shape[dimension] - 1)
+#         geo_right = geometry_score.narrow(dimension, 1, geometry_score.shape[dimension] - 1)
+#         contribution_left = contribution.narrow(dimension, 0, contribution.shape[dimension] - 1)
+#         contribution_right = contribution.narrow(dimension, 1, contribution.shape[dimension] - 1)
+#         valid_left = eligible.narrow(dimension, 0, eligible.shape[dimension] - 1)
+#         valid_right = eligible.narrow(dimension, 1, eligible.shape[dimension] - 1)
+#         geo_difference = geo_right - geo_left
+#         pair_mask = valid_left & valid_right & (
+#             geo_difference.abs() > float(difference_threshold)
+#         )
+#         ordered_contribution_difference = (
+#             geo_difference.sign() * (contribution_right - contribution_left)
+#         )
+#         pair_loss = F.relu(float(margin) - ordered_contribution_difference)
+#         if pair_mask.any():
+#             losses.append(pair_loss[pair_mask].mean())
+#     if not losses:
+#         return contribution.sum() * 0.0
+#     return torch.stack(losses).mean()
+import torch
+import torch.nn.functional as F
+
+
+def geometry_contribution_rank_loss(
+    contribution,
+    geometry_score,
+    valid,
+    event_voxel,
+    *,
+    margin=0.05,
+    difference_threshold=0.10,
+):
+    """
+    Enforce relative ordering between geometry score and contribution:
+
+        G_i > G_j  =>  C_i > C_j + margin
+
+    Compared with the original implementation, this version uses
+    both adjacent and slightly longer-range pixel pairs.
+    """
+
+    # Geometry score is supervision only.
+    geometry_score = geometry_score.detach()
+
+    # [B, V, C, H, W] -> [B, V, H, W]
+    event_support = event_voxel.float().abs().sum(dim=2) > 0.0
+    eligible = valid.bool() & event_support
+
+    losses = []
+
+    # Compare pixels separated by 1 and 4 pixels.
+    for offset in (1, 4):
+        # Horizontal and vertical directions.
+        for dimension in (-1, -2):
+            spatial_size = geometry_score.shape[dimension]
+
+            if offset >= spatial_size:
+                continue
+
+            length = spatial_size - offset
+
+            geo_a = geometry_score.narrow(
+                dimension, 0, length
+            )
+            geo_b = geometry_score.narrow(
+                dimension, offset, length
+            )
+
+            contribution_a = contribution.narrow(
+                dimension, 0, length
+            )
+            contribution_b = contribution.narrow(
+                dimension, offset, length
+            )
+
+            eligible_a = eligible.narrow(
+                dimension, 0, length
+            )
+            eligible_b = eligible.narrow(
+                dimension, offset, length
+            )
+
+            geometry_difference = geo_b - geo_a
+
+            pair_mask = (
+                eligible_a
+                & eligible_b
+                & (
+                    geometry_difference.abs()
+                    > float(difference_threshold)
+                )
+            )
+
+            if not pair_mask.any():
+                continue
+
+            # Positive when contribution follows geometry ordering.
+            ordered_contribution_difference = (
+                geometry_difference.sign()
+                * (contribution_b - contribution_a)
+            )
+
+            pair_loss = F.relu(
+                float(margin)
+                - ordered_contribution_difference
+            )
+
+            losses.append(pair_loss[pair_mask].mean())
+
+    if not losses:
+        return contribution.sum() * 0.0
+
+    return torch.stack(losses).mean()
+
 @dataclass
 class UnifiedLossOutput:
     loss: torch.Tensor
@@ -51,6 +180,9 @@ class UnifiedGeometryContributionLoss:
         pair_weight=0.2,
         update_weight=0.01,
         decomposition_weight=0.0,
+        geometry_rank_weight=0.10,
+        geometry_rank_margin=0.05,
+        geometry_rank_threshold=0.10,
         points_loss_type="l1",
     ):
         self.depth_weight = float(depth_weight)
@@ -60,6 +192,9 @@ class UnifiedGeometryContributionLoss:
         self.pair_weight = float(pair_weight)
         self.update_weight = float(update_weight)
         self.decomposition_weight = float(decomposition_weight)
+        self.geometry_rank_weight = float(geometry_rank_weight)
+        self.geometry_rank_margin = float(geometry_rank_margin)
+        self.geometry_rank_threshold = float(geometry_rank_threshold)
         # Reuse the established point-map alignment/loss implementation. Depth
         # and normal are replaced below by explicitly Bridge-weighted versions.
         self.point_criterion = fe.EventSupervisedLoss(
@@ -83,6 +218,9 @@ class UnifiedGeometryContributionLoss:
 
         normal_pred = fe.depth_to_normals(depth_pred, intrinsics)
         normal_gt = fe.depth_to_normals(depth_gt, intrinsics)
+        geometry_score = (
+            geometry_emphasis_weight(depth_gt, normal_gt, valid, alpha=2.0) - 1.0
+        ) / 2.0
         normal_valid = fe.normal_stencil_valid_mask(valid, depth_pred, eps=1.0e-6)
         pred_unit = F.normalize(normal_pred.float(), dim=-1, eps=1.0e-6)
         gt_unit = F.normalize(normal_gt.float(), dim=-1, eps=1.0e-6)
@@ -93,7 +231,12 @@ class UnifiedGeometryContributionLoss:
             "depth": depth_loss,
             "normal": normal_loss,
             "point": depth_loss.new_tensor(point_details["points_loss"]),
-        }, {**point_aux, "depth_pred_live": depth_pred, "valid_live": valid}
+        }, {
+            **point_aux,
+            "depth_pred_live": depth_pred,
+            "valid_live": valid,
+            "geometry_score": geometry_score,
+        }
 
     def __call__(
         self,
@@ -152,12 +295,25 @@ class UnifiedGeometryContributionLoss:
         else:
             pair_loss = pair_consistency(contribution, contribution_reference, event_voxel)
         update_loss = output_target.ress[0]["adapter_update_loss"]
+        geometry_rank_loss = (
+            geometry_contribution_rank_loss(
+                contribution_spatial.float(),
+                aux["geometry_score"],
+                aux["valid_live"],
+                event_voxel,
+                margin=self.geometry_rank_margin,
+                difference_threshold=self.geometry_rank_threshold,
+            )
+            if self.geometry_rank_weight > 0.0
+            else contribution.new_zeros(())
+        )
         total = (
             geometry_loss
             + self.budget_weight * budget_loss
             + self.pair_weight * pair_loss
             + self.update_weight * update_loss
             + self.decomposition_weight * decomposition_loss
+            + self.geometry_rank_weight * geometry_rank_loss
         )
         details = {
             **geometry_details,
@@ -166,6 +322,7 @@ class UnifiedGeometryContributionLoss:
             "pair": pair_loss,
             "update": update_loss,
             "decomposition": decomposition_loss,
+            "geometry_rank": geometry_rank_loss,
             "rho": contribution.new_tensor(float(rho)),
             "contribution_mean": ratio.mean(),
             "contribution_std": contribution.float().std(unbiased=False),
@@ -184,4 +341,5 @@ __all__ = [
     "UnifiedLossOutput",
     "event_mass_budget",
     "pair_consistency",
+    "geometry_contribution_rank_loss",
 ]

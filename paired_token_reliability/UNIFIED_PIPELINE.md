@@ -63,6 +63,13 @@ held-out scenes. Each exposure directory contains condition metrics, per-batch
 metrics, causal diagnostics, and RGB/event/contribution/depth visualizations;
 `all_exposures_summary.json` collects the exposure-level results.
 
+The optional geometry-ranking term compares neighboring event-supported valid
+pixels. When one pixel has a sufficiently higher GT geometry-detail score, its
+predicted spatial contribution must exceed the other by a margin. This is an
+ordering constraint only; contribution is never regressed to the geometry map.
+Defaults are `weight=0.10`, `margin=0.05`, and geometry difference threshold
+`0.10`, active only in phases B/C.
+
 Standalone evaluation:
 
 ```bash

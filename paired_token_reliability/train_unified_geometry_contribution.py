@@ -23,7 +23,7 @@ from omegaconf import OmegaConf
 import finetune_event as fe
 from paired_token_reliability.common import move_views_to_device, strip_module_prefix, torch_load
 from paired_token_reliability.contribution_dataset import generate_ordered_pairs, parse_exposure_sequence
-from paired_token_reliability.contribution_stage1 import build_bridge_masks, geometry_emphasis_weight, orient_exposure_pair
+from paired_token_reliability.contribution_stage1 import build_bridge_masks, orient_exposure_pair
 from paired_token_reliability.contribution_dataset import MultiLdrContributionDataset
 from paired_token_reliability.train_contribution_stage1 import make_loader
 from paired_token_reliability.unified_loss import UnifiedGeometryContributionLoss
@@ -90,6 +90,9 @@ def parser():
     value.add_argument("--pair-weight", type=float, default=0.2)
     value.add_argument("--update-weight", type=float, default=0.01)
     value.add_argument("--decomposition-weight", type=float, default=0.2)
+    value.add_argument("--geometry-rank-weight", type=float, default=0.10)
+    value.add_argument("--geometry-rank-margin", type=float, default=0.05)
+    value.add_argument("--geometry-rank-threshold", type=float, default=0.10)
     value.add_argument("--no-pair-consistency", action="store_true")
     value.add_argument("--no-budget", action="store_true")
     value.add_argument("--no-geometry-prior", action="store_true")
@@ -312,6 +315,9 @@ def criterion_for(args, phase):
         pair_weight=(0.0 if phase == "adapter" or args.no_pair_consistency else args.pair_weight),
         update_weight=(0.0 if phase == "adapter" else args.update_weight),
         decomposition_weight=(0.0 if phase == "adapter" else args.decomposition_weight),
+        geometry_rank_weight=(0.0 if phase == "adapter" else args.geometry_rank_weight),
+        geometry_rank_margin=args.geometry_rank_margin,
+        geometry_rank_threshold=args.geometry_rank_threshold,
         points_loss_type="l1",
     )
 
@@ -334,10 +340,7 @@ def save_visual(output_root, phase, epoch, batch_index, views, event, bridge, ou
     pred = aux["depth_pred_live"][0, 0]
     gt = fe.stack_view_field(views, "depthmap")[0, 0]
     valid = aux["valid_live"][0, 0]
-    normal_gt = fe.depth_to_normals(gt[None, None], fe.stack_view_field(views, "camera_intrinsics")[0:1, 0:1])[0, 0]
-    geometry = geometry_emphasis_weight(
-        gt[None, None], normal_gt[None, None], valid[None, None]
-    )[0, 0]
+    geometry = aux["geometry_score"][0, 0]
     panels = (
         (rgb, "RGB", None),
         (visual_map(event[0, 0].abs().sum(0)), "event", "gray"),
@@ -438,6 +441,7 @@ def run_epoch(
                 f"D={values['depth']:.5f} N={values['normal']:.5f} P={values['point']:.5f} "
                 f"budget={values['budget']:.5f} pair={values['pair']:.5f} "
                 f"decomp={values['decomposition']:.5f} "
+                f"rank={values['geometry_rank']:.5f} "
                 f"Cmean={values['contribution_mean']:.4f} Cstd={values['contribution_std']:.4f}",
                 flush=True,
             )
