@@ -61,7 +61,10 @@ class GeometryAdapterTests(unittest.TestCase):
         self.assertTrue(all(float(gate.abs().sum()) == 0.0 for gate in gates))
 
     def test_expected_four_dpt_scales(self):
-        self.assertEqual(dpt_feature_shapes(392, 518, 14), [(112, 148), (56, 74), (28, 37), (14, 19)])
+        self.assertEqual(
+            dpt_feature_shapes(392, 518, 14),
+            [(28, 37), (28, 37), (28, 37), (28, 37)],
+        )
 
     def test_model_has_no_depth_residual_api(self):
         source = inspect.getsource(StreamVGGT.forward)

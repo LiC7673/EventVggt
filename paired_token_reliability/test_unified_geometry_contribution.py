@@ -1,5 +1,7 @@
 """Small CPU tests for the unified contribution losses and ablation controls."""
 
+from types import SimpleNamespace
+
 import torch
 
 from paired_token_reliability.unified_loss import (
@@ -9,6 +11,7 @@ from paired_token_reliability.unified_loss import (
 )
 from paired_token_reliability.unified_model import contribution_override
 from paired_token_reliability.contribution_stage1 import build_bridge_masks
+from paired_token_reliability.train_unified_geometry_contribution import dropout_override
 
 
 def test_temporal_budget_uses_event_mass():
@@ -38,6 +41,23 @@ def test_contribution_ablation_shapes_and_values():
     random_mask = contribution_override(event, "random", 0.5, 0.5)
     assert random_mask.shape == event.shape
     assert torch.all((random_mask == 0) | (random_mask == 1))
+
+
+def test_phase_a_dropout_is_smooth_and_shared_across_event_channels():
+    torch.manual_seed(3)
+    event = torch.ones(2, 3, 6, 32, 40)
+    args = SimpleNamespace(
+        event_dropout_min_keep=0.5,
+        event_dropout_max_keep=0.9,
+        event_dropout_block_size=8,
+    )
+    mask = dropout_override(event, args)
+    assert mask.shape == event.shape
+    assert torch.all((mask >= 0.0) & (mask <= 1.0))
+    torch.testing.assert_close(mask[:, :, 0], mask[:, :, -1])
+    # The deployment C is soft; Phase A must no longer manufacture an
+    # independent Bernoulli/salt-and-pepper pattern for every event channel.
+    assert torch.any((mask > 0.0) & (mask < 1.0))
 
 
 def test_geometry_rank_prefers_matching_order():

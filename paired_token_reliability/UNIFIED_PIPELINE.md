@@ -81,6 +81,18 @@ ordering constraint only; contribution is never regressed to the geometry map.
 Defaults are `weight=0.10`, `margin=0.05`, and geometry difference threshold
 `0.10`, active only in phases B/C.
 
+## Pre-resize adapter graph (checkpoint schema v2)
+
+Geometry adapters predict the four event updates on the shared transformer
+patch grid. The pretrained RGB feature keeps its original DPT resize path,
+while each event residual is resized bilinearly and added afterwards. This
+prevents the new residual from exciting the stride-4 and stride-2
+transposed-convolution polyphase basis, which can otherwise appear as periodic
+depth-normal artifacts. Phase-A augmentation uses one smooth spatial soft mask
+shared across all temporal bins and polarities instead of independent
+voxel-wise Bernoulli dropout. Version-1 unified checkpoints are rejected, so
+Phase A must be trained again after this graph change.
+
 Standalone evaluation:
 
 ```bash

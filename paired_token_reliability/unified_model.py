@@ -65,7 +65,9 @@ def contribution_override(event_voxel, mode="learned", min_keep=0.5, max_keep=1.
 
 
 class UnifiedGeometryContributionModel(StreamVGGT):
-    checkpoint_schema = "unified_geometry_contribution_v1"
+    # v2 predicts events on the patch grid and bilinearly resizes the residual,
+    # bypassing the DPT ConvTranspose polyphase path used by v1 updates.
+    checkpoint_schema = "unified_geometry_contribution_v2"
 
     def __init__(self, *args, **kwargs):
         # No legacy Stage-1 checkpoint: ContributionNet and final adapters are

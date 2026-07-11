@@ -296,17 +296,29 @@ class GeometryAdapterDPTHead(DPTHead):
             rgb_feature = self.projects[dpt_index](tokens)
             if self.pos_embed:
                 rgb_feature = self._apply_pos_embed(rgb_feature, width, height)
-            rgb_feature = self.resize_layers[dpt_index](rgb_feature)
+            resized_rgb = self.resize_layers[dpt_index](rgb_feature)
+            # Predict the event update on the common transformer patch grid,
+            # where no stride-4/stride-2 ConvTranspose phase pattern exists.
             event_feature = event_pyramid[dpt_index][
                 :, frames_start_idx:frames_end_idx
             ].reshape(batch * views, event_pyramid[dpt_index].shape[2], *rgb_feature.shape[-2:])
             contribution = contribution_pyramid[dpt_index][
                 :, frames_start_idx:frames_end_idx
             ].reshape(batch * views, 1, *rgb_feature.shape[-2:])
-            refined, update, penalty = self.geometry_adapters[dpt_index](
+            _, update, penalty = self.geometry_adapters[dpt_index](
                 rgb_feature, event_feature.to(rgb_feature.dtype), contribution.to(rgb_feature.dtype)
             )
-            features.append(refined)
+            # Preserve the exact pretrained RGB resize path.  Resize only the
+            # residual with bilinear sampling, so an event update cannot excite
+            # the non-overlapping ConvTranspose polyphase/checkerboard basis.
+            if update.shape[-2:] != resized_rgb.shape[-2:]:
+                update = F.interpolate(
+                    update,
+                    size=resized_rgb.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            features.append(resized_rgb + update)
             penalties.append(penalty)
             magnitudes.append(update.detach().abs().mean())
 
@@ -329,13 +341,9 @@ class GeometryAdapterDPTHead(DPTHead):
 
 
 def dpt_feature_shapes(height: int, width: int, patch_size: int) -> List[Tuple[int, int]]:
+    """Return the four pre-resize adapter shapes on the shared patch grid."""
     patch_h, patch_w = height // patch_size, width // patch_size
-    return [
-        (patch_h * 4, patch_w * 4),
-        (patch_h * 2, patch_w * 2),
-        (patch_h, patch_w),
-        ((patch_h + 1) // 2, (patch_w + 1) // 2),
-    ]
+    return [(patch_h, patch_w)] * 4
 
 
 class StreamVGGT(nn.Module):
@@ -408,7 +416,7 @@ class StreamVGGT(nn.Module):
                 initial_contribution=contribution_initial_value,
             )
             self.stage1_metadata = {
-                "schema": "unified_geometry_contribution_v1",
+                "schema": "unified_geometry_contribution_v2",
                 "frozen_rgb_checkpoint": None,
                 "supervision_region": "weight_only",
                 "training_phase": None,

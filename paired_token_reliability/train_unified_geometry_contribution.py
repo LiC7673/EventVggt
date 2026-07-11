@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
 from omegaconf import OmegaConf
@@ -83,6 +84,10 @@ def parser():
     value.add_argument("--clip-grad", type=float, default=1.0)
     value.add_argument("--event-dropout-min-keep", type=float, default=0.5)
     value.add_argument("--event-dropout-max-keep", type=float, default=1.0)
+    value.add_argument(
+        "--event-dropout-block-size", type=int, default=32,
+        help="Approximate spatial correlation length of the Phase-A soft event mask.",
+    )
     value.add_argument("--bridge-beta", type=float, default=2.0)
     value.add_argument("--bridge-event-dilate-kernel", type=int, default=3)
     value.add_argument(
@@ -307,12 +312,36 @@ def prepare_pair(batch, device, args):
 
 
 def dropout_override(event, args):
-    return contribution_override(
-        event,
-        "random",
-        args.event_dropout_min_keep,
-        args.event_dropout_max_keep,
+    """Build a smooth Phase-A mask shared by all bins and polarities.
+
+    Independent Bernoulli sampling of every voxel injected artificial
+    salt-and-pepper frequencies into the event stream.  The adapter could
+    reproduce those frequencies as small depth ripples which become strong
+    grid patterns after depth-to-normal differentiation.  A low-resolution
+    continuous field better matches the soft spatial C used at deployment.
+    """
+    batch, views, channels, height, width = event.shape
+    low, high = sorted(
+        (float(args.event_dropout_min_keep), float(args.event_dropout_max_keep))
     )
+    low, high = max(0.0, low), min(1.0, high)
+    keep = torch.empty(
+        batch, views, 1, 1, 1, device=event.device, dtype=event.dtype
+    ).uniform_(low, high)
+    block = max(int(args.event_dropout_block_size), 1)
+    grid_h = max(2, int(math.ceil(height / block)))
+    grid_w = max(2, int(math.ceil(width / block)))
+    field = torch.rand(
+        batch * views, 1, grid_h, grid_w, device=event.device, dtype=event.dtype
+    )
+    field = F.interpolate(
+        field, size=(height, width), mode="bilinear", align_corners=False
+    ).reshape(batch, views, 1, height, width)
+    field = field - field.mean(dim=(-2, -1), keepdim=True)
+    field = field / field.abs().amax(dim=(-2, -1), keepdim=True).clamp_min(1.0e-6)
+    amplitude = torch.minimum(keep, 1.0 - keep)
+    spatial = (keep + amplitude * field).clamp(0.0, 1.0)
+    return spatial.expand(batch, views, channels, height, width)
 
 
 def rho_schedule(epoch, epochs):
@@ -360,6 +389,15 @@ def visual_normal(normal, valid):
     return value
 
 
+def visual_signed(value):
+    array = value.detach().float().cpu().numpy()
+    finite = np.isfinite(array)
+    if not finite.any():
+        return np.full_like(array, 0.5)
+    scale = np.percentile(np.abs(array[finite]), 98)
+    return np.clip(0.5 + 0.5 * array / max(float(scale), 1.0e-8), 0.0, 1.0)
+
+
 @torch.no_grad()
 def save_visual(
     output_root, phase, epoch, batch_index, views, reference_views,
@@ -371,6 +409,9 @@ def save_visual(
     )
     contribution = aux["contribution_spatial"][0, 0]
     pred = aux["depth_pred_live"][0, 0]
+    coarse = torch.stack(
+        [item["depth_coarse"] for item in output.ress], dim=1
+    ).squeeze(-1)[0, 0]
     gt = fe.stack_view_field(views, "depthmap")[0, 0]
     valid = aux["valid_live"][0, 0]
     normal_valid = aux["normal_valid_live"][0, 0]
@@ -384,7 +425,9 @@ def save_visual(
         (visual_map(contribution, True), "contribution", "magma"),
         (visual_map(bridge.bridge[0, 0].float(), True), "bridge", "gray"),
         (visual_map(geometry), "geometry score", "magma"),
+        (visual_map(coarse * valid), "coarse depth", "viridis"),
         (visual_map(pred * valid), "pred depth", "viridis"),
+        (visual_signed((pred - coarse) * valid), "depth update", "coolwarm"),
         (visual_map(gt * valid), "GT depth", "viridis"),
         (predicted_normal, "pred normal", None),
         (target_normal, "GT normal", None),
@@ -512,6 +555,17 @@ def save_checkpoint(path, model, optimizer, cfg, args, phase, epoch, metrics):
     temporary.replace(path)
 
 
+def load_unified_phase_checkpoint(model, path):
+    checkpoint = torch_load(path)
+    expected = UnifiedGeometryContributionModel.checkpoint_schema
+    if checkpoint.get("schema") != expected:
+        raise RuntimeError(
+            f"Checkpoint {path} uses schema {checkpoint.get('schema')!r}, expected "
+            f"{expected!r}. The pre-resize adapter graph requires a fresh Phase-A run."
+        )
+    model.load_state_dict(checkpoint["model"], strict=True)
+
+
 def main(argv=None):
     args, overrides = parser().parse_known_args(argv)
     if not getattr(StreamVGGT, "supports_unified_training", False):
@@ -571,9 +625,9 @@ def main(argv=None):
         if epochs <= 0:
             continue
         if phase == "contribution":
-            model.load_state_dict(torch_load(output / "checkpoint-adapter-best.pth")["model"], strict=True)
+            load_unified_phase_checkpoint(model, output / "checkpoint-adapter-best.pth")
         elif phase == "joint":
-            model.load_state_dict(torch_load(output / "checkpoint-contribution-best.pth")["model"], strict=True)
+            load_unified_phase_checkpoint(model, output / "checkpoint-contribution-best.pth")
         configure_phase(model, phase, args.train_geometry_heads_a)
         optimizer = optimizer_for(model, phase, args)
         train_model = (
