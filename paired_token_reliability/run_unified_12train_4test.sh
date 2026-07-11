@@ -23,6 +23,9 @@ TRAIN_SCENE_COUNT="${TRAIN_SCENE_COUNT:-12}"
 TEST_INITIAL_SCENE_IDX="${TEST_INITIAL_SCENE_IDX:-12}"
 TEST_SCENE_COUNT="${TEST_SCENE_COUNT:-4}"
 HELDOUT_TEST_FRAME_COUNT="${HELDOUT_TEST_FRAME_COUNT:-120}"
+DECOMPOSITION_EVENT_ROOT="${DECOMPOSITION_EVENT_ROOT:-events_additive}"
+DECOMPOSITION_GEO_BRANCH="${DECOMPOSITION_GEO_BRANCH:-geometry_motion}"
+DECOMPOSITION_FULL_BRANCH="${DECOMPOSITION_FULL_BRANCH:-full}"
 
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
@@ -37,6 +40,7 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
   --epochs-a "${EPOCHS_A}" \
   --epochs-b "${EPOCHS_B}" \
   --epochs-c "${EPOCHS_C}" \
+  --require-full-event-phase-b \
   --num-workers "${NUM_WORKERS}" \
   --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" \
   --visualize-val-every-batches "${VAL_VIS_EVERY:-20}" \
@@ -48,6 +52,11 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
   "+data.test_initial_scene_idx=${TEST_INITIAL_SCENE_IDX}" \
   "+data.test_scene_count=${TEST_SCENE_COUNT}" \
   "+data.heldout_test_frame_count=${HELDOUT_TEST_FRAME_COUNT}" \
+  "+data.event_source_mode=decomposition_full" \
+  "+data.decomposition_supervision=true" \
+  "+data.decomposition_event_root=${DECOMPOSITION_EVENT_ROOT}" \
+  "+data.decomposition_geo_branch=${DECOMPOSITION_GEO_BRANCH}" \
+  "+data.decomposition_full_branch=${DECOMPOSITION_FULL_BRANCH}" \
   "$@" \
   2>&1 | tee "${OUTPUT}/logs/train.log"
 
