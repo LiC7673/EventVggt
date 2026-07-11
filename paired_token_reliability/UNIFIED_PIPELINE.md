@@ -81,17 +81,24 @@ ordering constraint only; contribution is never regressed to the geometry map.
 Defaults are `weight=0.10`, `margin=0.05`, and geometry difference threshold
 `0.10`, active only in phases B/C.
 
-## Pre-resize adapter graph (checkpoint schema v2)
+## Alternating geometry/contribution training (checkpoint schema v4)
 
 Geometry adapters predict the four event updates on the shared transformer
 patch grid. The pretrained RGB feature keeps its original DPT resize path,
 while each event residual is resized bilinearly and added afterwards. This
 prevents the new residual from exciting the stride-4 and stride-2
 transposed-convolution polyphase basis, which can otherwise appear as periodic
-depth-normal artifacts. Phase-A augmentation uses one smooth spatial soft mask
-shared across all temporal bins and polarities instead of independent
-voxel-wise Bernoulli dropout. Version-1 unified checkpoints are rejected, so
-Phase A must be trained again after this graph change.
+depth-normal artifacts. Phase A bypasses ContributionNet and trains the event
+encoder/adapters with `selected_event = E_geo` exactly. Phase B/C restore the
+dataset's `E_full` input and use `selected_event = C_pred * E_full`. Older
+unified checkpoints are rejected, so Phase A must be trained again after this
+training-contract change.
+
+Training starts with two consecutive Phase-A epochs. It then alternates one
+Phase-B epoch and one Phase-A epoch. Phase B additionally trains an event-only
+normal decoder whose inputs are the event feature and reliability map. Its GT
+normal cosine objective anchors the direct prediction; a second cosine term
+uses `stopgrad(event_normal)` to constrain the normal derived from final depth.
 
 Standalone evaluation:
 

@@ -183,6 +183,8 @@ class UnifiedGeometryContributionLoss:
         geometry_rank_weight=0.10,
         geometry_rank_margin=0.05,
         geometry_rank_threshold=0.10,
+        event_normal_weight=0.0,
+        depth_event_normal_weight=0.0,
         points_loss_type="l1",
     ):
         self.depth_weight = float(depth_weight)
@@ -195,6 +197,8 @@ class UnifiedGeometryContributionLoss:
         self.geometry_rank_weight = float(geometry_rank_weight)
         self.geometry_rank_margin = float(geometry_rank_margin)
         self.geometry_rank_threshold = float(geometry_rank_threshold)
+        self.event_normal_weight = float(event_normal_weight)
+        self.depth_event_normal_weight = float(depth_event_normal_weight)
         # Reuse the established point-map alignment/loss implementation. Depth
         # and normal are replaced below by explicitly Bridge-weighted versions.
         self.point_criterion = fe.EventSupervisedLoss(
@@ -226,11 +230,55 @@ class UnifiedGeometryContributionLoss:
         gt_unit = F.normalize(normal_gt.float(), dim=-1, eps=1.0e-6)
         normal_error = 1.0 - (pred_unit * gt_unit).sum(dim=-1).clamp(-1.0, 1.0)
         normal_loss = _weighted_mean(normal_error, weight * normal_valid.float())
-        geometry_loss = point_loss + self.depth_weight * depth_loss + self.normal_weight * normal_loss
+        event_normal_loss = depth_loss.new_zeros(())
+        depth_event_normal_loss = depth_loss.new_zeros(())
+        event_normal = None
+        event_normal_valid = None
+        if output.ress and all("event_normal" in item for item in output.ress):
+            event_normal = torch.stack(
+                [item["event_normal"] for item in output.ress], dim=1
+            )
+            event_unit = F.normalize(event_normal.float(), dim=-1, eps=1.0e-6)
+            event_support = torch.stack(
+                [item["event_normal_support"] for item in output.ress], dim=1
+            ).bool()
+            event_reliability = torch.stack(
+                [item["event_normal_reliability"] for item in output.ress], dim=1
+            ).float()
+            event_normal_valid = normal_valid & event_support
+            # Do not let C reduce its own supervision weight to escape the
+            # normal objective. Reliability still emphasizes confident events,
+            # while every active event keeps a nonzero supervision floor.
+            event_weight = (
+                weight
+                * normal_valid.float()
+                * event_support.float()
+                * (0.25 + 0.75 * event_reliability.detach())
+            )
+            event_normal_error = 1.0 - (
+                event_unit * gt_unit
+            ).sum(dim=-1).clamp(-1.0, 1.0)
+            event_normal_loss = _weighted_mean(event_normal_error, event_weight)
+            # The direct event-normal branch is anchored by GT above. Detach it
+            # here so depth must follow the event normal instead of both heads
+            # moving toward an arbitrary agreement solution.
+            depth_event_error = 1.0 - (
+                pred_unit * event_unit.detach()
+            ).sum(dim=-1).clamp(-1.0, 1.0)
+            depth_event_normal_loss = _weighted_mean(depth_event_error, event_weight)
+        geometry_loss = (
+            point_loss
+            + self.depth_weight * depth_loss
+            + self.normal_weight * normal_loss
+            + self.event_normal_weight * event_normal_loss
+            + self.depth_event_normal_weight * depth_event_normal_loss
+        )
         return geometry_loss, {
             "depth": depth_loss,
             "normal": normal_loss,
             "point": depth_loss.new_tensor(point_details["points_loss"]),
+            "event_normal": event_normal_loss,
+            "depth_event_normal": depth_event_normal_loss,
         }, {
             **point_aux,
             "depth_pred_live": depth_pred,
@@ -239,6 +287,8 @@ class UnifiedGeometryContributionLoss:
             "normal_pred_live": normal_pred,
             "normal_gt_live": normal_gt,
             "normal_valid_live": normal_valid,
+            "event_normal_live": event_normal,
+            "event_normal_valid_live": event_normal_valid,
         }
 
     def __call__(

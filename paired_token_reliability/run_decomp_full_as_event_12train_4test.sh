@@ -13,7 +13,8 @@ fi
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
 EXP_NAME="${EXP_NAME:-decomp_full_as_event_12train_4test}"
 OUTPUT="${OUTPUT:-exp/${EXP_NAME}}"
-EPOCHS_A="${EPOCHS_A:-5}"
+EPOCHS_A="${EPOCHS_A:-2}"
+# Number of B->A alternating epoch pairs after the A warm-up.
 EPOCHS_B="${EPOCHS_B:-10}"
 EPOCHS_C="${EPOCHS_C:-0}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
@@ -25,14 +26,16 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 mkdir -p "${OUTPUT}/logs"
 
-# Input/denominator: events_additive/full.  The dataset does not probe or open
-# cur_event, cur_best_event, or esim_event in this mode.
+# Dataset main input/denominator: events_additive/full. Phase A temporarily
+# replaces it with geometry_event_voxel; Phase B/C and inference use full.
+# The dataset does not probe cur_event, cur_best_event, or esim_event here.
 python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MASTER_PORT}" \
   -m paired_token_reliability.train_unified_geometry_contribution \
   --pretrained "${PRETRAINED}" \
   --output "${OUTPUT}" \
   --epochs-a "${EPOCHS_A}" --epochs-b "${EPOCHS_B}" --epochs-c "${EPOCHS_C}" \
   --num-workers "${NUM_WORKERS}" --decomposition-weight "${DECOMP_WEIGHT}" \
+  --require-full-event-phase-b \
   --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" \
   --visualize-val-every-batches "${VAL_VIS_EVERY:-20}" \
   "data.num_views=${NUM_VIEWS:-4}" \

@@ -160,6 +160,54 @@ class PolarityTemporalEventPyramid(nn.Module):
         return event_pyramid, contribution_pyramid
 
 
+class EventNormalDecoder(nn.Module):
+    """Predict normals from event features and reliability only (no RGB)."""
+
+    def __init__(self, event_channels: int, hidden_channels: int = 64) -> None:
+        super().__init__()
+        hidden = max(int(hidden_channels), 16)
+        self.decoder = nn.Sequential(
+            nn.Conv2d(int(event_channels) + 1, hidden, 3, padding=1, bias=False),
+            nn.GroupNorm(_group_count(hidden), hidden),
+            nn.GELU(),
+            nn.Conv2d(hidden, hidden, 3, padding=1, bias=False),
+            nn.GroupNorm(_group_count(hidden), hidden),
+            nn.GELU(),
+            nn.Conv2d(hidden, 3, 1),
+        )
+        # Start from a stable front-facing unit normal. The decoder then learns
+        # event-induced orientation without borrowing an RGB/coarse prior.
+        nn.init.zeros_(self.decoder[-1].weight)
+        with torch.no_grad():
+            self.decoder[-1].bias.copy_(torch.tensor([0.0, 0.0, 1.0]))
+
+    def forward(
+        self,
+        event_feature: torch.Tensor,
+        reliability: torch.Tensor,
+        output_size: Tuple[int, int],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if reliability.shape[-2:] != event_feature.shape[-2:]:
+            reliability = F.interpolate(
+                reliability,
+                size=event_feature.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        raw = self.decoder(
+            torch.cat((event_feature, reliability.to(event_feature.dtype)), dim=1)
+        )
+        if raw.shape[-2:] != tuple(output_size):
+            raw = F.interpolate(
+                raw, size=output_size, mode="bilinear", align_corners=False
+            )
+            reliability = F.interpolate(
+                reliability, size=output_size, mode="bilinear", align_corners=False
+            )
+        normal = F.normalize(raw.float(), dim=1, eps=1.0e-6)
+        return normal, reliability.float().clamp(0.0, 1.0)
+
+
 class GeometryFeatureAdapter(nn.Module):
     """A small convolutional adapter with an exactly-zero initial feature update."""
 
@@ -416,7 +464,7 @@ class StreamVGGT(nn.Module):
                 initial_contribution=contribution_initial_value,
             )
             self.stage1_metadata = {
-                "schema": "unified_geometry_contribution_v2",
+                "schema": "unified_geometry_contribution_v4",
                 "frozen_rgb_checkpoint": None,
                 "supervision_region": "weight_only",
                 "training_phase": None,
@@ -444,6 +492,10 @@ class StreamVGGT(nn.Module):
             hidden_channels=event_hidden_dim,
             pyramid_channels=event_pyramid_channels,
             count_cmax=event_count_cmax,
+        )
+        self.event_normal_decoder = EventNormalDecoder(
+            event_channels=event_pyramid_channels,
+            hidden_channels=event_hidden_dim,
         )
 
     def train(self, mode: bool = True):
@@ -512,6 +564,7 @@ class StreamVGGT(nn.Module):
         views,
         query_points: Optional[torch.Tensor] = None,
         contribution_override: Optional[torch.Tensor] = None,
+        decode_event_normal: bool = True,
         **_kwargs,
     ):
         images, event_voxel, intrinsics = self._stack_inputs(views)
@@ -573,6 +626,29 @@ class StreamVGGT(nn.Module):
         event_pyramid, contribution_pyramid = self.event_encoder(
             selected_event, spatial_contribution, shapes
         )
+        batch, views = images.shape[:2]
+        event_normal = event_normal_reliability = event_normal_support = None
+        if decode_event_normal:
+            event_normal_feature = event_pyramid[0].reshape(
+                batch * views,
+                event_pyramid[0].shape[2],
+                *event_pyramid[0].shape[-2:],
+            )
+            event_normal_reliability = contribution_pyramid[0].reshape(
+                batch * views, 1, *contribution_pyramid[0].shape[-2:]
+            )
+            event_normal, event_normal_reliability = self.event_normal_decoder(
+                event_normal_feature,
+                event_normal_reliability,
+                output_size=images.shape[-2:],
+            )
+            event_normal = event_normal.reshape(
+                batch, views, 3, *images.shape[-2:]
+            ).movedim(2, -1)
+            event_normal_reliability = event_normal_reliability.reshape(
+                batch, views, *images.shape[-2:]
+            )
+            event_normal_support = selected_event.abs().sum(dim=2) > 0.0
 
         with nullcontext():
             depth, depth_confidence = self.depth_head(
@@ -635,6 +711,14 @@ class StreamVGGT(nn.Module):
                 "adapter_point_update_magnitudes": point_update_magnitudes,
                 **({"valid_mask": views[frame_index]["valid_mask"]} if "valid_mask" in views[frame_index] else {}),
             }
+            if event_normal is not None:
+                item.update(
+                    {
+                        "event_normal": event_normal[:, frame_index],
+                        "event_normal_reliability": event_normal_reliability[:, frame_index],
+                        "event_normal_support": event_normal_support[:, frame_index],
+                    }
+                )
             if track is not None:
                 item.update(
                     {
@@ -651,6 +735,7 @@ __all__ = [
     "GeometryAdapterDPTHead",
     "GeometryAdapterOutput",
     "GeometryFeatureAdapter",
+    "EventNormalDecoder",
     "PolarityTemporalEventPyramid",
     "StreamVGGT",
     "dpt_feature_shapes",

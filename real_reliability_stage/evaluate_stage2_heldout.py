@@ -85,11 +85,15 @@ def save_full_event_visuals(args, views, output, depth, depth_gt, valid, batch_i
             contribution = contribution.mean(dim=2)
     intrinsics = fe.stack_view_field(views, "camera_intrinsics").to(depth)
     predicted_normal = stack_output(output, "normal")
+    event_normal = stack_output(output, "event_normal")
+    event_normal_support = stack_output(output, "event_normal_support")
     if predicted_normal is None:
         predicted_normal = fe.depth_to_normals(depth.float(), intrinsics.float())
     elif predicted_normal.ndim == 6 and predicted_normal.shape[-2] == 1:
         predicted_normal = predicted_normal.squeeze(-2)
     predicted_normal = F.normalize(predicted_normal.float(), dim=-1, eps=1.0e-6)
+    if event_normal is not None:
+        event_normal = F.normalize(event_normal.float(), dim=-1, eps=1.0e-6)
     target_normal = F.normalize(
         fe.depth_to_normals(depth_gt.float(), intrinsics.float()).float(),
         dim=-1,
@@ -112,6 +116,17 @@ def save_full_event_visuals(args, views, output, depth, depth_gt, valid, batch_i
             ]
             if contribution is not None:
                 panels.insert(2, (np.clip(contribution[sample_idx, view_idx].detach().float().cpu().numpy(), 0, 1), "contribution", "magma"))
+            if event_normal is not None:
+                direct_valid = normal_valid[sample_idx, view_idx]
+                if event_normal_support is not None:
+                    direct_valid = direct_valid & event_normal_support[sample_idx, view_idx].bool()
+                panels.append(
+                    (
+                        _normal_image(event_normal[sample_idx, view_idx], direct_valid),
+                        "event normal",
+                        None,
+                    )
+                )
             columns = min(5, len(panels))
             rows = int(np.ceil(len(panels) / columns))
             # Keep every panel at five inches. Adding normal panels grows the

@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
 from omegaconf import OmegaConf
@@ -72,8 +71,14 @@ def parser():
     value.add_argument("--output", default="abl_event_exp/unified_geometry_contribution")
     value.add_argument("--exposures", default="0,1,2,5,10")
     value.add_argument("--pair-mode", choices=("all", "adjacent", "anchor"), default="anchor")
-    value.add_argument("--epochs-a", type=int, default=5)
-    value.add_argument("--epochs-b", type=int, default=10)
+    value.add_argument(
+        "--epochs-a", type=int, default=2,
+        help="Initial consecutive Phase-A warm-up epochs.",
+    )
+    value.add_argument(
+        "--epochs-b", type=int, default=10,
+        help="Number of alternating B->A epoch pairs after A warm-up.",
+    )
     value.add_argument("--epochs-c", type=int, default=0)
     value.add_argument("--lr", type=float, default=1.0e-4)
     value.add_argument("--weight-decay", type=float, default=1.0e-4)
@@ -82,11 +87,9 @@ def parser():
     value.add_argument("--device", default="cuda")
     value.add_argument("--seed", type=int, default=0)
     value.add_argument("--clip-grad", type=float, default=1.0)
-    value.add_argument("--event-dropout-min-keep", type=float, default=0.5)
-    value.add_argument("--event-dropout-max-keep", type=float, default=1.0)
     value.add_argument(
-        "--event-dropout-block-size", type=int, default=32,
-        help="Approximate spatial correlation length of the Phase-A soft event mask.",
+        "--require-full-event-phase-b", action="store_true",
+        help="Require data.event_source_mode=decomposition_full for Phase B/C.",
     )
     value.add_argument("--bridge-beta", type=float, default=2.0)
     value.add_argument("--bridge-event-dilate-kernel", type=int, default=3)
@@ -100,6 +103,8 @@ def parser():
         help="Restore the legacy strict Bridge definition.",
     )
     value.add_argument("--normal-weight", type=float, default=0.25)
+    value.add_argument("--event-normal-weight", type=float, default=0.5)
+    value.add_argument("--depth-event-normal-weight", type=float, default=0.5)
     value.add_argument("--point-weight", type=float, default=1.0)
     value.add_argument("--budget-weight", type=float, default=0.05)
     value.add_argument("--pair-weight", type=float, default=0.2)
@@ -221,9 +226,11 @@ def configure_phase(model, phase, train_heads_a=False):
             model.point_head.requires_grad_(True)
     elif phase == "contribution":
         model.contribution_net.requires_grad_(True)
+        model.event_normal_decoder.requires_grad_(True)
     elif phase == "joint":
         model.contribution_net.requires_grad_(True)
         model.event_encoder.requires_grad_(True)
+        model.event_normal_decoder.requires_grad_(True)
         model.depth_head.geometry_adapters.requires_grad_(True)
         model.point_head.geometry_adapters.requires_grad_(True)
         model.depth_head.requires_grad_(True)
@@ -250,7 +257,12 @@ def optimizer_for(model, phase, args):
     contribution_ids = {id(item) for item in model.contribution_net.parameters()}
     adapter_ids = {
         id(item)
-        for module in (model.event_encoder, model.depth_head.geometry_adapters, model.point_head.geometry_adapters)
+        for module in (
+            model.event_encoder,
+            model.event_normal_decoder,
+            model.depth_head.geometry_adapters,
+            model.point_head.geometry_adapters,
+        )
         for item in module.parameters()
     }
     contribution, adapters, heads = [], [], []
@@ -289,7 +301,34 @@ def _select_views(views_a, views_b, choose_a):
     return selected
 
 
-def prepare_pair(batch, device, args):
+def use_phase_event_source(views, phase):
+    """Use oracle geometry events only in Phase A; keep full events in B/C."""
+    if phase != "adapter":
+        return views
+    selected = []
+    for view_index, view in enumerate(views):
+        if "geometry_event_voxel" not in view:
+            instance = view.get("instance", "unknown")
+            raise RuntimeError(
+                "Phase A requires geometry_event_voxel, but it is missing for "
+                f"view={view_index}, instance={instance!r}. Enable decomposition "
+                "supervision and provide the Blender geometry-event branch."
+            )
+        geometry_event = view["geometry_event_voxel"]
+        full_event = view.get("event_voxel")
+        if full_event is None or geometry_event.shape != full_event.shape:
+            raise RuntimeError(
+                "Phase-A geometry/full event shape mismatch at "
+                f"view={view_index}: geometry={tuple(geometry_event.shape)}, "
+                f"full={None if full_event is None else tuple(full_event.shape)}"
+            )
+        current = dict(view)
+        current["event_voxel"] = geometry_event
+        selected.append(current)
+    return selected
+
+
+def prepare_pair(batch, device, args, phase):
     views_a = fe.maybe_denormalize_views(move_views_to_device(batch["views_a"], device))
     views_b = fe.maybe_denormalize_views(move_views_to_device(batch["views_b"], device))
     rgb_a = fe.stack_view_field(views_a, "img").float().clamp(0, 1)
@@ -297,7 +336,11 @@ def prepare_pair(batch, device, args):
     rgb_ref, rgb_bad, ref_is_a, _, _ = orient_exposure_pair(
         rgb_a, rgb_b, saturation_mode=args.bridge_saturation_mode
     )
-    event = fe.stack_view_field(views_a, "event_voxel").float()
+    target_views = _select_views(views_a, views_b, ~ref_is_a)
+    reference_views = _select_views(views_a, views_b, ref_is_a)
+    target_views = use_phase_event_source(target_views, phase)
+    reference_views = use_phase_event_source(reference_views, phase)
+    event = fe.stack_view_field(target_views, "event_voxel").float()
     bridge = build_bridge_masks(
         rgb_ref,
         rgb_bad,
@@ -306,42 +349,7 @@ def prepare_pair(batch, device, args):
         event_support_dilate_kernel=args.bridge_event_dilate_kernel,
         saturation_mode=args.bridge_saturation_mode,
     )
-    target_views = _select_views(views_a, views_b, ~ref_is_a)
-    reference_views = _select_views(views_a, views_b, ref_is_a)
     return target_views, reference_views, event, bridge
-
-
-def dropout_override(event, args):
-    """Build a smooth Phase-A mask shared by all bins and polarities.
-
-    Independent Bernoulli sampling of every voxel injected artificial
-    salt-and-pepper frequencies into the event stream.  The adapter could
-    reproduce those frequencies as small depth ripples which become strong
-    grid patterns after depth-to-normal differentiation.  A low-resolution
-    continuous field better matches the soft spatial C used at deployment.
-    """
-    batch, views, channels, height, width = event.shape
-    low, high = sorted(
-        (float(args.event_dropout_min_keep), float(args.event_dropout_max_keep))
-    )
-    low, high = max(0.0, low), min(1.0, high)
-    keep = torch.empty(
-        batch, views, 1, 1, 1, device=event.device, dtype=event.dtype
-    ).uniform_(low, high)
-    block = max(int(args.event_dropout_block_size), 1)
-    grid_h = max(2, int(math.ceil(height / block)))
-    grid_w = max(2, int(math.ceil(width / block)))
-    field = torch.rand(
-        batch * views, 1, grid_h, grid_w, device=event.device, dtype=event.dtype
-    )
-    field = F.interpolate(
-        field, size=(height, width), mode="bilinear", align_corners=False
-    ).reshape(batch, views, 1, height, width)
-    field = field - field.mean(dim=(-2, -1), keepdim=True)
-    field = field / field.abs().amax(dim=(-2, -1), keepdim=True).clamp_min(1.0e-6)
-    amplitude = torch.minimum(keep, 1.0 - keep)
-    spatial = (keep + amplitude * field).clamp(0.0, 1.0)
-    return spatial.expand(batch, views, channels, height, width)
 
 
 def rho_schedule(epoch, epochs):
@@ -351,6 +359,25 @@ def rho_schedule(epoch, epochs):
     if progress < 2.0 / 3.0:
         return 0.7
     return 0.5
+
+
+def build_alternating_phase_schedule(warmup_a, alternating_cycles, joint_epochs=0):
+    """A warm-up, then switch phase after every epoch: A,A,B,A,B,A,..."""
+    warmup_a = int(warmup_a)
+    alternating_cycles = int(alternating_cycles)
+    joint_epochs = int(joint_epochs)
+    if warmup_a != 2:
+        raise ValueError(
+            "Alternating training requires exactly two initial Phase-A epochs; "
+            f"got --epochs-a={warmup_a}."
+        )
+    if alternating_cycles < 0 or joint_epochs < 0:
+        raise ValueError("Epoch counts must be non-negative.")
+    schedule = ["adapter"] * warmup_a
+    for _ in range(alternating_cycles):
+        schedule.extend(("contribution", "adapter"))
+    schedule.extend(["joint"] * joint_epochs)
+    return schedule
 
 
 def criterion_for(args, phase):
@@ -366,6 +393,10 @@ def criterion_for(args, phase):
         geometry_rank_weight=(0.0 if phase == "adapter" else args.geometry_rank_weight),
         geometry_rank_margin=args.geometry_rank_margin,
         geometry_rank_threshold=args.geometry_rank_threshold,
+        event_normal_weight=(0.0 if phase == "adapter" else args.event_normal_weight),
+        depth_event_normal_weight=(
+            0.0 if phase == "adapter" else args.depth_event_normal_weight
+        ),
         points_loss_type="l1",
     )
 
@@ -417,6 +448,13 @@ def save_visual(
     normal_valid = aux["normal_valid_live"][0, 0]
     predicted_normal = visual_normal(aux["normal_pred_live"][0, 0], normal_valid)
     target_normal = visual_normal(aux["normal_gt_live"][0, 0], normal_valid)
+    event_normal = (
+        visual_normal(
+            aux["event_normal_live"][0, 0],
+            aux["event_normal_valid_live"][0, 0],
+        )
+        if aux.get("event_normal_live") is not None else None
+    )
     geometry = aux["geometry_score"][0, 0]
     panels = (
         (rgb, "RGB", None),
@@ -431,6 +469,7 @@ def save_visual(
         (visual_map(gt * valid), "GT depth", "viridis"),
         (predicted_normal, "pred normal", None),
         (target_normal, "GT normal", None),
+        *(((event_normal, "event normal", None),) if event_normal is not None else ()),
         *(
             ((visual_map(aux["decomposition_target"][0, 0], True), "decomp target", "magma"),)
             if aux.get("decomposition_target") is not None
@@ -477,10 +516,12 @@ def run_epoch(
         if training:
             optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training):
-            target_views, reference_views, event, bridge = prepare_pair(batch, device, args)
-            override = dropout_override(event, args) if phase == "adapter" and training else (
-                contribution_override(event, "full") if phase == "adapter" else None
+            target_views, reference_views, event, bridge = prepare_pair(
+                batch, device, args, phase
             )
+            # Phase A consumes E_geo exactly and bypasses ContributionNet.
+            # Phase B/C consume the dataset's full event and predict C.
+            override = contribution_override(event, "full") if phase == "adapter" else None
             contribution_reference = None
             if phase != "adapter" and not args.no_pair_consistency:
                 # The paired exposure is a stop-gradient anchor. Besides being
@@ -488,7 +529,11 @@ def run_epoch(
                 # activation memory.
                 with torch.no_grad():
                     contribution_reference = raw_model.predict_contribution(reference_views)
-            output = model(target_views, contribution_override=override)
+            output = model(
+                target_views,
+                contribution_override=override,
+                decode_event_normal=(phase != "adapter"),
+            )
             rho = 1.0 if phase == "adapter" else rho_schedule(epoch, epochs)
             result = criterion(
                 output,
@@ -526,6 +571,7 @@ def run_epoch(
             print(
                 f"[{phase}] batch={batch_index:05d} loss={values['loss']:.5f} "
                 f"D={values['depth']:.5f} N={values['normal']:.5f} P={values['point']:.5f} "
+                f"EN={values['event_normal']:.5f} DN={values['depth_event_normal']:.5f} "
                 f"budget={values['budget']:.5f} pair={values['pair']:.5f} "
                 f"decomp={values['decomposition']:.5f} "
                 f"rank={values['geometry_rank']:.5f} "
@@ -575,6 +621,24 @@ def main(argv=None):
             "this trainer intentionally initializes ContributionNet from scratch."
         )
     cfg = load_cfg(args.config, overrides)
+    if args.epochs_a > 0 and not bool(
+        getattr(cfg.data, "decomposition_supervision", False)
+    ):
+        raise RuntimeError(
+            "Phase A now requires Blender E_geo. Set "
+            "data.decomposition_supervision=true and configure its geometry branch."
+        )
+    if (
+        args.require_full_event_phase_b
+        and (args.epochs_b > 0 or args.epochs_c > 0)
+        and str(getattr(cfg.data, "event_source_mode", "current"))
+        != "decomposition_full"
+    ):
+        raise RuntimeError(
+            "Phase B/C require E_full, but data.event_source_mode is "
+            f"{getattr(cfg.data, 'event_source_mode', 'current')!r}; expected "
+            "'decomposition_full'."
+        )
     distributed, rank, world_size, device = init_distributed(args)
     if not Path(args.pretrained).is_file():
         raise FileNotFoundError(args.pretrained)
@@ -595,6 +659,15 @@ def main(argv=None):
             f"{getattr(cfg.data, 'event_source_mode', 'current')} "
             "decomposition="
             f"{bool(getattr(cfg.data, 'decomposition_supervision', False))}",
+            flush=True,
+        )
+        print(
+            "phase event inputs: A=geometry_event_voxel, "
+            "B/C=event_voxel"
+            + (
+                " (validated decomposition_full)"
+                if args.require_full_event_phase_b else ""
+            ),
             flush=True,
         )
     train_sampler = DistributedSampler(
@@ -618,18 +691,41 @@ def main(argv=None):
     if distributed:
         dist.barrier()
     history = []
-    phases = [("adapter", args.epochs_a), ("contribution", args.epochs_b)]
-    if args.epochs_c > 0:
-        phases.append(("joint", args.epochs_c))
-    for phase, epochs in phases:
-        if epochs <= 0:
-            continue
-        if phase == "contribution":
+    schedule = build_alternating_phase_schedule(
+        args.epochs_a, args.epochs_b, args.epochs_c
+    )
+    phase_totals = {
+        phase: schedule.count(phase) for phase in ("adapter", "contribution", "joint")
+    }
+    phase_epochs = {phase: 0 for phase in phase_totals}
+    best = {phase: math.inf for phase in phase_totals}
+    optimizers = {}
+    first_contribution = True
+    first_joint = True
+    if rank == 0:
+        print(
+            "epoch schedule=" + " -> ".join(
+                {"adapter": "A", "contribution": "B", "joint": "C"}[item]
+                for item in schedule
+            ),
+            flush=True,
+        )
+    for global_epoch, phase in enumerate(schedule):
+        if phase == "contribution" and first_contribution:
+            # Begin B from the best of the two initial A warm-up epochs. Later
+            # A/B switches retain the current unified model and optimizer state.
             load_unified_phase_checkpoint(model, output / "checkpoint-adapter-best.pth")
-        elif phase == "joint":
+            # The loaded best A weights may come from the first warm-up epoch;
+            # discard momentum accumulated for a different A parameter state.
+            optimizers.pop("adapter", None)
+            first_contribution = False
+        elif phase == "joint" and first_joint:
             load_unified_phase_checkpoint(model, output / "checkpoint-contribution-best.pth")
+            first_joint = False
         configure_phase(model, phase, args.train_geometry_heads_a)
-        optimizer = optimizer_for(model, phase, args)
+        if phase not in optimizers:
+            optimizers[phase] = optimizer_for(model, phase, args)
+        optimizer = optimizers[phase]
         train_model = (
             DistributedDataParallel(
                 model,
@@ -641,34 +737,56 @@ def main(argv=None):
             if distributed else model
         )
         criterion = criterion_for(args, phase)
-        best = math.inf
-        for epoch in range(epochs):
-            if train_sampler is not None:
-                train_sampler.set_epoch(epoch)
-            start = time.time()
-            train_metrics = run_epoch(
-                train_model, model, train_loader, optimizer, criterion, device, args,
-                phase, epoch, epochs, True, distributed, rank,
+        epoch = phase_epochs[phase]
+        epochs = phase_totals[phase]
+        if train_sampler is not None:
+            train_sampler.set_epoch(global_epoch)
+        start = time.time()
+        train_metrics = run_epoch(
+            train_model, model, train_loader, optimizer, criterion, device, args,
+            phase, epoch, epochs, True, distributed, rank,
+        )
+        val_metrics = run_epoch(
+            train_model, model, val_loader, optimizer, criterion, device, args,
+            phase, epoch, epochs, False, distributed, rank,
+        )
+        record = {
+            "phase": phase,
+            "epoch": epoch,
+            "global_epoch": global_epoch,
+            "train": train_metrics,
+            "validation": val_metrics,
+        }
+        if rank == 0:
+            history.append(record)
+            (output / "metrics.json").write_text(
+                json.dumps(history, indent=2), encoding="utf-8"
             )
-            val_metrics = run_epoch(
-                train_model, model, val_loader, optimizer, criterion, device, args,
-                phase, epoch, epochs, False, distributed, rank,
+        score = val_metrics.get("loss", train_metrics.get("loss", math.inf))
+        if rank == 0:
+            save_checkpoint(
+                output / f"checkpoint-{phase}-last.pth",
+                model, optimizer, cfg, args, phase, epoch, record,
             )
-            record = {"phase": phase, "epoch": epoch, "train": train_metrics, "validation": val_metrics}
+        if score < best[phase]:
+            best[phase] = score
             if rank == 0:
-                history.append(record)
-                (output / "metrics.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
-            score = val_metrics.get("loss", train_metrics.get("loss", math.inf))
-            if rank == 0:
-                save_checkpoint(output / f"checkpoint-{phase}-last.pth", model, optimizer, cfg, args, phase, epoch, record)
-            if score < best:
-                best = score
-                if rank == 0:
-                    save_checkpoint(output / f"checkpoint-{phase}-best.pth", model, optimizer, cfg, args, phase, epoch, record)
-                    if phase in {"contribution", "joint"}:
-                        save_checkpoint(output / "checkpoint-best.pth", model, optimizer, cfg, args, phase, epoch, record)
-            if rank == 0:
-                print(f"[{phase}] epoch={epoch+1}/{epochs} train={train_metrics} val={val_metrics} time={(time.time()-start)/60:.1f}m")
+                save_checkpoint(
+                    output / f"checkpoint-{phase}-best.pth",
+                    model, optimizer, cfg, args, phase, epoch, record,
+                )
+                if phase in {"contribution", "joint"}:
+                    save_checkpoint(
+                        output / "checkpoint-best.pth",
+                        model, optimizer, cfg, args, phase, epoch, record,
+                    )
+        phase_epochs[phase] += 1
+        if rank == 0:
+            print(
+                f"[{phase}] epoch={epoch+1}/{epochs} global={global_epoch+1}/{len(schedule)} "
+                f"train={train_metrics} val={val_metrics} "
+                f"time={(time.time()-start)/60:.1f}m"
+            )
         del train_model
         if device.type == "cuda":
             torch.cuda.empty_cache()

@@ -1122,7 +1122,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             )
             if self.decomposition_supervision:
                 view.update(
-                    event_geo_voxel=geo_event_voxel.astype(np.float32, copy=False),
+                    geometry_event_voxel=geo_event_voxel.astype(np.float32, copy=False),
                     contribution_target=contribution_target,
                     decomposition_valid=np.array(True, dtype=bool),
                     event_source_mode=self.event_source_mode,

@@ -1,630 +1,486 @@
-结合前面的攻击点，我建议把第一阶段收缩成一个更稳、更容易实现的版本：
+请直接修改当前 EventVggt 工作区，完成一个能够在短时间内训练和验证的最小版本。
 
-# 第一阶段：Multi-LDR-Guided Event Contribution Learning
+不要先写设计报告，不要等待确认，直接检查当前代码并实施修改。
 
-它不再声称：
+本次不是重写模型，只修改现有统一 A/B/C pipeline。优先搜索并复用以下现有类：
 
-> 判断每个事件是不是由几何产生。
+- ContributionNet
+- TemporalContributionNet
+- PolarityTemporalEventPyramid
+- GeometryFeatureAdapter
+- 当前统一模型 forward
+- 当前 Phase A / Phase B / Phase C 训练脚本
 
-而是学习：
+不要修改：
 
-> 在当前高曝光 RGB 条件下，哪些事件能够实际改善几何预测。
+- VGGT / StreamVGGT Aggregator
+- CameraHead
+- 原始 DPT scratch decoder 结构
+- RGB checkpoint 加载逻辑
+- 数据集原有 RGB、depth、pose、intrinsics 读取逻辑
+- legacy SelectedEventRefiner；它保持未使用状态即可
 
-可靠性图也最好改称 **event contribution map**：
+==================================================
+一、最终目标
+==================================================
 
-[
-C\in[0,1]^{B\times H\times W}.
-]
+实现以下训练路径：
 
-这样可以避免“镜面事件是否也含有几何”“纹理事件是不是几何事件”等语义攻击。
+Phase A:
+    使用 Blender geometry event E_geo
+    训练 EventEncoder + GeometryFeatureAdapter
+    学习如何利用几何来源事件改善 depth / point / normal
 
----
+Phase B:
+    使用 full event E_full
+    冻结 EventEncoder + GeometryFeatureAdapter
+    只训练 ContributionNet
+    通过 C * E_full 模拟 E_geo 的作用
 
-## 一、Multi-LDR 到底提供什么
+Phase C:
+    暂时保持关闭，默认 epochs=0
+    本轮不要重点实现或调试联合训练
 
-不要对两个曝光的深度、token 或 reliability 直接做一致性。
+推理只使用：
 
-Multi-LDR 只用于找出一种特殊区域：
+    target RGB + full event
 
-[
-\boxed{
-\text{在较好曝光中可见，但在高曝光中因饱和而丢失的区域}
+不能依赖：
+
+    E_geo
+    reference RGB
+    Bridge
+    GT depth / normal
+
+==================================================
+二、数据集：加载 geometry event
+==================================================
+
+在当前 Dataset 中增加：
+
+    geometry_event_voxel
+
+其 shape、时间区间、bin 数、极性顺序、空间 resize 必须与当前：
+
+    event_voxel
+
+完全一致，均为：
+
+    [2B, H, W]
+
+geometry event 文件按以下顺序查找，找到第一个存在的路径：
+
+1. <scene>/events_additive/geometry_motion/events.h5
+2. <scene>/events_additive/diffuse_motion/events.h5
+3. <scene>/events_additive/geometry/events.h5
+
+full event 继续使用当前 event_voxel 的读取路径，不要重新实现 full event loader。
+
+geometry event 必须使用与 full event 完全相同的：
+
+- start timestamp
+- end timestamp
+- voxel bins
+- polarity convention
+- resize
+- y flip / spatial transform
+
+若当前 Phase A 或 Phase B 启用了 decomposition supervision，但缺少 geometry event，必须立即抛出包含 scene 名和文件路径的 RuntimeError，不能静默回退。
+
+在 Dataset 中生成 channel-level soft target：
+
+    C_gt = abs(V_geo) / (abs(V_full) + eps)
+
+要求：
+
+    C_gt = clamp(C_gt, 0, 1)
+
+shape：
+
+    [2B, H, W]
+
+只在 full event support 上有效：
+
+    event_support = abs(V_full).sum(channel) > 0
+
+同时生成仅用于可视化的空间 target：
+
+    C_gt_spatial =
+        sum_channel(abs(V_full) * C_gt)
+        /
+        (sum_channel(abs(V_full)) + eps)
+
+不要使用 depth gradient 生成 C_gt。
+不要把 C_gt 转成二值 mask。
+
+collate 后需要得到：
+
+    geometry_event_voxel: [N, V, 2B, H, W]
+    contribution_target:  [N, V, 2B, H, W]
+
+==================================================
+三、Phase A：只用 geometry event 训练 Adapter
+==================================================
+
+保留现有 Phase A 训练框架，但修改事件输入。
+
+Phase A 中：
+
+    selected_event = geometry_event_voxel
+
+不要使用 full event。
+不要运行 ContributionNet。
+不要使用随机 contribution mask。
+不要使用 budget loss。
+不要使用 pair consistency。
+不要使用 decomposition loss。
+
+冻结：
+
+- VGGT Aggregator
+- CameraHead
+- ContributionNet
+- 原始 DPT 参数
+
+训练：
+
+- PolarityTemporalEventPyramid
+- DepthHead 中四个 GeometryFeatureAdapter
+- PointHead 中四个 GeometryFeatureAdapter
+
+损失：
+
+    L_A =
+        L_depth
+        + lambda_normal * L_normal
+        + lambda_point * L_point
+
+Bridge 不能限制 Phase A 的监督范围。
+
+depth / normal / point loss 应在全部 valid geometry 上计算。
+
+保存：
+
+    checkpoint-adapter-best.pth
+
+Phase A 的验证需要同时报告：
+
+- RGB-only coarse depth metrics
+- E_geo adapter final depth metrics
+- improvement over coarse depth
+
+==================================================
+四、GeometryFeatureAdapter：最小 LoRA-style 改造
+==================================================
+
+不要实现动态权重生成，不要修改 Transformer 的 Q/K/V 权重。
+
+这里实现的是 LoRA-style bottleneck adapter，不是真正的 LoRA。
+
+保持 Adapter 位于当前四个 DPT intermediate layer，不移动 decoder。
+
+当前每层已有：
+
+    rgb_feature
+    event_feature
+
+增加：
+
+    coarse_geometry_feature
+
+coarse geometry 由：
+
+    coarse depth:  1 channel
+    coarse normal: 3 channels
+
+拼接为：
+
+    G_coarse: [N*V, 4, H, W]
+
+执行：
+
+1. coarse depth 先转为 log depth：
+
+       log_depth = log(clamp(depth, 1e-6))
+
+2. 将 log_depth 和 normal 拼成 4 channels。
+
+3. bilinear resize 到当前统一 patch grid。
+
+4. 使用每层独立的 1x1 Conv 投影到 rank=16：
+
+       geo_proj: Conv2d(4, 16, 1)
+
+修改 GeometryFeatureAdapter 为：
+
+    input = concat(
+        rgb_feature,
+        event_feature,
+        geo_feature
+    )
+
+    hidden = Conv2d(input_channels, 16, 1)
+    hidden = GELU(hidden)
+    delta = Conv2d(16, rgb_channels, 1)
+
+    output =
+        rgb_feature
+        + tanh(alpha) * support * delta
+
+要求：
+
+- 最后一个 up projection 必须 zero initialization；
+- alpha 初始值设为 0；
+- support 是 selected_event 的二值 support；
+- support resize 到当前 feature 尺寸时使用 nearest；
+- continuous contribution C 只能在 event voxel 上乘一次；
+- Adapter 内不能再次乘 continuous C，避免 C^2；
+- 不预测 raw depth residual；
+- 不替换 RGB feature；
+- 输出 shape 必须与原 rgb_feature 完全一致。
+
+coarse depth、coarse normal、RGB tokens 进入 Adapter 前全部 detach。
+
+==================================================
+五、Phase B：冻结 Adapter，训练 ContributionNet
+==================================================
+
+Phase B 开始前加载：
+
+    checkpoint-adapter-best.pth
+
+冻结：
+
+- VGGT Aggregator
+- CameraHead
+- EventEncoder
+- 所有 GeometryFeatureAdapter
+- 原始 Depth/Point DPT parameters
+
+只允许 ContributionNet 参数：
+
+    requires_grad=True
+
+输入：
+
+    full event V_full
+
+ContributionNet 输出：
+
+    C_pred: [N, V, 2B, H, W]
+
+选择事件：
+
+    selected_event = C_pred * V_full
+
+然后通过冻结的：
+
+    EventEncoder
+    GeometryFeatureAdapter
+    DPT decoder
+
+得到 final depth / point / normal。
+
+Phase B 损失只保留以下四项，不要加入 ranking loss 或其他新损失：
+
+1. Attribution loss
+
+    support_channels = abs(V_full) > 0
+
+    L_attr =
+        SmoothL1(
+            C_pred[support_channels],
+            C_gt[support_channels]
+        )
+
+2. Multi-LDR contribution consistency
+
+对相同 event、相同 view、不同 exposure：
+
+    C_target = ContributionNet(target RGB, V_full, ...)
+    C_reference = stopgrad(
+        ContributionNet(reference RGB, V_full, ...)
+    )
+
+使用 event-mass weighted L1：
+
+    L_pair =
+        sum(abs(V_full) * abs(C_target - C_reference))
+        /
+        (sum(abs(V_full)) + eps)
+
+3. Geometry loss
+
+使用 final depth / normal / point：
+
+    L_geo =
+        L_depth
+        + lambda_normal * L_normal
+        + lambda_point * L_point
+
+监督区域：
+
+    weight = valid_mask * (1 + beta_bridge * bridge)
+
+Bridge 只增加权重，不能作为唯一监督区域。
+
+4. Budget loss
+
+不要再固定 rho=0.5。
+
+从 C_gt 计算每个 batch 的目标事件质量比例：
+
+    rho_gt =
+        sum(abs(V_full) * C_gt)
+        /
+        (sum(abs(V_full)) + eps)
+
+预测比例：
+
+    rho_pred =
+        sum(abs(V_full) * C_pred)
+        /
+        (sum(abs(V_full)) + eps)
+
+    L_budget = abs(rho_pred - stopgrad(rho_gt))
+
+最终固定为：
+
+    L_B =
+        1.0 * L_attr
+        + 0.2 * L_pair
+        + 0.2 * L_geo
+        + 0.05 * L_budget
+
+所有权重增加为命令行参数，但默认值按上面设置。
+
+保存：
+
+    checkpoint-contribution-best.pth
+
+==================================================
+六、验证模式
+==================================================
+
+在统一 evaluate 函数中增加三个 event mode：
+
+    --event-mode full
+        selected_event = V_full
+
+    --event-mode oracle
+        selected_event = V_geo
+
+    --event-mode predicted
+        selected_event = C_pred * V_full
+
+三种模式必须使用完全相同的：
+
+- RGB 输入
+- VGGT checkpoint
+- EventEncoder
+- GeometryAdapter
+- DPT decoder
+- 测试样本
+
+输出一个 JSON：
+
+{
+    "rgb_only": {...},
+    "full_event": {...},
+    "oracle_geo_event": {...},
+    "predicted_contribution": {...}
 }
-]
 
-假设同一个视角有：
-
-[
-I^1,I^2,I^5,I^{10},
-]
-
-并且共享：
-
-[
-V,\quad D^*,\quad N^*.
-]
-
-从中选择一个参考曝光 (I^r) 和一个高曝光 (I^b)。
-
-参考曝光不一定固定为 `ev_1`，可以根据饱和比例选择：
-
-[
-r=\arg\min_e \operatorname{SatRatio}(I^e),
-]
-
-然后选择一个饱和程度明显更高的 (b)。
-
-实际实现可以只使用三类有序 pair：
-
-[
-\mathrm{ev}_1\rightarrow\mathrm{ev}_5,
-\qquad
-\mathrm{ev}*1\rightarrow\mathrm{ev}*{10},
-\qquad
-\mathrm{ev}*2\rightarrow\mathrm{ev}*{10}.
-]
-
-不需要遍历全部六种组合。
-
----
-
-# 二、构造真正有意义的 Bridge Mask
-
-首先计算高曝光饱和区域：
-
-[
-M_{\mathrm{sat}}^b(\mathbf x)
-=============================
-
-\mathbb 1
-\left[
-\max_c I_c^b(\mathbf x)>\tau_{\mathrm{sat}}
-\right].
-]
-
-参考曝光中，该区域不仅要没有饱和，还应保留可见图像结构：
-
-[
-M_{\mathrm{vis}}^r(\mathbf x)
-=============================
-
-\mathbb 1
-\left[
-\max_c I_c^r(\mathbf x)<\tau_{\mathrm{sat}}
-\right]
-\cdot
-\mathbb 1
-\left[
-|\nabla I^r(\mathbf x)|>\tau_g
-\right].
-]
-
-事件支持区域：
-
-[
-M_E(\mathbf x)
-==============
-
-\mathbb 1
-\left[
-\sum_b|V_b(\mathbf x)|>0
-\right].
-]
-
-最终：
-
-[
-M_{\mathrm{bridge}}
-===================
-
-M_{\mathrm{sat}}^b
-\odot
-M_{\mathrm{vis}}^r
-\odot
-M_E.
-]
-
-它表示：
-
-> 同一结构在参考曝光中仍然可见，在高曝光中已经丢失，并且该位置存在事件响应。
-
-如果：
-
-[
-\frac{\sum M_{\mathrm{bridge}}}{HW}<\tau_{\mathrm{area}},
-]
-
-这个曝光对就直接跳过。
-
-这也解决了你之前 `ev_2` 与 `ev_5` 几乎相同的问题：不是检查全图平均 RGB 差，而是检查有没有足够大的有效 bridge 区域。
-
----
-
-# 三、网络结构
-
-RGB-VGGT 在第一阶段冻结：
-
-[
-G_c^b
-=====
-
-F_{\mathrm{RGB}}(I^b),
-]
-
-其中可以包括：
-
-[
-G_c^b={D_c^b,N_c^b,F_c^b}.
-]
-
-贡献网络输入：
-
-[
-C
-=
-
-\mathcal C_\theta
-\left(
-V,\ I^b,\ \operatorname{sg}(G_c^b)
-\right).
-]
-
-然后得到加权事件：
-
-[
-V_{\mathrm{sel}}=C\odot V.
-]
-
-事件细化器只允许看到加权后的事件：
-
-[
-\Delta G
-========
-
-F_{\mathrm{event}}
-\left(
-V_{\mathrm{sel}},\operatorname{sg}(G_c^b)
-\right).
-]
-
-最终：
-
-[
-\widehat D^b
-============
-
-D_c^b\exp(\Delta\log D),
-]
-
-[
-\widehat N^b
-============
-
-\operatorname{Normalize}
-\left(
-N_c^b+\Delta N
-\right).
-]
-
-这里有一个非常关键的结构要求：
-
-[
-\boxed{
-\text{完整事件 }V\text{ 不能绕过贡献图直接进入几何解码器}
-}
-]
-
-否则后面的 Event Refiner 可以忽略 (C)，第一阶段学不到真正有意义的筛选。
-
----
-
-# 四、怎么利用你的理论推导
-
-你的推导可以保留：
-
-[
-\Delta L
-\approx
-\nabla L^\top\mathbf u\Delta t.
-]
-
-对于局部平滑材质，亮度变化的一部分与表面法向变化有关。因此，法向变化和深度边界区域中的事件更可能携带局部几何结构。
-
-但是不要把：
-
-[
-|\nabla N^*|
-]
-
-直接当 reliability label。
-
-最稳妥的做法是把它变成**几何损失权重**：
-
-[
-W_{\mathrm{geo}}
-================
-
-1+
-\alpha
-\operatorname{Norm}
-\left(
-|\nabla N^*|
-+
-\lambda_D
-|\nabla\log D^*|
-\right).
-]
-
-这样：
-
-* 法向变化和深度边界区域受到更强监督；
-* 平面纹理区域不会被标成负样本；
-* 镜面事件也不会被理论上直接判为无用；
-* 推导真正成为归纳偏置，而不是错误的硬标签。
-
-这句话可以概括为：
-
-[
-\boxed{
-\text{物理推导决定重点监督哪里，几何任务决定具体保留哪些事件。}
-}
-]
-
----
-
-# 五、第一阶段核心损失
-
-只在 (M_{\mathrm{bridge}}) 内监督高曝光分支。
-
-## 深度损失
-
-[
-\mathcal L_D
-============
-
-\frac{
-\sum_{\mathbf x}
-M_{\mathrm{bridge}}(\mathbf x)
-W_{\mathrm{geo}}(\mathbf x)
-\left|
-\log\widehat D^b(\mathbf x)
----------------------------
-
-\log D^*(\mathbf x)
-\right|
-}{
-\sum_{\mathbf x}M_{\mathrm{bridge}}(\mathbf x)+\epsilon
-}.
-]
-
-## 法向损失
-
-[
-\mathcal L_N
-============
-
-\frac{
-\sum_{\mathbf x}
-M_{\mathrm{bridge}}(\mathbf x)
-W_{\mathrm{geo}}(\mathbf x)
-\left[
-1-
-\widehat N^b(\mathbf x)^\top N^*(\mathbf x)
-\right]
-}{
-\sum_{\mathbf x}M_{\mathrm{bridge}}(\mathbf x)+\epsilon
-}.
-]
-
-这两个损失直接回答：
-
-> 经过贡献图选出的事件，能否恢复高曝光丢失的几何？
-
----
-
-# 六、如何防止 (C\equiv1)
-
-这是第一阶段必须解决的退化问题。
-
-最简单的方案不是设计复杂的 source label，而是加入一个固定的软保留预算：
-
-[
-\bar C
-======
-
-\frac{
-\sum |V|\odot C
-}{
-\sum |V|+\epsilon
-}.
-]
-
-然后：
-
-[
-\mathcal L_{\mathrm{budget}}
-============================
-
-|\bar C-\rho|.
-]
-
-例如：
-
-[
-\rho=0.5.
-]
-
-这意味着模型平均只能重点使用约一半的有效事件。
-
-它不能通过：
-
-[
-C\equiv1
-]
-
-直接保留全部事件，也不能通过：
-
-[
-C\equiv0
-]
-
-完全关闭事件分支。
-
-最终第一阶段损失非常简单：
-
-[
-\boxed{
-\mathcal L_{\mathrm{stage1}}
-============================
-
-\mathcal L_D
-+
-\lambda_N\mathcal L_N
-+
-\lambda_B\mathcal L_{\mathrm{budget}}
-}
-]
-
-不要再加入 token loss、可靠性一致性、事件分解损失或光流 warp。
-
-如果担心固定 (\rho) 太武断，可以训练使用 (\rho=0.5)，然后只在推理阶段测试 (0.3/0.5/0.7) 的敏感性，不需要重新训练三次。
-
----
-
-# 七、为什么这里仍然必须使用 Multi-LDR
-
-Reviewer 可能问：
-
-> 有 GT 深度，为什么不能直接在高曝光图像上训练？
-
-你的回答是：
-
-单独使用高曝光图像，只能知道哪些地方预测错误；它无法区分：
-
-* RGB 本身就没有结构的区域；
-* 高曝光造成结构丢失的区域；
-* 没有事件支持的区域。
-
-配对曝光提供了受控变量：
-
-[
-\text{场景、视角、几何、事件不变，只有 RGB 可见性改变。}
-]
-
-因此：
-
-[
-M_{\mathrm{bridge}}
-]
-
-明确定位了：
-
-> 结构在另一个曝光中确实存在，但在当前高曝光中被饱和抹除，并且有事件可以补充。
-
-所以 Multi-LDR 不是用来重复 GT，也不是普通一致性，而是用来构造**因曝光变化而失去视觉证据的训练区域**。
-
-这个表述比“不同曝光预测应一致”更难被攻击。
-
----
-
-# 八、第一阶段完整伪代码
-
-```text
-Stage 1: Multi-LDR-Guided Event Contribution Learning
-
-Input:
-    Multi-LDR images {Iy,Ix}，(x \in our exists sets 2>=x>=0,y>x)
-    Shared event volume V
-    GT depth D*
-    GT normal N*
-
-For each scene window:
-
-    1. Select an ordered exposure pair:
-
-           I_ref = an exposure with low saturation
-           I_bad = an exposure with clearly higher saturation
-
-    2. Construct masks:
-
-           M_sat_bad =
-               saturated pixels in I_bad
-
-           M_visible_ref =
-               non-saturated pixels in I_ref
-               with visible image gradients
-
-           M_event =
-               pixels containing events
-
-           M_bridge =
-               M_sat_bad
-               AND M_visible_ref
-               AND M_event
-
-    3. Skip the pair if M_bridge is too small.
-
-    4. Freeze the RGB geometry backbone:
-
-           G_coarse =
-               StopGrad(RGB_Backbone(I_bad))
-
-    5. Predict event contribution:
-
-           C =
-               ContributionNet(
-                   V,
-                   I_bad,
-                   G_coarse
-               )
-
-    6. Select events:
-
-           V_selected = C * V
-
-    7. Predict geometry residual:
-
-           Delta_G =
-               EventRefiner(
-                   V_selected,
-                   G_coarse
-               )
-
-           G_pred =
-               Refine(G_coarse, Delta_G)
-
-    8. Construct geometry-aware weights:
-
-           W_geo =
-               1
-               + alpha * normal-gradient magnitude
-               + beta  * depth-boundary magnitude
-
-    9. Compute losses inside M_bridge:
-
-           L_depth
-           L_normal
-           L_budget
-
-   10. Update only:
-
-           ContributionNet
-           EventRefiner
-
-Output:
-    Pretrained ContributionNet
-    Pretrained EventRefiner
-```
-
----
-
-# 九、第二阶段怎么接
-
-第一阶段训练完成后：
-
-* 加载 ContributionNet；
-* 加载 Event Refiner；
-* 解冻部分 VGGT；
-* 使用所有曝光进行正常几何训练。
-
-第二阶段输入单个曝光和事件：
-
-[
-(I^e,V)
-\rightarrow
-C^e
-\rightarrow
-C^e\odot V
-\rightarrow
-\widehat G^e.
-]
-
-使用完整 GT 几何损失：
-
-[
-\mathcal L_{\mathrm{stage2}}
-============================
-
-\mathcal L_{\mathrm{depth}}
-+
-\lambda_N\mathcal L_{\mathrm{normal}}
-+
-\lambda_P\mathcal L_{\mathrm{pose}}.
-]
-
-第一阶段的 bridge loss 可以保留一个很低的权重，也可以只把第一阶段作为初始化。
-
----
-
-# 十、从你当前脚本怎么改
-
-当前脚本本质上是：
-
-```text
-加载 paired-token teacher
-→ 提取两个曝光 token
-→ 计算 token agreement
-→ 导出 reliability npz
-```
-
-修改后应变成训练脚本，而不是标签导出脚本。原有的 token teacher、`token_a/token_b`、cosine similarity、`token_agreement` 和离线 target 导出全部删除。当前脚本中的 paired exposure 读取、共享事件检查、场景划分和 preview 逻辑仍然可以保留。
-
-新脚本的逻辑是：
-
-```text
-读取 Multi-LDR pair
-→ 构造 bridge mask
-→ 冻结 RGB backbone
-→ ContributionNet 预测 C
-→ C * event
-→ Event Refiner 恢复几何
-→ bridge-region GT loss
-→ 反向更新
-```
-
----
-
-# 十一、最低限度必须做的实验
-
-真正需要重新训练的只有四个配置：
-
-| 配置                                   | 目的                      |
-| ------------------------------------ | ----------------------- |
-| RGB-VGGT                             | 基础结果                    |
-| RGB + full events                    | 证明直接融合的效果               |
-| ContributionNet，不使用 Multi-LDR bridge | 证明筛选结构本身                |
-| 完整方法                                 | 证明 Multi-LDR bridge 的价值 |
-
-另外只用最终 checkpoint 做三个便宜测试：
-
-* (C=1)：全部事件；
-* 随机 (C)：相同平均保留率；
-* 删除最高分事件与删除最低分事件。
-
-最后一个测试尤其重要：
-
-> 删除低贡献事件，性能应基本不变或改善；删除高贡献事件，性能应明显下降。
-
-这能够最直接证明你学到的是“对几何有贡献的事件”，而不是一张看起来合理的热力图。
-
-最终第一阶段应该保持得非常克制：
-
-[
-\boxed{
-\text{Multi-LDR 找到曝光丢失区域}
-}
-]
-
-[
-\boxed{
-\text{几何误差监督事件贡献}
-}
-]
-
-[
-\boxed{
-\text{预算约束防止全部事件通过}
-}
-]
-
-这三件事已经足够形成一个完整、可实现，并且相对抗审稿攻击的第一阶段。
+指标至少包括：
+
+- depth AbsRel
+- depth RMSE
+- normal cosine error
+- point error
+- C MAE on event support
+- C Pearson correlation
+- predicted event mass ratio
+- target event mass ratio
+
+==================================================
+七、可视化
+==================================================
+
+每次验证固定保存前 4 个样本：
+
+1. target RGB
+2. full event projection
+3. geometry event projection
+4. predicted spatial contribution
+5. target spatial contribution
+6. selected event projection
+7. coarse depth
+8. final depth
+9. GT depth
+10. final normal
+
+可视化不得重新遍历完整 DataLoader。
+
+直接复用当前 validation forward 已得到的 prepared 和 prediction，只保存指定 batch 的结果。
+
+==================================================
+八、必须增加的测试
+==================================================
+
+增加或修改单元测试，至少验证：
+
+1. Phase A 的 selected_event 与 geometry_event_voxel 完全一致；
+2. Phase A 不运行 ContributionNet；
+3. Phase B 中只有 ContributionNet 存在非零梯度；
+4. C 只在 event voxel 上连续相乘一次；
+5. Adapter 输出 shape 与 RGB feature 一致；
+6. Adapter 的最后 up projection 初始输出严格为 0；
+7. coarse geometry 已 detach；
+8. C_gt 范围位于 [0,1]；
+9. 不存在 geometry event 时给出明确错误；
+10. full / oracle / predicted 三种模式能够各跑一个 batch。
+
+==================================================
+九、兼容要求
+==================================================
+
+不要删除旧 checkpoint。
+新 checkpoint schema 需要升级版本，避免误加载旧模型。
+
+保持当前 shell 入口可用。
+
+Phase C 默认：
+
+    EPOCHS_JOINT=0
+
+先保证以下快速命令可以运行：
+
+Phase A 快速测试：
+
+    MAX_TRAIN_BATCHES=20 \
+    MAX_VAL_BATCHES=5 \
+    EPOCHS_ADAPTER=1 \
+    NUM_WORKERS=0 \
+    bash contribution_stage1.sh
+
+Phase B 快速测试：
+
+    MAX_TRAIN_BATCHES=20 \
+    MAX_VAL_BATCHES=5 \
+    EPOCHS_CONTRIBUTION=1 \
+    NUM_WORKERS=0 \
+    bash contribution_stage1.sh
+
+实现完成后输出：
+
+1. 修改文件列表；
+2. 每个文件的关键修改；
+3. 两条实际运行命令；
+4. 单元测试结果；
+5. 参数量统计：
+   ContributionNet、EventEncoder、全部 Adapter 分别多少参数。
+
+不要继续设计额外模块。
+不要实现动态 LoRA。
+不要修改 pose branch。
+不要实现 post-decoder depth residual。

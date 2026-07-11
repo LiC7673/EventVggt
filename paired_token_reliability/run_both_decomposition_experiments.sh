@@ -14,9 +14,10 @@ if [[ -z "${FULL_PORT:-}" ]]; then
   FULL_PORT="$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"
 fi
 
-EPOCHS_A="${EPOCHS_A:-10}"
+EPOCHS_A="${EPOCHS_A:-2}"
+# Number of B->A alternating epoch pairs after the A warm-up.
 EPOCHS_B="${EPOCHS_B:-20}"
-EPOCHS_C="${EPOCHS_C:-3}"
+EPOCHS_C="${EPOCHS_C:-0}"
 NUM_VIEWS="${NUM_VIEWS:-6}"
 HEAD_CHUNK="${HEAD_CHUNK:-1}"
 NUM_WORKERS="${NUM_WORKERS:-2}"

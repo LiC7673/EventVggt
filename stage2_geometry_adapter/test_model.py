@@ -8,6 +8,7 @@ import unittest
 import torch
 
 from stage2_geometry_adapter.model import (
+    EventNormalDecoder,
     GeometryFeatureAdapter,
     PolarityTemporalEventPyramid,
     StreamVGGT,
@@ -16,6 +17,20 @@ from stage2_geometry_adapter.model import (
 
 
 class GeometryAdapterTests(unittest.TestCase):
+    def test_event_normal_decoder_is_unit_length_and_event_only(self):
+        decoder = EventNormalDecoder(event_channels=8, hidden_channels=16)
+        event = torch.randn(2, 8, 7, 9)
+        reliability = torch.rand(2, 1, 7, 9)
+        normal, confidence = decoder(event, reliability, output_size=(14, 18))
+        self.assertEqual(normal.shape, (2, 3, 14, 18))
+        self.assertEqual(confidence.shape, (2, 1, 14, 18))
+        torch.testing.assert_close(
+            normal.square().sum(dim=1), torch.ones(2, 14, 18)
+        )
+        # Zero-initialized output projection starts from +Z everywhere.
+        self.assertEqual(float(normal[:, :2].abs().sum()), 0.0)
+        self.assertTrue(torch.all(normal[:, 2] == 1.0))
+
     def test_zero_initialized_alpha_is_exact_identity(self):
         adapter = GeometryFeatureAdapter(32, 8, 16)
         rgb = torch.randn(2, 32, 10, 12)
