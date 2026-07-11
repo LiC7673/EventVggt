@@ -187,8 +187,15 @@ class GeometryFeatureAdapter(nn.Module):
         raw_update = self.adapter(torch.cat((rgb_feature, event_feature), dim=1))
         alpha = torch.tanh(self.alpha_logit)
         ungated_update = alpha * raw_update
-        applied_update = contribution * ungated_update
+        # C has already gated the raw voxel before EventEncoder. Applying C
+        # again here would make the effective event strength approximately
+        # C^2. Keep only a binary support gate so a zero/removed event remains
+        # exactly the RGB path, without attenuating valid event features twice.
+        event_support = (contribution > 1.0e-6).to(ungated_update.dtype)
+        applied_update = event_support * ungated_update
         refined = rgb_feature + applied_update
+        # This remains a soft constraint: low-C locations may be active, but
+        # producing a large feature update there is penalized.
         low_contribution_penalty = ((1.0 - contribution) * ungated_update).abs().mean()
         return refined, applied_update, low_contribution_penalty
 

@@ -4,6 +4,11 @@ The deployable path is now one model:
 
 `RGB backbone -> temporal ContributionNet -> C*event -> event encoder -> DPT feature adapters -> original depth/point heads`.
 
+Contribution is applied once, to the input event voxel. At the DPT adapter,
+only a binary selected-event support gate is used to preserve the exact RGB
+identity for zero events; the soft value C is not multiplied into the feature
+update a second time. Low-C updates remain controlled by the update penalty.
+
 The camera head remains RGB-only. There is no raw-depth residual branch. The
 contribution tensor has shape `[batch, views, 2B, height, width]`, preserving
 temporal bins and polarity. A mass-weighted spatial projection is used only to

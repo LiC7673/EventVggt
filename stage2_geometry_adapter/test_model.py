@@ -37,6 +37,19 @@ class GeometryAdapterTests(unittest.TestCase):
         self.assertTrue(torch.equal(refined, rgb))
         self.assertEqual(float(update.abs().sum()), 0.0)
 
+    def test_nonzero_contribution_is_not_applied_twice(self):
+        adapter = GeometryFeatureAdapter(16, 8, 16)
+        with torch.no_grad():
+            adapter.alpha_logit.fill_(0.5)
+        rgb = torch.randn(1, 16, 8, 8)
+        event = torch.randn(1, 8, 8, 8)
+        low = torch.full((1, 1, 8, 8), 0.2)
+        high = torch.full((1, 1, 8, 8), 0.8)
+        _, low_update, low_penalty = adapter(rgb, event, low)
+        _, high_update, high_penalty = adapter(rgb, event, high)
+        torch.testing.assert_close(low_update, high_update)
+        self.assertGreater(float(low_penalty), float(high_penalty))
+
     def test_zero_events_have_zero_multiscale_gate(self):
         encoder = PolarityTemporalEventPyramid(
             num_bins=2, hidden_channels=8, pyramid_channels=8
@@ -58,4 +71,3 @@ class GeometryAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
