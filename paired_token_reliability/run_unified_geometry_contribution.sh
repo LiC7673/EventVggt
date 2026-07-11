@@ -4,20 +4,27 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-GPU="${GPU:-2}"
+GPUS="${GPUS:-${GPU:-2}}"
+IFS=',' read -r -a GPU_ARRAY <<< "${GPUS}"
+NPROC="${#GPU_ARRAY[@]}"
+MASTER_PORT="${MASTER_PORT:-29641}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
 OUTPUT="${OUTPUT:-abl_event_exp/unified_geometry_contribution}"
 EPOCHS_A="${EPOCHS_A:-5}"
 EPOCHS_B="${EPOCHS_B:-10}"
 EPOCHS_C="${EPOCHS_C:-0}"
 PAIR_MODE="${PAIR_MODE:-anchor}"
-NUM_WORKERS="${NUM_WORKERS:-8}"
+NUM_WORKERS="${NUM_WORKERS:-2}"
 RUN_EVAL="${RUN_EVAL:-1}"
 
 mkdir -p "${OUTPUT}/logs"
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 
-CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.train_unified_geometry_contribution \
+CUDA_VISIBLE_DEVICES="${GPUS}" python -m torch.distributed.run \
+  --nproc_per_node "${NPROC}" --master_port "${MASTER_PORT}" \
+  -m paired_token_reliability.train_unified_geometry_contribution \
   --pretrained "${PRETRAINED}" \
   --output "${OUTPUT}" \
   --epochs-a "${EPOCHS_A}" \
@@ -26,11 +33,13 @@ CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.train_unified_g
   --pair-mode "${PAIR_MODE}" \
   --num-workers "${NUM_WORKERS}" \
   --visualize-every-batches 40 \
+  "data.num_views=${NUM_VIEWS:-4}" \
+  "+model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
   "$@" \
   2>&1 | tee "${OUTPUT}/logs/train.log"
 
 if [[ "${RUN_EVAL}" == "1" ]]; then
-  CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.evaluate_unified_geometry_contribution \
+  CUDA_VISIBLE_DEVICES="${GPU_ARRAY[0]}" python -m paired_token_reliability.evaluate_unified_geometry_contribution \
     --checkpoint "${OUTPUT}/checkpoint-best.pth" \
     --output-dir "${OUTPUT}/heldout_eval" \
     --num-workers "${NUM_WORKERS}" \

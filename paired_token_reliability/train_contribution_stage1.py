@@ -192,7 +192,7 @@ def make_dataset(cfg, split: str, pairs):
     )
 
 
-def make_loader(dataset, *, batch_size: int, num_workers: int, train: bool):
+def make_loader(dataset, *, batch_size: int, num_workers: int, train: bool, sampler=None):
     worker_count = int(num_workers)
     worker_options = (
         {"persistent_workers": True, "prefetch_factor": 2}
@@ -202,7 +202,8 @@ def make_loader(dataset, *, batch_size: int, num_workers: int, train: bool):
     return DataLoader(
         dataset,
         batch_size=int(batch_size),
-        shuffle=bool(train),
+        shuffle=bool(train) and sampler is None,
+        sampler=sampler,
         num_workers=worker_count,
         pin_memory=True,
         drop_last=False,

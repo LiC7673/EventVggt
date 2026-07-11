@@ -4,27 +4,34 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-GPU="${GPU:-2}"
+GPUS="${GPUS:-${GPU:-2}}"
+IFS=',' read -r -a GPU_ARRAY <<< "${GPUS}"
+NPROC="${#GPU_ARRAY[@]}"
+MASTER_PORT="${MASTER_PORT:-29644}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
 OUTPUT="${OUTPUT:-abl_event_exp/decomp_full_as_event_12train_4test}"
 EPOCHS_A="${EPOCHS_A:-5}"
 EPOCHS_B="${EPOCHS_B:-10}"
 EPOCHS_C="${EPOCHS_C:-0}"
-NUM_WORKERS="${NUM_WORKERS:-8}"
+NUM_WORKERS="${NUM_WORKERS:-2}"
 DECOMP_WEIGHT="${DECOMP_WEIGHT:-0.2}"
 
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
-export CUDA_VISIBLE_DEVICES="${GPU}"
+export CUDA_VISIBLE_DEVICES="${GPUS}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 mkdir -p "${OUTPUT}/logs"
 
 # Input/denominator: events_additive/full.  The dataset does not probe or open
 # cur_event, cur_best_event, or esim_event in this mode.
-python -m paired_token_reliability.train_unified_geometry_contribution \
+python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MASTER_PORT}" \
+  -m paired_token_reliability.train_unified_geometry_contribution \
   --pretrained "${PRETRAINED}" \
   --output "${OUTPUT}" \
   --epochs-a "${EPOCHS_A}" --epochs-b "${EPOCHS_B}" --epochs-c "${EPOCHS_C}" \
   --num-workers "${NUM_WORKERS}" --decomposition-weight "${DECOMP_WEIGHT}" \
   "data.num_views=${NUM_VIEWS:-4}" \
+  "+model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
   "+data.train_initial_scene_idx=0" \
   "+data.train_scene_count=12" \
   "+data.train_holdout_frame_count=0" \
@@ -37,4 +44,3 @@ python -m paired_token_reliability.train_unified_geometry_contribution \
   "+data.decomposition_geo_branch=geometry_motion" \
   "+data.decomposition_full_branch=full" \
   "$@" 2>&1 | tee "${OUTPUT}/logs/train.log"
-

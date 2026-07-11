@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -14,6 +15,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data.distributed import DistributedSampler
 from omegaconf import OmegaConf
 
 import finetune_event as fe
@@ -31,6 +35,33 @@ from stage2_geometry_adapter.model import StreamVGGT
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def init_distributed(args):
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size <= 1:
+        device = torch.device(
+            args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu"
+        )
+        return False, 0, 1, device
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl", init_method="env://")
+    return True, dist.get_rank(), dist.get_world_size(), torch.device("cuda", local_rank)
+
+
+def reduce_metrics(totals, batches, device, distributed):
+    if not distributed:
+        return {key: value / max(batches, 1) for key, value in totals.items()}
+    keys = sorted(totals)
+    packed = torch.tensor(
+        [totals[key] for key in keys] + [float(batches)],
+        device=device,
+        dtype=torch.float64,
+    )
+    dist.all_reduce(packed)
+    count = max(float(packed[-1]), 1.0)
+    return {key: float(packed[index]) / count for index, key in enumerate(keys)}
 
 
 def parser():
@@ -333,10 +364,20 @@ def save_visual(output_root, phase, epoch, batch_index, views, event, bridge, ou
     plt.close(figure)
 
 
-def run_epoch(model, loader, optimizer, criterion, device, args, phase, epoch, epochs, training=True):
-    configure_phase(model, phase, args.train_geometry_heads_a)
+def run_epoch(
+    model, raw_model, loader, optimizer, criterion, device, args, phase, epoch, epochs,
+    training=True, distributed=False, rank=0,
+):
+    configure_phase(raw_model, phase, args.train_geometry_heads_a)
+    model.train(training)
+    raw_model.aggregator.eval()
+    raw_model.camera_head.eval()
+    if phase == "contribution":
+        raw_model.event_encoder.eval()
+        raw_model.depth_head.eval()
+        raw_model.point_head.eval()
     if not training:
-        model.eval()
+        raw_model.eval()
     totals, batches = {}, 0
     limit = args.max_train_batches if training else args.max_val_batches
     for batch_index, batch in enumerate(loader):
@@ -349,10 +390,14 @@ def run_epoch(model, loader, optimizer, criterion, device, args, phase, epoch, e
             override = dropout_override(event, args) if phase == "adapter" and training else (
                 contribution_override(event, "full") if phase == "adapter" else None
             )
-            output = model(target_views, contribution_override=override)
             contribution_reference = None
             if phase != "adapter" and not args.no_pair_consistency:
-                contribution_reference = model.predict_contribution(reference_views)
+                # The paired exposure is a stop-gradient anchor. Besides being
+                # stable, this avoids a second DDP reducer pass and saves its
+                # activation memory.
+                with torch.no_grad():
+                    contribution_reference = raw_model.predict_contribution(reference_views)
+            output = model(target_views, contribution_override=override)
             rho = 1.0 if phase == "adapter" else rho_schedule(epoch, epochs)
             result = criterion(
                 output,
@@ -374,9 +419,9 @@ def run_epoch(model, loader, optimizer, criterion, device, args, phase, epoch, e
         for key, value in values.items():
             totals[key] = totals.get(key, 0.0) + value
         batches += 1
-        if training and args.visualize_every_batches > 0 and (batch_index + 1) % args.visualize_every_batches == 0:
+        if rank == 0 and training and args.visualize_every_batches > 0 and (batch_index + 1) % args.visualize_every_batches == 0:
             save_visual(args.output, phase, epoch, batch_index, target_views, event, bridge, output, result.aux)
-        if training and batch_index % 20 == 0:
+        if rank == 0 and training and batch_index % 20 == 0:
             print(
                 f"[{phase}] batch={batch_index:05d} loss={values['loss']:.5f} "
                 f"D={values['depth']:.5f} N={values['normal']:.5f} P={values['point']:.5f} "
@@ -385,7 +430,7 @@ def run_epoch(model, loader, optimizer, criterion, device, args, phase, epoch, e
                 f"Cmean={values['contribution_mean']:.4f} Cstd={values['contribution_std']:.4f}",
                 flush=True,
             )
-    return {key: value / max(batches, 1) for key, value in totals.items()}
+    return reduce_metrics(totals, batches, device, distributed)
 
 
 def save_checkpoint(path, model, optimizer, cfg, args, phase, epoch, metrics):
@@ -417,30 +462,48 @@ def main(argv=None):
             "this trainer intentionally initializes ContributionNet from scratch."
         )
     cfg = load_cfg(args.config, overrides)
+    distributed, rank, world_size, device = init_distributed(args)
     if not Path(args.pretrained).is_file():
         raise FileNotFoundError(args.pretrained)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
+    process_seed = args.seed + rank
+    random.seed(process_seed)
+    np.random.seed(process_seed)
+    torch.manual_seed(process_seed)
     exposures = parse_exposure_sequence(args.exposures)
     pairs = generate_ordered_pairs(exposures, args.pair_mode)
     train_dataset = make_unified_dataset(cfg, "train", pairs)
     val_dataset = make_unified_dataset(cfg, "test", pairs)
-    print(f"train scenes={train_dataset.dataset.get_active_scenes()}", flush=True)
-    print(f"test scenes={val_dataset.dataset.get_active_scenes()}", flush=True)
-    print(
-        "event source="
-        f"{getattr(cfg.data, 'event_source_mode', 'current')} "
-        "decomposition="
-        f"{bool(getattr(cfg.data, 'decomposition_supervision', False))}",
-        flush=True,
+    if rank == 0:
+        print(f"DDP world_size={world_size}, per_gpu_batch={args.batch_size}", flush=True)
+        print(f"train scenes={train_dataset.dataset.get_active_scenes()}", flush=True)
+        print(f"test scenes={val_dataset.dataset.get_active_scenes()}", flush=True)
+        print(
+            "event source="
+            f"{getattr(cfg.data, 'event_source_mode', 'current')} "
+            "decomposition="
+            f"{bool(getattr(cfg.data, 'decomposition_supervision', False))}",
+            flush=True,
+        )
+    train_sampler = DistributedSampler(
+        train_dataset, num_replicas=world_size, rank=rank, shuffle=True, seed=args.seed
+    ) if distributed else None
+    val_sampler = DistributedSampler(
+        val_dataset, num_replicas=world_size, rank=rank, shuffle=False
+    ) if distributed else None
+    train_loader = make_loader(
+        train_dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+        train=True, sampler=train_sampler,
     )
-    train_loader = make_loader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, train=True)
-    val_loader = make_loader(val_dataset, batch_size=args.batch_size, num_workers=args.num_workers, train=False)
+    val_loader = make_loader(
+        val_dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+        train=False, sampler=val_sampler,
+    )
     model = build_model(cfg, args, device)
     output = Path(args.output)
-    output.mkdir(parents=True, exist_ok=True)
+    if rank == 0:
+        output.mkdir(parents=True, exist_ok=True)
+    if distributed:
+        dist.barrier()
     history = []
     phases = [("adapter", args.epochs_a), ("contribution", args.epochs_b)]
     if args.epochs_c > 0:
@@ -454,24 +517,54 @@ def main(argv=None):
             model.load_state_dict(torch_load(output / "checkpoint-contribution-best.pth")["model"], strict=True)
         configure_phase(model, phase, args.train_geometry_heads_a)
         optimizer = optimizer_for(model, phase, args)
+        train_model = (
+            DistributedDataParallel(
+                model,
+                device_ids=[device.index],
+                output_device=device.index,
+                broadcast_buffers=False,
+                find_unused_parameters=False,
+            )
+            if distributed else model
+        )
         criterion = criterion_for(args, phase)
         best = math.inf
         for epoch in range(epochs):
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
             start = time.time()
-            train_metrics = run_epoch(model, train_loader, optimizer, criterion, device, args, phase, epoch, epochs, True)
-            val_metrics = run_epoch(model, val_loader, optimizer, criterion, device, args, phase, epoch, epochs, False)
+            train_metrics = run_epoch(
+                train_model, model, train_loader, optimizer, criterion, device, args,
+                phase, epoch, epochs, True, distributed, rank,
+            )
+            val_metrics = run_epoch(
+                train_model, model, val_loader, optimizer, criterion, device, args,
+                phase, epoch, epochs, False, distributed, rank,
+            )
             record = {"phase": phase, "epoch": epoch, "train": train_metrics, "validation": val_metrics}
-            history.append(record)
-            (output / "metrics.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
+            if rank == 0:
+                history.append(record)
+                (output / "metrics.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
             score = val_metrics.get("loss", train_metrics.get("loss", math.inf))
-            save_checkpoint(output / f"checkpoint-{phase}-last.pth", model, optimizer, cfg, args, phase, epoch, record)
+            if rank == 0:
+                save_checkpoint(output / f"checkpoint-{phase}-last.pth", model, optimizer, cfg, args, phase, epoch, record)
             if score < best:
                 best = score
-                save_checkpoint(output / f"checkpoint-{phase}-best.pth", model, optimizer, cfg, args, phase, epoch, record)
-                if phase in {"contribution", "joint"}:
-                    save_checkpoint(output / "checkpoint-best.pth", model, optimizer, cfg, args, phase, epoch, record)
-            print(f"[{phase}] epoch={epoch+1}/{epochs} train={train_metrics} val={val_metrics} time={(time.time()-start)/60:.1f}m")
-    print(f"Unified model ready: {(output / 'checkpoint-best.pth').resolve()}")
+                if rank == 0:
+                    save_checkpoint(output / f"checkpoint-{phase}-best.pth", model, optimizer, cfg, args, phase, epoch, record)
+                    if phase in {"contribution", "joint"}:
+                        save_checkpoint(output / "checkpoint-best.pth", model, optimizer, cfg, args, phase, epoch, record)
+            if rank == 0:
+                print(f"[{phase}] epoch={epoch+1}/{epochs} train={train_metrics} val={val_metrics} time={(time.time()-start)/60:.1f}m")
+        del train_model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        if distributed:
+            dist.barrier()
+    if rank == 0:
+        print(f"Unified model ready: {(output / 'checkpoint-best.pth').resolve()}")
+    if distributed:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

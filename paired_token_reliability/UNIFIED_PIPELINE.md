@@ -27,7 +27,7 @@ training-only. Inference requires only RGB and the event voxel.
 ## Command
 
 ```bash
-GPU=2 EPOCHS_A=5 EPOCHS_B=10 EPOCHS_C=1 \
+GPUS=2,3,4,5 EPOCHS_A=5 EPOCHS_B=10 EPOCHS_C=1 \
   bash paired_token_reliability/run_unified_geometry_contribution.sh
 ```
 
@@ -44,10 +44,10 @@ addition to the selected main event stream.
 
 ```bash
 # denominator/model input = cur_best_event; does not load additive full
-bash paired_token_reliability/run_decomp_cur_best_as_full_12train_4test.sh
+GPUS=2,3,4,5 bash paired_token_reliability/run_decomp_cur_best_as_full_12train_4test.sh
 
 # denominator/model input = events_additive/full; does not load cur_* events
-bash paired_token_reliability/run_decomp_full_as_event_12train_4test.sh
+GPUS=2,3,4,5 bash paired_token_reliability/run_decomp_full_as_event_12train_4test.sh
 ```
 
 The target is the clipped soft mass ratio `sum(abs(E_geo)) /
