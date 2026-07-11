@@ -124,13 +124,33 @@ def parser():
     return value
 
 
+def normalize_dotlist_overrides(overrides):
+    """Translate Hydra-style +/++ prefixes for plain OmegaConf dotlists.
+
+    This trainer parses its own CLI rather than running under Hydra. Without
+    normalization, ``+data.foo=value`` creates a literal ``+data`` root node
+    and leaves ``data.foo`` unchanged.
+    """
+    normalized = []
+    for item in overrides:
+        if item.startswith("++"):
+            item = item[2:]
+        elif item.startswith("+"):
+            item = item[1:]
+        normalized.append(item)
+    return normalized
+
+
 def load_cfg(path, overrides):
     cfg = OmegaConf.load(path)
     invalid = [item for item in overrides if "=" not in item]
     if invalid:
         raise ValueError(f"Expected key=value overrides, got {invalid}")
     if overrides:
-        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
+        cfg = OmegaConf.merge(
+            cfg,
+            OmegaConf.from_dotlist(normalize_dotlist_overrides(overrides)),
+        )
     OmegaConf.set_struct(cfg, False)
     return cfg
 

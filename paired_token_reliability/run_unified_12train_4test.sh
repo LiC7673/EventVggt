@@ -45,18 +45,18 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
   --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" \
   --visualize-val-every-batches "${VAL_VIS_EVERY:-20}" \
   "data.num_views=${NUM_VIEWS}" \
-  "+model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
-  "+data.train_initial_scene_idx=${TRAIN_INITIAL_SCENE_IDX}" \
-  "+data.train_scene_count=${TRAIN_SCENE_COUNT}" \
-  "+data.train_holdout_frame_count=0" \
-  "+data.test_initial_scene_idx=${TEST_INITIAL_SCENE_IDX}" \
-  "+data.test_scene_count=${TEST_SCENE_COUNT}" \
-  "+data.heldout_test_frame_count=${HELDOUT_TEST_FRAME_COUNT}" \
-  "+data.event_source_mode=decomposition_full" \
-  "+data.decomposition_supervision=true" \
-  "+data.decomposition_event_root=${DECOMPOSITION_EVENT_ROOT}" \
-  "+data.decomposition_geo_branch=${DECOMPOSITION_GEO_BRANCH}" \
-  "+data.decomposition_full_branch=${DECOMPOSITION_FULL_BRANCH}" \
+  "model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
+  "data.train_initial_scene_idx=${TRAIN_INITIAL_SCENE_IDX}" \
+  "data.train_scene_count=${TRAIN_SCENE_COUNT}" \
+  "data.train_holdout_frame_count=0" \
+  "data.test_initial_scene_idx=${TEST_INITIAL_SCENE_IDX}" \
+  "data.test_scene_count=${TEST_SCENE_COUNT}" \
+  "data.heldout_test_frame_count=${HELDOUT_TEST_FRAME_COUNT}" \
+  "data.event_source_mode=decomposition_full" \
+  "data.decomposition_supervision=true" \
+  "data.decomposition_event_root=${DECOMPOSITION_EVENT_ROOT}" \
+  "data.decomposition_geo_branch=${DECOMPOSITION_GEO_BRANCH}" \
+  "data.decomposition_full_branch=${DECOMPOSITION_FULL_BRANCH}" \
   "$@" \
   2>&1 | tee "${OUTPUT}/logs/train.log"
 

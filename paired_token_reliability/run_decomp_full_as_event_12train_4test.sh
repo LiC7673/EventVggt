@@ -39,18 +39,18 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
   --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" \
   --visualize-val-every-batches "${VAL_VIS_EVERY:-20}" \
   "data.num_views=${NUM_VIEWS:-4}" \
-  "+model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
-  "+data.train_initial_scene_idx=0" \
-  "+data.train_scene_count=12" \
-  "+data.train_holdout_frame_count=0" \
-  "+data.test_initial_scene_idx=12" \
-  "+data.test_scene_count=4" \
-  "+data.heldout_test_frame_count=120" \
-  "+data.event_source_mode=decomposition_full" \
-  "+data.decomposition_supervision=true" \
-  "+data.decomposition_event_root=events_additive" \
-  "+data.decomposition_geo_branch=geometry_motion" \
-  "+data.decomposition_full_branch=full" \
+  "model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
+  "data.train_initial_scene_idx=0" \
+  "data.train_scene_count=12" \
+  "data.train_holdout_frame_count=0" \
+  "data.test_initial_scene_idx=12" \
+  "data.test_scene_count=4" \
+  "data.heldout_test_frame_count=120" \
+  "data.event_source_mode=decomposition_full" \
+  "data.decomposition_supervision=true" \
+  "data.decomposition_event_root=events_additive" \
+  "data.decomposition_geo_branch=geometry_motion" \
+  "data.decomposition_full_branch=full" \
   "$@" 2>&1 | tee "${OUTPUT}/logs/train.log"
 
 if [[ "${RUN_EVAL:-1}" == "1" ]]; then

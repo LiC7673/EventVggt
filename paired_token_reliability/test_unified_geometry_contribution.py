@@ -11,6 +11,7 @@ from paired_token_reliability.unified_model import contribution_override
 from paired_token_reliability.contribution_stage1 import build_bridge_masks
 from paired_token_reliability.train_unified_geometry_contribution import (
     build_alternating_phase_schedule,
+    normalize_dotlist_overrides,
     use_phase_event_source,
 )
 
@@ -66,6 +67,20 @@ def test_epoch_schedule_warms_up_a_then_alternates_b_a():
         "adapter",
         "contribution",
         "adapter",
+    ]
+
+
+def test_hydra_style_prefixes_are_removed_for_plain_omegaconf():
+    assert normalize_dotlist_overrides(
+        [
+            "+data.event_source_mode=decomposition_full",
+            "++data.decomposition_supervision=true",
+            "data.num_views=6",
+        ]
+    ) == [
+        "data.event_source_mode=decomposition_full",
+        "data.decomposition_supervision=true",
+        "data.num_views=6",
     ]
 
 
