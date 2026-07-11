@@ -223,8 +223,16 @@
 59. Phase A 当前有效损失为：
 
    ```text
-   L_A = L_depth + lambda_normal * L_normal + lambda_point * L_point
+   L_A = L_depth
+         + lambda_normal * L_normal
+         + lambda_point * L_point
+         + lambda_grad * L_log-depth-gradient
+         + lambda_curv * L_log-depth-curvature
+         + lambda_grid * L_patch-boundary-gradient
    ```
+
+   后三项均匹配 GT depth 的导数，而不是对预测深度做无监督平滑；因此它们抑制
+   DPT/ViT patch 周期条纹，同时保留 GT 中真实存在的曲面和高频几何。
 
 60. Phase A 中打印的 budget/Cmean/Cstd 只是 override 统计，不参与总损失。
 

@@ -102,7 +102,11 @@ def parser():
         "--bridge-require-reference-gradient", action="store_true",
         help="Restore the legacy strict Bridge definition.",
     )
-    value.add_argument("--normal-weight", type=float, default=0.25)
+    value.add_argument("--normal-weight", type=float, default=0.75)
+    value.add_argument("--depth-gradient-weight", type=float, default=0.5)
+    value.add_argument("--depth-curvature-weight", type=float, default=0.1)
+    value.add_argument("--patch-grid-weight", type=float, default=0.25)
+    value.add_argument("--grid-patch-size", type=int, default=14)
     value.add_argument("--event-normal-weight", type=float, default=0.5)
     value.add_argument("--depth-event-normal-weight", type=float, default=0.5)
     value.add_argument("--point-weight", type=float, default=1.0)
@@ -417,6 +421,10 @@ def criterion_for(args, phase):
         depth_event_normal_weight=(
             0.0 if phase == "adapter" else args.depth_event_normal_weight
         ),
+        depth_gradient_weight=args.depth_gradient_weight,
+        depth_curvature_weight=args.depth_curvature_weight,
+        patch_grid_weight=args.patch_grid_weight,
+        grid_patch_size=args.grid_patch_size,
         points_loss_type="l1",
     )
 
@@ -476,10 +484,32 @@ def save_visual(
         if aux.get("event_normal_live") is not None else None
     )
     geometry = aux["geometry_score"][0, 0]
+    event_channels = event[0, 0]
+    event_bins = event_channels.shape[0] // 2
+    diagnostic_bins = tuple(
+        sorted({0, max(event_bins // 2, 0), max(event_bins - 1, 0)})
+    )
+    temporal_panels = tuple(
+        (
+            visual_map(
+                event_channels[bin_index].abs()
+                + event_channels[event_bins + bin_index].abs()
+            ),
+            f"event bin {bin_index:02d} (time ascending)",
+            "gray",
+        )
+        for bin_index in diagnostic_bins
+    )
+    event_source_label = "E_geo" if phase.startswith("adapter") else "E_full"
     panels = (
         (rgb, "RGB", None),
         (reference_rgb, "reference RGB", None),
-        (visual_map(event[0, 0].abs().sum(0)), "event", "gray"),
+        (
+            visual_map(event[0, 0].abs().sum(0)),
+            f"event ({event_source_label})",
+            "gray",
+        ),
+        *temporal_panels,
         (visual_map(contribution, True), "contribution", "magma"),
         (visual_map(bridge.bridge[0, 0].float(), True), "bridge", "gray"),
         (visual_map(geometry), "geometry score", "magma"),
@@ -507,9 +537,22 @@ def save_visual(
     for axis, (image, title, cmap) in zip(axes, panels):
         axis.imshow(image, cmap=cmap, vmin=0, vmax=1)
         axis.set_title(title)
+    instance = views[0].get("instance", "unknown")
+    if isinstance(instance, (list, tuple)):
+        instance = instance[0]
+    time_range = views[0].get("event_time_range")
+    if torch.is_tensor(time_range):
+        time_range = time_range[0].detach().float().cpu().tolist()
+    spatial_transform = views[0].get("event_spatial_transform", "unknown")
+    if isinstance(spatial_transform, (list, tuple)):
+        spatial_transform = spatial_transform[0]
+    figure.suptitle(
+        f"instance={instance} event_time={time_range} transform={spatial_transform}",
+        fontsize=13,
+    )
     path = Path(output_root) / "visualizations" / phase / f"epoch_{epoch+1:03d}" / f"batch_{batch_index+1:06d}.png"
     path.parent.mkdir(parents=True, exist_ok=True)
-    figure.tight_layout()
+    figure.tight_layout(rect=(0, 0, 1, 0.97))
     figure.savefig(path, dpi=130)
     plt.close(figure)
 
@@ -591,6 +634,8 @@ def run_epoch(
             print(
                 f"[{phase}] batch={batch_index:05d} loss={values['loss']:.5f} "
                 f"D={values['depth']:.5f} N={values['normal']:.5f} P={values['point']:.5f} "
+                f"DG={values['depth_gradient']:.5f} DC={values['depth_curvature']:.5f} "
+                f"Grid={values['patch_grid']:.5f} "
                 f"EN={values['event_normal']:.5f} DN={values['depth_event_normal']:.5f} "
                 f"budget={values['budget']:.5f} pair={values['pair']:.5f} "
                 f"decomp={values['decomposition']:.5f} "
@@ -694,6 +739,20 @@ def main(argv=None):
             ),
             flush=True,
         )
+        base_dataset = train_dataset.dataset
+        if base_dataset.active_scenes:
+            debug_scene = base_dataset.active_scenes[0]
+            debug_meta = base_dataset.active_scene_data[debug_scene]
+            full_timing = debug_meta.get("event_time_info") or {}
+            geo_timing = debug_meta.get("geo_event_time_info") or {}
+            print(
+                "event temporal layout: channels=[pos bins 0..B-1, neg bins 0..B-1], "
+                "bins=time-ascending; "
+                f"scene={debug_scene!r} "
+                f"full(origin={full_timing.get('origin')},dt={full_timing.get('dt')}) "
+                f"geo(origin={geo_timing.get('origin')},dt={geo_timing.get('dt')})",
+                flush=True,
+            )
     train_sampler = DistributedSampler(
         train_dataset, num_replicas=world_size, rank=rank, shuffle=True, seed=args.seed
     ) if distributed else None

@@ -345,8 +345,20 @@ class MyEventDataset(BaseEventMultiViewDataset):
         geo_event_h5 = record.get("geo_event_h5")
         if geo_event_h5:
             geo_frame_event_index, _, geo_event_time_info = self.build_frame_event_index(
-                geo_event_h5, frame_count, return_time_info=True
+                geo_event_h5,
+                frame_count,
+                return_time_info=True,
+                reference_timing=event_time_info,
             )
+            if not (
+                np.isclose(geo_event_time_info["origin"], event_time_info["origin"])
+                and np.isclose(geo_event_time_info["dt"], event_time_info["dt"])
+            ):
+                raise RuntimeError(
+                    "Full/geometry event streams do not share one temporal grid: "
+                    f"full(origin={event_time_info['origin']}, dt={event_time_info['dt']}), "
+                    f"geo(origin={geo_event_time_info['origin']}, dt={geo_event_time_info['dt']})"
+                )
         else:
             geo_frame_event_index = None
             geo_event_time_info = None
@@ -689,8 +701,12 @@ class MyEventDataset(BaseEventMultiViewDataset):
         dst_height,
         *,
         num_bins=10,
+        time_window=None,
     ):
         num_bins = max(int(num_bins), 1)
+        window_t0 = window_t1 = None
+        if time_window is not None:
+            window_t0, window_t1 = (float(time_window[0]), float(time_window[1]))
         valid = (
             (event_xy[:, 0] >= 0)
             & (event_xy[:, 0] < src_width)
@@ -700,6 +716,8 @@ class MyEventDataset(BaseEventMultiViewDataset):
             & np.isfinite(event_p)
             & (np.abs(event_p) > 0.0)
         )
+        if window_t0 is not None and window_t1 > window_t0:
+            valid &= (event_t >= window_t0) & (event_t < window_t1)
         if not np.any(valid):
             return MyEventDataset._pack_event_data(
                 np.zeros((0, 2), dtype=np.int32),
@@ -712,8 +730,11 @@ class MyEventDataset(BaseEventMultiViewDataset):
         event_t = event_t[valid].astype(np.float32, copy=False)
         event_p = event_p[valid].astype(np.float32, copy=False)
 
-        t0 = float(np.nanmin(event_t))
-        t1 = float(np.nanmax(event_t))
+        if time_window is None:
+            t0 = float(np.nanmin(event_t))
+            t1 = float(np.nanmax(event_t))
+        else:
+            t0, t1 = window_t0, window_t1
         if not np.isfinite(t0):
             t0 = 0.0
         if not np.isfinite(t1):
@@ -764,6 +785,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         spatial_transform="none",
         resize_method="voxel_antialias",
         resize_bins=10,
+        time_window=None,
     ):
         src_width, src_height = int(src_resolution[0]), int(src_resolution[1])
         dst_width, dst_height = int(dst_resolution[0]), int(dst_resolution[1])
@@ -822,6 +844,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                     dst_width,
                     dst_height,
                     num_bins=resize_bins,
+                    time_window=time_window,
                 )
             return MyEventDataset._pack_event_data(resized_xy.astype(np.int32), event_t, event_p)
 
@@ -851,6 +874,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             dst_width,
             dst_height,
             num_bins=resize_bins,
+            time_window=time_window,
         )
 
     @staticmethod
@@ -963,6 +987,20 @@ class MyEventDataset(BaseEventMultiViewDataset):
             resized = self._load_view_data(scene_meta, frame_idx, resolution, ldr_event_id=ldr_event_id)
             width, height = resized["img"].size
             event_start, event_end = scene_meta["frame_event_index"][frame_idx]
+            if frame_idx == 0:
+                event_time_window = (0.0, 0.0)
+            else:
+                event_time_bounds = scene_meta.get("event_time_bounds")
+                if event_time_bounds is not None and frame_idx < len(event_time_bounds):
+                    event_time_window = (
+                        float(event_time_bounds[frame_idx - 1]),
+                        float(event_time_bounds[frame_idx]),
+                    )
+                else:
+                    event_time_window = (
+                        float((frame_idx - 1) * self.dt_us),
+                        float(frame_idx * self.dt_us),
+                    )
             event_src_resolution = scene_meta.get("event_resolution", resized["src_resolution"])
             if np.asarray(event_src_resolution).reshape(-1).size < 2 or np.any(np.asarray(event_src_resolution) <= 0):
                 event_src_resolution = resized["src_resolution"]
@@ -977,6 +1015,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 str(event_spatial_transform),
                 str(self.event_resize_method),
                 int(self.event_resize_bins),
+                event_time_window,
             )
             event_data = self._cached_resized_event(cache_key)
             if event_data is None:
@@ -994,6 +1033,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                     spatial_transform=event_spatial_transform,
                     resize_method=self.event_resize_method,
                     resize_bins=self.event_resize_bins,
+                    time_window=event_time_window,
                 )
                 self._store_resized_event(cache_key, event_data)
 
@@ -1008,7 +1048,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                 event_spatial_transform=event_spatial_transform,
             )
 
-            # Apply mask to events if mask is available
+            # Apply the same object mask as the previously validated loader.
             if "mask" in resized and event_data.get("event_voxel") is not None:
                 event_data["event_voxel"] = (
                     event_data["event_voxel"] * resized["mask"][None].astype(np.float32, copy=False)
@@ -1041,6 +1081,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                     str(event_spatial_transform),
                     str(self.event_resize_method),
                     int(self.event_resize_bins),
+                    event_time_window,
                 )
                 geo_event_data = self._cached_resized_event(geo_cache_key)
                 if geo_event_data is None:
@@ -1058,6 +1099,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                         spatial_transform=event_spatial_transform,
                         resize_method=self.event_resize_method,
                         resize_bins=self.event_resize_bins,
+                        time_window=event_time_window,
                     )
                     self._store_resized_event(geo_cache_key, geo_event_data)
                 geo_event_voxel = geo_event_data.get("event_voxel")
@@ -1073,18 +1115,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                     geo_mass / (full_mass + 1.0e-6), 0.0, 1.0
                 ).astype(np.float32, copy=False)
 
-            if frame_idx == 0:
-                time_range = np.array([0.0, 0.0], dtype=np.float32)
-            else:
-                event_time_bounds = scene_meta.get("event_time_bounds")
-                if event_time_bounds is not None and frame_idx < len(event_time_bounds):
-                    time_range = np.array(
-                        [event_time_bounds[frame_idx - 1], event_time_bounds[frame_idx]], dtype=np.float32
-                    )
-                else:
-                    time_range = np.array(
-                        [(frame_idx - 1) * self.dt_us, frame_idx * self.dt_us], dtype=np.float32
-                    )
+            time_range = np.asarray(event_time_window, dtype=np.float32)
 
             image_path = scene_meta["image_paths_by_ldr"][ldr_event_id][frame_idx]
             basename = osp.splitext(osp.basename(image_path))[0]

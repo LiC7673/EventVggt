@@ -2,10 +2,12 @@
 
 import torch
 
+from eventvggt.datasets.my_event_dataset import MyEventDataset
 from paired_token_reliability.unified_loss import (
     event_mass_budget,
     geometry_contribution_rank_loss,
     pair_consistency,
+    supervised_log_depth_derivative_losses,
 )
 from paired_token_reliability.unified_model import contribution_override
 from paired_token_reliability.contribution_stage1 import build_bridge_masks
@@ -24,6 +26,25 @@ def test_temporal_budget_uses_event_mass():
     loss, ratio = event_mass_budget(contribution, event, rho=0.5)
     torch.testing.assert_close(ratio, torch.tensor([0.5]))
     torch.testing.assert_close(loss, torch.tensor(0.0))
+
+
+def test_supervised_derivatives_penalize_stripes_without_smoothing_gt_detail():
+    target = torch.ones(1, 1, 28, 28)
+    valid = torch.ones_like(target, dtype=torch.bool)
+    exact = supervised_log_depth_derivative_losses(
+        target, target, valid, patch_size=14
+    )
+    for value in exact:
+        torch.testing.assert_close(value, torch.tensor(0.0))
+
+    striped = target.clone()
+    striped[..., 14:] = 1.1
+    gradient, curvature, grid = supervised_log_depth_derivative_losses(
+        striped, target, valid, patch_size=14
+    )
+    assert gradient > 0
+    assert curvature > 0
+    assert grid > 0
 
 
 def test_pair_consistency_ignores_empty_event_entries():
@@ -82,6 +103,22 @@ def test_hydra_style_prefixes_are_removed_for_plain_omegaconf():
         "data.decomposition_supervision=true",
         "data.num_views=6",
     ]
+
+
+def test_event_voxel_bins_use_shared_frame_time_window():
+    voxel = MyEventDataset._events_to_antialias_voxel_resize(
+        event_xy=torch.tensor([[0, 0]]).numpy(),
+        event_t=torch.tensor([0.75]).numpy(),
+        event_p=torch.tensor([1.0]).numpy(),
+        src_width=2,
+        src_height=2,
+        dst_width=2,
+        dst_height=2,
+        num_bins=4,
+        time_window=(0.0, 1.0),
+    )["event_voxel"]
+    assert voxel[3, 0, 0] > 0
+    assert voxel[0, 0, 0] == 0
 
 
 def test_geometry_rank_prefers_matching_order():

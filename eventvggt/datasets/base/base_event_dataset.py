@@ -794,6 +794,7 @@ class BaseEventMultiViewDataset(EasyDataset):
         chunk_size=1_000_000,
         *,
         return_time_info=False,
+        reference_timing=None,
     ):
         with h5py.File(h5_path, "r") as h5_file:
             if "events" not in h5_file:
@@ -804,6 +805,13 @@ class BaseEventMultiViewDataset(EasyDataset):
             sample = self._sample_h5_events(events_ds)
             columns = self._event_columns_from_attrs(attrs) or self._infer_event_columns(sample)
             timing = self._infer_event_timing(sample, columns, frame_count, time_unit=attrs.get("time_unit"))
+            if reference_timing is not None:
+                # Sparse physical branches may start later or end earlier than
+                # the full stream. They must nevertheless use the full event
+                # stream's absolute frame grid.
+                timing["origin"] = float(reference_timing["origin"])
+                timing["dt"] = float(reference_timing["dt"])
+                timing["unit"] = str(reference_timing.get("unit", timing["unit"]))
 
         raw_boundaries = timing["origin"] + np.arange(frame_count, dtype=np.float64) * float(timing["dt"])
         relative_boundaries = (raw_boundaries - float(timing["origin"])).astype(np.float32)

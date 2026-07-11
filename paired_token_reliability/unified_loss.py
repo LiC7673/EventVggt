@@ -16,6 +16,67 @@ def _weighted_mean(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return (value * weight).sum() / weight.sum().clamp_min(1.0)
 
 
+def supervised_log_depth_derivative_losses(
+    depth_pred: torch.Tensor,
+    depth_gt: torch.Tensor,
+    valid: torch.Tensor,
+    *,
+    patch_size: int = 14,
+    eps: float = 1.0e-6,
+):
+    """Match GT slopes/curvature and explicitly suppress patch-boundary error.
+
+    Unlike an unsupervised smoothness prior, these terms preserve real surface
+    detail because the target derivatives come from GT depth.  Log depth makes
+    the comparison less sensitive to absolute scene scale.
+    """
+    pred = torch.log(depth_pred.float().clamp_min(eps))
+    target = torch.log(depth_gt.float().clamp_min(eps))
+    valid = valid.bool() & torch.isfinite(pred) & torch.isfinite(target)
+
+    pred_dx = pred[..., :, 1:] - pred[..., :, :-1]
+    target_dx = target[..., :, 1:] - target[..., :, :-1]
+    valid_dx = valid[..., :, 1:] & valid[..., :, :-1]
+    pred_dy = pred[..., 1:, :] - pred[..., :-1, :]
+    target_dy = target[..., 1:, :] - target[..., :-1, :]
+    valid_dy = valid[..., 1:, :] & valid[..., :-1, :]
+    error_dx = (pred_dx - target_dx).abs()
+    error_dy = (pred_dy - target_dy).abs()
+    gradient_loss = 0.5 * (
+        _weighted_mean(error_dx, valid_dx.float())
+        + _weighted_mean(error_dy, valid_dy.float())
+    )
+
+    pred_dxx = pred_dx[..., :, 1:] - pred_dx[..., :, :-1]
+    target_dxx = target_dx[..., :, 1:] - target_dx[..., :, :-1]
+    valid_dxx = valid_dx[..., :, 1:] & valid_dx[..., :, :-1]
+    pred_dyy = pred_dy[..., 1:, :] - pred_dy[..., :-1, :]
+    target_dyy = target_dy[..., 1:, :] - target_dy[..., :-1, :]
+    valid_dyy = valid_dy[..., 1:, :] & valid_dy[..., :-1, :]
+    curvature_loss = 0.5 * (
+        _weighted_mean((pred_dxx - target_dxx).abs(), valid_dxx.float())
+        + _weighted_mean((pred_dyy - target_dyy).abs(), valid_dyy.float())
+    )
+
+    grid_terms = []
+    patch_size = int(patch_size)
+    if patch_size > 1:
+        for col in range(patch_size, pred.shape[-1], patch_size):
+            edge = col - 1
+            grid_terms.append(
+                _weighted_mean(error_dx[..., edge], valid_dx[..., edge].float())
+            )
+        for row in range(patch_size, pred.shape[-2], patch_size):
+            edge = row - 1
+            grid_terms.append(
+                _weighted_mean(error_dy[..., edge, :], valid_dy[..., edge, :].float())
+            )
+    grid_loss = (
+        torch.stack(grid_terms).mean() if grid_terms else depth_pred.new_zeros(())
+    )
+    return gradient_loss, curvature_loss, grid_loss
+
+
 def event_mass_budget(contribution, event_voxel, rho: float):
     mass = event_voxel.float().abs()
     if contribution.ndim == event_voxel.ndim - 1:
@@ -185,6 +246,10 @@ class UnifiedGeometryContributionLoss:
         geometry_rank_threshold=0.10,
         event_normal_weight=0.0,
         depth_event_normal_weight=0.0,
+        depth_gradient_weight=0.5,
+        depth_curvature_weight=0.1,
+        patch_grid_weight=0.25,
+        grid_patch_size=14,
         points_loss_type="l1",
     ):
         self.depth_weight = float(depth_weight)
@@ -199,6 +264,10 @@ class UnifiedGeometryContributionLoss:
         self.geometry_rank_threshold = float(geometry_rank_threshold)
         self.event_normal_weight = float(event_normal_weight)
         self.depth_event_normal_weight = float(depth_event_normal_weight)
+        self.depth_gradient_weight = float(depth_gradient_weight)
+        self.depth_curvature_weight = float(depth_curvature_weight)
+        self.patch_grid_weight = float(patch_grid_weight)
+        self.grid_patch_size = int(grid_patch_size)
         # Reuse the established point-map alignment/loss implementation. Depth
         # and normal are replaced below by explicitly Bridge-weighted versions.
         self.point_criterion = fe.EventSupervisedLoss(
@@ -219,6 +288,14 @@ class UnifiedGeometryContributionLoss:
         weight = valid.float() * (1.0 + self.bridge_beta * bridge_mask.float())
         depth_error = (depth_pred.float() - depth_gt.float()).abs()
         depth_loss = _weighted_mean(depth_error, weight)
+        depth_gradient_loss, depth_curvature_loss, patch_grid_loss = (
+            supervised_log_depth_derivative_losses(
+                depth_pred,
+                depth_gt,
+                valid,
+                patch_size=self.grid_patch_size,
+            )
+        )
 
         normal_pred = fe.depth_to_normals(depth_pred, intrinsics)
         normal_gt = fe.depth_to_normals(depth_gt, intrinsics)
@@ -272,6 +349,9 @@ class UnifiedGeometryContributionLoss:
             + self.normal_weight * normal_loss
             + self.event_normal_weight * event_normal_loss
             + self.depth_event_normal_weight * depth_event_normal_loss
+            + self.depth_gradient_weight * depth_gradient_loss
+            + self.depth_curvature_weight * depth_curvature_loss
+            + self.patch_grid_weight * patch_grid_loss
         )
         return geometry_loss, {
             "depth": depth_loss,
@@ -279,6 +359,9 @@ class UnifiedGeometryContributionLoss:
             "point": depth_loss.new_tensor(point_details["points_loss"]),
             "event_normal": event_normal_loss,
             "depth_event_normal": depth_event_normal_loss,
+            "depth_gradient": depth_gradient_loss,
+            "depth_curvature": depth_curvature_loss,
+            "patch_grid": patch_grid_loss,
         }, {
             **point_aux,
             "depth_pred_live": depth_pred,
@@ -395,4 +478,5 @@ __all__ = [
     "event_mass_budget",
     "pair_consistency",
     "geometry_contribution_rank_loss",
+    "supervised_log_depth_derivative_losses",
 ]
