@@ -18,6 +18,7 @@ from typing import Dict, List
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -62,6 +63,15 @@ def _unit_image(value):
     return np.clip((array - lo) / max(float(hi - lo), 1.0e-8), 0.0, 1.0)
 
 
+def _normal_image(value, valid):
+    """Map a unit normal from [-1, 1] to RGB without resizing it."""
+    array = (value.detach().float().cpu().numpy() + 1.0) * 0.5
+    mask = valid.detach().bool().cpu().numpy()
+    array = np.clip(array, 0.0, 1.0)
+    array[~mask] = 0.0
+    return array
+
+
 def save_full_event_visuals(args, views, output, depth, depth_gt, valid, batch_idx):
     if not getattr(args, "visualize_all", False):
         return
@@ -73,6 +83,19 @@ def save_full_event_visuals(args, views, output, depth, depth_gt, valid, batch_i
         contribution = stack_output(output, "event_contribution")
         if contribution is not None and contribution.ndim == 5:
             contribution = contribution.mean(dim=2)
+    intrinsics = fe.stack_view_field(views, "camera_intrinsics").to(depth)
+    predicted_normal = stack_output(output, "normal")
+    if predicted_normal is None:
+        predicted_normal = fe.depth_to_normals(depth.float(), intrinsics.float())
+    elif predicted_normal.ndim == 6 and predicted_normal.shape[-2] == 1:
+        predicted_normal = predicted_normal.squeeze(-2)
+    predicted_normal = F.normalize(predicted_normal.float(), dim=-1, eps=1.0e-6)
+    target_normal = F.normalize(
+        fe.depth_to_normals(depth_gt.float(), intrinsics.float()).float(),
+        dim=-1,
+        eps=1.0e-6,
+    )
+    normal_valid = fe.normal_stencil_valid_mask(valid, depth, eps=1.0e-6)
     root = Path(args.output_dir) / "visualizations"
     for sample_idx in range(depth.shape[0]):
         for view_idx in range(depth.shape[1]):
@@ -84,16 +107,22 @@ def save_full_event_visuals(args, views, output, depth, depth_gt, valid, batch_i
                 (_unit_image(event), "event", "gray"),
                 (_unit_image(depth[sample_idx, view_idx] * valid[sample_idx, view_idx]), "pred depth", "viridis"),
                 (_unit_image(depth_gt[sample_idx, view_idx] * valid[sample_idx, view_idx]), "GT depth", "viridis"),
+                (_normal_image(predicted_normal[sample_idx, view_idx], normal_valid[sample_idx, view_idx]), "pred normal", None),
+                (_normal_image(target_normal[sample_idx, view_idx], normal_valid[sample_idx, view_idx]), "GT normal", None),
             ]
             if contribution is not None:
                 panels.insert(2, (np.clip(contribution[sample_idx, view_idx].detach().float().cpu().numpy(), 0, 1), "contribution", "magma"))
-            figure, axes = plt.subplots(1, len(panels), figsize=(4 * len(panels), 4))
-            if len(panels) == 1:
-                axes = [axes]
+            columns = min(5, len(panels))
+            rows = int(np.ceil(len(panels) / columns))
+            # Keep every panel at five inches. Adding normal panels grows the
+            # canvas instead of downscaling the existing RGB/event/depth maps.
+            figure, axes = plt.subplots(rows, columns, figsize=(5 * columns, 5 * rows))
+            axes = np.asarray(axes).reshape(-1)
+            for axis in axes:
+                axis.axis("off")
             for axis, (image, title, cmap) in zip(axes, panels):
                 axis.imshow(image, cmap=cmap, vmin=0, vmax=1)
                 axis.set_title(title)
-                axis.axis("off")
             raw_instance = views[view_idx].get("instance", f"batch_{batch_idx:06d}")
             instance = (
                 raw_instance[sample_idx]
@@ -104,7 +133,7 @@ def save_full_event_visuals(args, views, output, depth, depth_gt, valid, batch_i
             path = root / f"{safe_instance}_b{batch_idx:06d}_v{view_idx:02d}.png"
             path.parent.mkdir(parents=True, exist_ok=True)
             figure.tight_layout()
-            figure.savefig(path, dpi=120)
+            figure.savefig(path, dpi=130)
             plt.close(figure)
 
 

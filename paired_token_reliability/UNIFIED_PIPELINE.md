@@ -29,6 +29,12 @@ gate multi-scale DPT feature updates and for visualization.
 Bridge, the paired reference exposure, GT depth, and GT normals are
 training-only. Inference requires only RGB and the event voxel.
 
+For unified training, Bridge is a relaxed extra-weight region:
+near-white saturation in the bad exposure, recoverable color in the reference,
+and dilated event support. It does not require an RGB gradient by default and
+is never a contribution target. The legacy any-channel/gradient-strict Bridge
+remains available through CLI flags for ablation compatibility.
+
 ## Command
 
 ```bash

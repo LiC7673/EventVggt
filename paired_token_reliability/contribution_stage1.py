@@ -31,11 +31,25 @@ def normalize_event_voxel(voxel: torch.Tensor, count_cmax: float = 3.0) -> torch
     return torch.log1p(voxel.float().clamp(0.0, ceiling)) / denominator
 
 
-def saturation_ratio(rgb: torch.Tensor, threshold: float = 0.98) -> torch.Tensor:
+def _saturated_pixels(rgb: torch.Tensor, threshold: float, mode: str) -> torch.Tensor:
+    normalized = str(mode).strip().lower()
+    if normalized == "any_channel":
+        return rgb.float().amax(dim=2) >= float(threshold)
+    if normalized == "all_channels":
+        return rgb.float().amin(dim=2) >= float(threshold)
+    if normalized == "luminance":
+        coefficients = rgb.new_tensor((0.299, 0.587, 0.114)).view(1, 1, 3, 1, 1)
+        return (rgb.float() * coefficients).sum(dim=2) >= float(threshold)
+    raise ValueError(f"Unknown saturation mode: {mode!r}")
+
+
+def saturation_ratio(
+    rgb: torch.Tensor, threshold: float = 0.98, mode: str = "any_channel"
+) -> torch.Tensor:
     """Return the saturated-pixel ratio for every item in a batch."""
     if rgb.ndim != 5 or rgb.shape[2] != 3:
         raise ValueError(f"Expected RGB [B,S,3,H,W], got {tuple(rgb.shape)}")
-    saturated = rgb.float().amax(dim=2) >= float(threshold)
+    saturated = _saturated_pixels(rgb, threshold, mode)
     return saturated.flatten(1).float().mean(dim=1)
 
 
@@ -61,6 +75,7 @@ def orient_exposure_pair(
     rgb_b: torch.Tensor,
     *,
     saturation_threshold: float = 0.98,
+    saturation_mode: str = "any_channel",
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Orient a pair as ``reference -> bad`` using measured saturation.
 
@@ -69,8 +84,8 @@ def orient_exposure_pair(
     """
     if rgb_a.shape != rgb_b.shape:
         raise ValueError(f"Paired RGB shapes differ: {rgb_a.shape} versus {rgb_b.shape}")
-    sat_a = saturation_ratio(rgb_a, saturation_threshold)
-    sat_b = saturation_ratio(rgb_b, saturation_threshold)
+    sat_a = saturation_ratio(rgb_a, saturation_threshold, saturation_mode)
+    sat_b = saturation_ratio(rgb_b, saturation_threshold, saturation_mode)
     ref_is_a = sat_a <= sat_b
     selector = ref_is_a.view(-1, 1, 1, 1, 1)
     rgb_ref = torch.where(selector, rgb_a, rgb_b)
@@ -96,6 +111,9 @@ def build_bridge_masks(
     *,
     saturation_threshold: float = 0.98,
     reference_gradient_threshold: float = 0.02,
+    require_reference_gradient: bool = True,
+    event_support_dilate_kernel: int = 1,
+    saturation_mode: str = "any_channel",
 ) -> BridgeMasks:
     """Construct the exposure bridge where event usefulness is identifiable."""
     if rgb_reference.shape != rgb_bad.shape:
@@ -105,12 +123,26 @@ def build_bridge_masks(
         raise ValueError(
             f"Event/RGB shape mismatch: event={tuple(event_voxel.shape)}, rgb={tuple(rgb_bad.shape)}"
         )
-    saturated_bad = rgb_bad.float().amax(dim=2) >= float(saturation_threshold)
-    visible_reference = (
-        (rgb_reference.float().amax(dim=2) < float(saturation_threshold))
-        & (image_gradient_magnitude(rgb_reference) > float(reference_gradient_threshold))
+    saturated_bad = _saturated_pixels(rgb_bad, saturation_threshold, saturation_mode)
+    visible_reference = ~_saturated_pixels(
+        rgb_reference, saturation_threshold, saturation_mode
     )
+    if require_reference_gradient:
+        visible_reference = visible_reference & (
+            image_gradient_magnitude(rgb_reference) > float(reference_gradient_threshold)
+        )
     event_support = event_voxel.float().abs().sum(dim=2) > 0.0
+    kernel = max(int(event_support_dilate_kernel), 1)
+    if kernel > 1:
+        if kernel % 2 == 0:
+            kernel += 1
+        batch, views, height, width = event_support.shape
+        event_support = F.max_pool2d(
+            event_support.float().reshape(batch * views, 1, height, width),
+            kernel_size=kernel,
+            stride=1,
+            padding=kernel // 2,
+        ).reshape(batch, views, height, width).bool()
     bridge = saturated_bad & visible_reference & event_support
     if bridge.shape != expected:
         raise RuntimeError(f"Unexpected bridge shape {bridge.shape}; expected {expected}")

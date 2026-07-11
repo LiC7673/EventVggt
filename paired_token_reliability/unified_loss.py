@@ -236,6 +236,9 @@ class UnifiedGeometryContributionLoss:
             "depth_pred_live": depth_pred,
             "valid_live": valid,
             "geometry_score": geometry_score,
+            "normal_pred_live": normal_pred,
+            "normal_gt_live": normal_gt,
+            "normal_valid_live": normal_valid,
         }
 
     def __call__(

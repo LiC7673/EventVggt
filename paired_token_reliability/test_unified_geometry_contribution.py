@@ -8,6 +8,7 @@ from paired_token_reliability.unified_loss import (
     pair_consistency,
 )
 from paired_token_reliability.unified_model import contribution_override
+from paired_token_reliability.contribution_stage1 import build_bridge_masks
 
 
 def test_temporal_budget_uses_event_mass():
@@ -52,3 +53,27 @@ def test_geometry_rank_prefers_matching_order():
         reversed_order, geometry, valid, event, margin=0.1, difference_threshold=0.1
     )
     assert good < bad
+
+
+def test_unified_bridge_does_not_treat_colored_reference_as_white_saturation():
+    reference = torch.zeros(1, 1, 3, 2, 2)
+    reference[:, :, 0] = 1.0
+    reference[:, :, 1:] = 0.2
+    bad = torch.ones_like(reference)
+    event = torch.ones(1, 1, 2, 2, 2)
+    relaxed = build_bridge_masks(
+        reference,
+        bad,
+        event,
+        require_reference_gradient=False,
+        saturation_mode="all_channels",
+    )
+    strict_color = build_bridge_masks(
+        reference,
+        bad,
+        event,
+        require_reference_gradient=False,
+        saturation_mode="any_channel",
+    )
+    assert relaxed.bridge.all()
+    assert not strict_color.bridge.any()

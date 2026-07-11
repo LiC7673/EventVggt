@@ -84,6 +84,16 @@ def parser():
     value.add_argument("--event-dropout-min-keep", type=float, default=0.5)
     value.add_argument("--event-dropout-max-keep", type=float, default=1.0)
     value.add_argument("--bridge-beta", type=float, default=2.0)
+    value.add_argument("--bridge-event-dilate-kernel", type=int, default=3)
+    value.add_argument(
+        "--bridge-saturation-mode",
+        choices=("any_channel", "all_channels", "luminance"),
+        default="all_channels",
+    )
+    value.add_argument(
+        "--bridge-require-reference-gradient", action="store_true",
+        help="Restore the legacy strict Bridge definition.",
+    )
     value.add_argument("--normal-weight", type=float, default=0.25)
     value.add_argument("--point-weight", type=float, default=1.0)
     value.add_argument("--budget-weight", type=float, default=0.05)
@@ -279,9 +289,18 @@ def prepare_pair(batch, device, args):
     views_b = fe.maybe_denormalize_views(move_views_to_device(batch["views_b"], device))
     rgb_a = fe.stack_view_field(views_a, "img").float().clamp(0, 1)
     rgb_b = fe.stack_view_field(views_b, "img").float().clamp(0, 1)
-    rgb_ref, rgb_bad, ref_is_a, _, _ = orient_exposure_pair(rgb_a, rgb_b)
+    rgb_ref, rgb_bad, ref_is_a, _, _ = orient_exposure_pair(
+        rgb_a, rgb_b, saturation_mode=args.bridge_saturation_mode
+    )
     event = fe.stack_view_field(views_a, "event_voxel").float()
-    bridge = build_bridge_masks(rgb_ref, rgb_bad, event)
+    bridge = build_bridge_masks(
+        rgb_ref,
+        rgb_bad,
+        event,
+        require_reference_gradient=args.bridge_require_reference_gradient,
+        event_support_dilate_kernel=args.bridge_event_dilate_kernel,
+        saturation_mode=args.bridge_saturation_mode,
+    )
     target_views = _select_views(views_a, views_b, ~ref_is_a)
     reference_views = _select_views(views_a, views_b, ref_is_a)
     return target_views, reference_views, event, bridge
@@ -333,32 +352,57 @@ def visual_map(value, fixed=False):
     return np.clip((array - lo) / max(float(hi - lo), 1.0e-8), 0, 1)
 
 
+def visual_normal(normal, valid):
+    value = (normal.detach().float().cpu().numpy() + 1.0) * 0.5
+    mask = valid.detach().bool().cpu().numpy()
+    value = np.clip(value, 0.0, 1.0)
+    value[~mask] = 0.0
+    return value
+
+
 @torch.no_grad()
-def save_visual(output_root, phase, epoch, batch_index, views, event, bridge, output, aux):
+def save_visual(
+    output_root, phase, epoch, batch_index, views, reference_views,
+    event, bridge, output, aux,
+):
     rgb = views[0]["img"][0].float().permute(1, 2, 0).cpu().numpy().clip(0, 1)
+    reference_rgb = (
+        reference_views[0]["img"][0].float().permute(1, 2, 0).cpu().numpy().clip(0, 1)
+    )
     contribution = aux["contribution_spatial"][0, 0]
     pred = aux["depth_pred_live"][0, 0]
     gt = fe.stack_view_field(views, "depthmap")[0, 0]
     valid = aux["valid_live"][0, 0]
+    normal_valid = aux["normal_valid_live"][0, 0]
+    predicted_normal = visual_normal(aux["normal_pred_live"][0, 0], normal_valid)
+    target_normal = visual_normal(aux["normal_gt_live"][0, 0], normal_valid)
     geometry = aux["geometry_score"][0, 0]
     panels = (
         (rgb, "RGB", None),
+        (reference_rgb, "reference RGB", None),
         (visual_map(event[0, 0].abs().sum(0)), "event", "gray"),
         (visual_map(contribution, True), "contribution", "magma"),
         (visual_map(bridge.bridge[0, 0].float(), True), "bridge", "gray"),
         (visual_map(geometry), "geometry score", "magma"),
         (visual_map(pred * valid), "pred depth", "viridis"),
         (visual_map(gt * valid), "GT depth", "viridis"),
+        (predicted_normal, "pred normal", None),
+        (target_normal, "GT normal", None),
         *(
             ((visual_map(aux["decomposition_target"][0, 0], True), "decomp target", "magma"),)
             if aux.get("decomposition_target") is not None
             else ()
         ),
     )
-    figure, axes = plt.subplots(2, 4, figsize=(16, 8))
-    for axis in axes.flat:
+    columns = 5
+    rows = int(math.ceil(len(panels) / columns))
+    # Grow the canvas with the panel count. Each panel remains at least
+    # 5 inches wide/high instead of being squeezed into a fixed-size figure.
+    figure, axes = plt.subplots(rows, columns, figsize=(5 * columns, 5 * rows))
+    axes = np.asarray(axes).reshape(-1)
+    for axis in axes:
         axis.axis("off")
-    for axis, (image, title, cmap) in zip(axes.flat, panels):
+    for axis, (image, title, cmap) in zip(axes, panels):
         axis.imshow(image, cmap=cmap, vmin=0, vmax=1)
         axis.set_title(title)
     path = Path(output_root) / "visualizations" / phase / f"epoch_{epoch+1:03d}" / f"batch_{batch_index+1:06d}.png"
@@ -433,7 +477,7 @@ def run_epoch(
             split_phase = f"{phase}_{'train' if training else 'val'}"
             save_visual(
                 args.output, split_phase, epoch, batch_index,
-                target_views, event, bridge, output, result.aux,
+                target_views, reference_views, event, bridge, output, result.aux,
             )
         if rank == 0 and training and batch_index % 20 == 0:
             print(
