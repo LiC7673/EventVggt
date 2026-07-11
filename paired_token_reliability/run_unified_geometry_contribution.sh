@@ -9,7 +9,8 @@ IFS=',' read -r -a GPU_ARRAY <<< "${GPUS}"
 NPROC="${#GPU_ARRAY[@]}"
 MASTER_PORT="${MASTER_PORT:-29641}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
-OUTPUT="${OUTPUT:-abl_event_exp/unified_geometry_contribution}"
+EXP_NAME="${EXP_NAME:-unified_geometry_contribution}"
+OUTPUT="${OUTPUT:-exp/${EXP_NAME}}"
 EPOCHS_A="${EPOCHS_A:-5}"
 EPOCHS_B="${EPOCHS_B:-10}"
 EPOCHS_C="${EPOCHS_C:-0}"
@@ -37,7 +38,8 @@ CUDA_VISIBLE_DEVICES="${GPUS}" python -m torch.distributed.run \
   --epochs-c "${EPOCHS_C}" \
   --pair-mode "${PAIR_MODE}" \
   --num-workers "${NUM_WORKERS}" \
-  --visualize-every-batches 40 \
+  --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" \
+  --visualize-val-every-batches "${VAL_VIS_EVERY:-20}" \
   "data.num_views=${NUM_VIEWS:-4}" \
   "+model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
   "+data.train_initial_scene_idx=${TRAIN_INITIAL_SCENE_IDX}" \
@@ -50,10 +52,9 @@ CUDA_VISIBLE_DEVICES="${GPUS}" python -m torch.distributed.run \
   2>&1 | tee "${OUTPUT}/logs/train.log"
 
 if [[ "${RUN_EVAL}" == "1" ]]; then
-  CUDA_VISIBLE_DEVICES="${GPU_ARRAY[0]}" python -m paired_token_reliability.evaluate_unified_geometry_contribution \
-    --checkpoint "${OUTPUT}/checkpoint-best.pth" \
-    --output-dir "${OUTPUT}/heldout_eval" \
-    --num-workers "${NUM_WORKERS}" \
-    --amp none \
-    2>&1 | tee "${OUTPUT}/logs/evaluate.log"
+  CHECKPOINT="${OUTPUT}/checkpoint-best.pth" \
+  OUTPUT_DIR="${OUTPUT}/test_all_exposures" \
+  GPU="${GPU_ARRAY[0]}" NUM_VIEWS="${NUM_VIEWS:-4}" \
+  bash paired_token_reliability/run_unified_all_exposures_eval.sh \
+    2>&1 | tee "${OUTPUT}/logs/evaluate_all_exposures.log"
 fi

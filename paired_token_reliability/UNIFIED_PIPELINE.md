@@ -53,3 +53,20 @@ GPUS=2,3,4,5 bash paired_token_reliability/run_decomp_full_as_event_12train_4tes
 The target is the clipped soft mass ratio `sum(abs(E_geo)) /
 (sum(abs(E_input)) + eps)`. It supervises the mass-weighted spatial projection
 of temporal contribution using Smooth-L1 during phases B/C only.
+
+## Experiment outputs and automatic evaluation
+
+Launchers save under `exp/<experiment-name>/`. Training and validation save
+the first batch of every epoch and then periodic visualizations. After training,
+the launcher automatically evaluates `ev_0,ev_1,ev_2,ev_5,ev_10` on the four
+held-out scenes. Each exposure directory contains condition metrics, per-batch
+metrics, causal diagnostics, and RGB/event/contribution/depth visualizations;
+`all_exposures_summary.json` collects the exposure-level results.
+
+Standalone evaluation:
+
+```bash
+CHECKPOINT=exp/my_run/checkpoint-best.pth \
+OUTPUT_DIR=exp/my_run/test_all_exposures \
+GPU=2 bash paired_token_reliability/run_unified_all_exposures_eval.sh
+```

@@ -97,6 +97,7 @@ def parser():
     value.add_argument("--max-train-batches", type=int, default=0)
     value.add_argument("--max-val-batches", type=int, default=50)
     value.add_argument("--visualize-every-batches", type=int, default=40)
+    value.add_argument("--visualize-val-every-batches", type=int, default=20)
     return value
 
 
@@ -419,8 +420,18 @@ def run_epoch(
         for key, value in values.items():
             totals[key] = totals.get(key, 0.0) + value
         batches += 1
-        if rank == 0 and training and args.visualize_every_batches > 0 and (batch_index + 1) % args.visualize_every_batches == 0:
-            save_visual(args.output, phase, epoch, batch_index, target_views, event, bridge, output, result.aux)
+        train_vis = training and args.visualize_every_batches > 0 and (
+            batch_index == 0 or (batch_index + 1) % args.visualize_every_batches == 0
+        )
+        val_vis = (not training) and args.visualize_val_every_batches > 0 and (
+            batch_index == 0 or (batch_index + 1) % args.visualize_val_every_batches == 0
+        )
+        if rank == 0 and (train_vis or val_vis):
+            split_phase = f"{phase}_{'train' if training else 'val'}"
+            save_visual(
+                args.output, split_phase, epoch, batch_index,
+                target_views, event, bridge, output, result.aux,
+            )
         if rank == 0 and training and batch_index % 20 == 0:
             print(
                 f"[{phase}] batch={batch_index:05d} loss={values['loss']:.5f} "

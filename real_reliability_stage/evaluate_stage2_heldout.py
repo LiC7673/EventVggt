@@ -18,6 +18,9 @@ from typing import Dict, List
 
 import numpy as np
 import torch
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Subset
 
@@ -48,6 +51,61 @@ from eventvggt.models.streamvggt_pretrained_reliability_detail import StreamVGGT
 
 
 CONDITIONS = ("coarse_rgb", "zero_event", "full_event", "reverse_time", "swap_polarity")
+
+
+def _unit_image(value):
+    array = value.detach().float().cpu().numpy()
+    finite = np.isfinite(array)
+    if not finite.any():
+        return np.zeros_like(array)
+    lo, hi = np.percentile(array[finite], (2, 98))
+    return np.clip((array - lo) / max(float(hi - lo), 1.0e-8), 0.0, 1.0)
+
+
+def save_full_event_visuals(args, views, output, depth, depth_gt, valid, batch_idx):
+    if not getattr(args, "visualize_all", False):
+        return
+    visualize_every = int(getattr(args, "visualize_every", 1))
+    if visualize_every > 1 and batch_idx % visualize_every != 0:
+        return
+    contribution = stack_output(output, "event_contribution_spatial")
+    if contribution is None:
+        contribution = stack_output(output, "event_contribution")
+        if contribution is not None and contribution.ndim == 5:
+            contribution = contribution.mean(dim=2)
+    root = Path(args.output_dir) / "visualizations"
+    for sample_idx in range(depth.shape[0]):
+        for view_idx in range(depth.shape[1]):
+            rgb = views[view_idx]["img"][sample_idx].detach().float().permute(1, 2, 0).cpu().numpy()
+            rgb = np.clip(rgb, 0.0, 1.0)
+            event = views[view_idx]["event_voxel"][sample_idx].detach().float().abs().sum(dim=0)
+            panels = [
+                (rgb, "RGB", None),
+                (_unit_image(event), "event", "gray"),
+                (_unit_image(depth[sample_idx, view_idx] * valid[sample_idx, view_idx]), "pred depth", "viridis"),
+                (_unit_image(depth_gt[sample_idx, view_idx] * valid[sample_idx, view_idx]), "GT depth", "viridis"),
+            ]
+            if contribution is not None:
+                panels.insert(2, (np.clip(contribution[sample_idx, view_idx].detach().float().cpu().numpy(), 0, 1), "contribution", "magma"))
+            figure, axes = plt.subplots(1, len(panels), figsize=(4 * len(panels), 4))
+            if len(panels) == 1:
+                axes = [axes]
+            for axis, (image, title, cmap) in zip(axes, panels):
+                axis.imshow(image, cmap=cmap, vmin=0, vmax=1)
+                axis.set_title(title)
+                axis.axis("off")
+            raw_instance = views[view_idx].get("instance", f"batch_{batch_idx:06d}")
+            instance = (
+                raw_instance[sample_idx]
+                if isinstance(raw_instance, (list, tuple))
+                else raw_instance
+            )
+            safe_instance = str(instance).replace("/", "_").replace("\\", "_").replace(" ", "_")
+            path = root / f"{safe_instance}_b{batch_idx:06d}_v{view_idx:02d}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            figure.tight_layout()
+            figure.savefig(path, dpi=120)
+            plt.close(figure)
 
 
 def _cfg_value(branch, name: str, default):
@@ -150,6 +208,10 @@ def build_loader(cfg, args):
         event_spatial_transform=str(_cfg_value(cfg.data, "event_spatial_transform", "auto")),
         event_resize_method=args.event_resize_method,
         event_resize_bins=args.event_resize_bins,
+        event_source_mode=str(_cfg_value(cfg.data, "event_source_mode", "current")),
+        decomposition_supervision=False,
+        decomposition_event_root=str(_cfg_value(cfg.data, "decomposition_event_root", "events_additive")),
+        decomposition_full_branch=str(_cfg_value(cfg.data, "decomposition_full_branch", "full")),
         return_normal_gt=True,
         return_debug_event_fields=False,
     )
@@ -222,6 +284,7 @@ def evaluate(model, loader, cfg, args, device):
         full_depth = stack_output(full_output, "depth")
         coarse_depth = stack_output(full_output, "depth_coarse")
         cache["full_event"] = (full_output, full_depth)
+        save_full_event_visuals(args, views, full_output, full_depth, depth_gt, valid, batch_idx)
         if coarse_depth is not None:
             cache["coarse_rgb"] = (full_output, coarse_depth)
         for condition in ("zero_event", "reverse_time", "swap_polarity"):
@@ -381,6 +444,8 @@ def parse_args():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--amp", choices=("none", "fp16", "bf16"), default="bf16")
     parser.add_argument("--print-freq", type=int, default=10)
+    parser.add_argument("--visualize-all", action="store_true")
+    parser.add_argument("--visualize-every", type=int, default=1)
     return parser.parse_args()
 
 

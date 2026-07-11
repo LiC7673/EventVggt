@@ -9,7 +9,8 @@ IFS=',' read -r -a GPU_ARRAY <<< "${GPUS}"
 NPROC="${#GPU_ARRAY[@]}"
 MASTER_PORT="${MASTER_PORT:-29642}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
-OUTPUT="${OUTPUT:-abl_event_exp/unified_geometry_contribution_12train_4test}"
+EXP_NAME="${EXP_NAME:-unified_geometry_contribution_12train_4test}"
+OUTPUT="${OUTPUT:-exp/${EXP_NAME}}"
 EPOCHS_A="${EPOCHS_A:-5}"
 EPOCHS_B="${EPOCHS_B:-10}"
 EPOCHS_C="${EPOCHS_C:-0}"
@@ -35,7 +36,8 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
   --epochs-b "${EPOCHS_B}" \
   --epochs-c "${EPOCHS_C}" \
   --num-workers "${NUM_WORKERS}" \
-  --visualize-every-batches 40 \
+  --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" \
+  --visualize-val-every-batches "${VAL_VIS_EVERY:-20}" \
   "data.num_views=${NUM_VIEWS}" \
   "+model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
   "+data.train_initial_scene_idx=${TRAIN_INITIAL_SCENE_IDX}" \
@@ -46,3 +48,10 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
   "+data.heldout_test_frame_count=${HELDOUT_TEST_FRAME_COUNT}" \
   "$@" \
   2>&1 | tee "${OUTPUT}/logs/train.log"
+
+if [[ "${RUN_EVAL:-1}" == "1" ]]; then
+  CHECKPOINT="${OUTPUT}/checkpoint-best.pth" OUTPUT_DIR="${OUTPUT}/test_all_exposures" \
+  GPU="${GPU_ARRAY[0]}" NUM_VIEWS="${NUM_VIEWS}" \
+  bash paired_token_reliability/run_unified_all_exposures_eval.sh \
+    2>&1 | tee "${OUTPUT}/logs/evaluate_all_exposures.log"
+fi
