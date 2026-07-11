@@ -118,20 +118,20 @@ def make_unified_dataset(cfg, split, pairs):
     """
     data = cfg.data
     is_train = split == "train"
-    initial_scene_idx = int(getattr(
-        data,
-        "train_initial_scene_idx" if is_train else "test_initial_scene_idx",
-        getattr(data, "initial_scene_idx", 0),
-    ))
-    active_scene_count = int(getattr(
-        data,
-        "train_scene_count" if is_train else "test_scene_count",
-        getattr(data, "active_scene_count", 3),
-    ))
+    train_initial = int(getattr(data, "train_initial_scene_idx", 0))
+    train_count = int(getattr(data, "train_scene_count", 12))
+    if is_train:
+        initial_scene_idx = train_initial
+        active_scene_count = train_count
+    else:
+        initial_scene_idx = int(
+            getattr(data, "test_initial_scene_idx", train_initial + train_count)
+        )
+        active_scene_count = int(getattr(data, "test_scene_count", 4))
     frame_count = int(getattr(
         data,
         "train_holdout_frame_count" if is_train else "heldout_test_frame_count",
-        0 if is_train else getattr(data, "test_frame_count", 10),
+        0 if is_train else 120,
     ))
     return MultiLdrContributionDataset(
         root=str(data.root),

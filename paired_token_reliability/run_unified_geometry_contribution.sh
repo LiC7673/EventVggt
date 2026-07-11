@@ -16,6 +16,11 @@ EPOCHS_C="${EPOCHS_C:-0}"
 PAIR_MODE="${PAIR_MODE:-anchor}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 RUN_EVAL="${RUN_EVAL:-1}"
+TRAIN_INITIAL_SCENE_IDX="${TRAIN_INITIAL_SCENE_IDX:-0}"
+TRAIN_SCENE_COUNT="${TRAIN_SCENE_COUNT:-12}"
+TEST_INITIAL_SCENE_IDX="${TEST_INITIAL_SCENE_IDX:-12}"
+TEST_SCENE_COUNT="${TEST_SCENE_COUNT:-4}"
+HELDOUT_TEST_FRAME_COUNT="${HELDOUT_TEST_FRAME_COUNT:-120}"
 
 mkdir -p "${OUTPUT}/logs"
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
@@ -35,6 +40,12 @@ CUDA_VISIBLE_DEVICES="${GPUS}" python -m torch.distributed.run \
   --visualize-every-batches 40 \
   "data.num_views=${NUM_VIEWS:-4}" \
   "+model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
+  "+data.train_initial_scene_idx=${TRAIN_INITIAL_SCENE_IDX}" \
+  "+data.train_scene_count=${TRAIN_SCENE_COUNT}" \
+  "+data.train_holdout_frame_count=0" \
+  "+data.test_initial_scene_idx=${TEST_INITIAL_SCENE_IDX}" \
+  "+data.test_scene_count=${TEST_SCENE_COUNT}" \
+  "+data.heldout_test_frame_count=${HELDOUT_TEST_FRAME_COUNT}" \
   "$@" \
   2>&1 | tee "${OUTPUT}/logs/train.log"
 
