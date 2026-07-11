@@ -27,6 +27,7 @@ from paired_token_reliability.unified_model import (
     UnifiedGeometryContributionModel,
     contribution_override,
 )
+from stage2_geometry_adapter.model import StreamVGGT
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -409,6 +410,12 @@ def save_checkpoint(path, model, optimizer, cfg, args, phase, epoch, metrics):
 
 def main(argv=None):
     args, overrides = parser().parse_known_args(argv)
+    if not getattr(StreamVGGT, "supports_unified_training", False):
+        raise RuntimeError(
+            "The loaded stage2_geometry_adapter/model.py is an old Stage-2-only version "
+            "that requires a Stage-1 checkpoint. Update that file to the unified version; "
+            "this trainer intentionally initializes ContributionNet from scratch."
+        )
     cfg = load_cfg(args.config, overrides)
     if not Path(args.pretrained).is_file():
         raise FileNotFoundError(args.pretrained)
