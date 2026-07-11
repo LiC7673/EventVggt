@@ -621,13 +621,17 @@ def main(argv=None):
             "this trainer intentionally initializes ContributionNet from scratch."
         )
     cfg = load_cfg(args.config, overrides)
-    if args.epochs_a > 0 and not bool(
-        getattr(cfg.data, "decomposition_supervision", False)
-    ):
-        raise RuntimeError(
-            "Phase A now requires Blender E_geo. Set "
-            "data.decomposition_supervision=true and configure its geometry branch."
-        )
+    # Phase A is defined as E_geo adapter pretraining.  Configure the default
+    # decomposition source here as well as in the launchers so a direct Python
+    # invocation cannot silently fall back to a non-geometry event stream.
+    if args.epochs_a > 0:
+        cfg.data.decomposition_supervision = True
+        if not getattr(cfg.data, "decomposition_event_root", None):
+            cfg.data.decomposition_event_root = "events_additive"
+        if not getattr(cfg.data, "decomposition_geo_branch", None):
+            cfg.data.decomposition_geo_branch = "geometry_motion"
+        if not getattr(cfg.data, "decomposition_full_branch", None):
+            cfg.data.decomposition_full_branch = "full"
     if (
         args.require_full_event_phase_b
         and (args.epochs_b > 0 or args.epochs_c > 0)
