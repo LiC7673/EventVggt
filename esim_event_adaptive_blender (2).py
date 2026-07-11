@@ -918,6 +918,7 @@ class EventArrayH5Writer:
         self.ds.attrs["scene_id"] = scene_id
         self.ds.attrs["width"] = RESOLUTION_X
         self.ds.attrs["height"] = RESOLUTION_Y
+        self.ds.attrs["y_origin"] = "bottom_left"
         self.ds.attrs["fps"] = FPS
         self.ds.attrs["frame_count"] = FRAME_COUNT
         self.ds.attrs["Cp"] = CP

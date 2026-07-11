@@ -504,7 +504,17 @@ class MyEventDataset(BaseEventMultiViewDataset):
             # renderer writes y from that buffer, while PIL images/masks use
             # top-left indexing. Auto mode therefore flips known rendered event
             # folders unless the H5 explicitly says otherwise.
-            return scene_meta.get("event_dir") in {"cur_event", "cur_best_event", "esim_event"}
+            # All of these streams are produced from Blender Image.pixels,
+            # whose row origin is bottom-left. Existing additive H5 files do
+            # not carry y_origin metadata, so retain an explicit directory
+            # fallback for both the legacy and decomposed streams.
+            return scene_meta.get("event_dir") in {
+                "cur_event",
+                "cur_best_event",
+                "esim_event",
+                self.decomposition_full_branch,
+                self.decomposition_geo_branch,
+            }
         return bool(value)
 
     def _resolve_event_spatial_transform(self, scene_meta):

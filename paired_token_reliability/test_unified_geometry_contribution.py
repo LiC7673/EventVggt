@@ -121,6 +121,18 @@ def test_event_voxel_bins_use_shared_frame_time_window():
     assert voxel[0, 0, 0] == 0
 
 
+def test_existing_decomposition_streams_use_blender_vertical_flip_fallback():
+    dataset = MyEventDataset.__new__(MyEventDataset)
+    dataset.event_y_flip = "auto"
+    dataset.decomposition_full_branch = "full"
+    dataset.decomposition_geo_branch = "geometry_motion"
+    metadata = {"event_time_info": {"h5_attrs": {}}, "event_dir": "full"}
+    assert dataset._resolve_event_spatial_transform(metadata) == "vflip"
+    # Explicit H5 metadata remains authoritative for future datasets.
+    metadata["event_time_info"]["h5_attrs"]["y_origin"] = "top_left"
+    assert dataset._resolve_event_spatial_transform(metadata) == "none"
+
+
 def test_geometry_rank_prefers_matching_order():
     geometry = torch.tensor([[[[0.0, 1.0]]]])
     valid = torch.ones_like(geometry, dtype=torch.bool)
