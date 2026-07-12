@@ -20,6 +20,10 @@ _legacy_configure_phase = legacy.configure_phase
 def configure_phase(model, phase, train_heads_a=False):
     """Freeze disabled DPT levels so DDP never waits for nonexistent grads."""
     _legacy_configure_phase(model, phase, train_heads_a)
+    if phase == "adapter":
+        # The legacy phase disabled this decoder because event-normal was only
+        # auxiliary there. It is the primary output in this model.
+        model.event_normal_decoder.requires_grad_(True)
     enabled = set(model.event_adapter_levels)
     for head in (model.depth_head, model.point_head):
         for index, adapter in enumerate(head.geometry_adapters):
@@ -71,7 +75,8 @@ def criterion_for(args, phase):
         geometry_rank_threshold=args.geometry_rank_threshold,
         # The new final normal replaces the legacy independent event-normal
         # objective; these weights are represented by N and DN below.
-        event_normal_weight=0.0, depth_event_normal_weight=0.0,
+        event_normal_weight=args.event_normal_weight,
+        depth_event_normal_weight=0.0,
         depth_gradient_weight=args.depth_gradient_weight,
         depth_curvature_weight=args.depth_curvature_weight,
         patch_grid_weight=args.patch_grid_weight, grid_patch_size=args.grid_patch_size,

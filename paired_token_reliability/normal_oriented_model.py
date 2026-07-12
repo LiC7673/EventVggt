@@ -166,6 +166,9 @@ class NormalOrientedGeometryContributionModel(UnifiedGeometryContributionModel):
     def forward(self, views, query_points: Optional[torch.Tensor] = None,
                 contribution_override: Optional[torch.Tensor] = None,
                 decode_event_normal: bool = True, **_kwargs):
+        # Unlike the historical unified trainer, the normal-oriented variant
+        # must train its primary event-normal output in every refinement phase.
+        decode_event_normal = True
         images, event_voxel, intrinsics = self._stack_inputs(views)
         event_voxel, intrinsics = event_voxel.to(images.device), intrinsics.to(images.device)
         if query_points is not None and query_points.ndim == 2:
