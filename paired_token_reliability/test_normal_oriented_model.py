@@ -31,6 +31,6 @@ def test_zero_contribution_and_rgb_shortcut_removal():
 
 def test_event_normal_is_standalone_and_unit_length():
     decoder = EventOnlyNormalDecoder(8, 16)
-    feature = torch.randn(1, 8, 8, 8)
-    normal, _ = decoder(feature, torch.ones(1, 1, 8, 8), (16, 16))
+    feature = torch.randn(1, 8, 16, 16)
+    normal, _ = decoder(feature, torch.ones(1, 1, 16, 16))
     torch.testing.assert_close(torch.linalg.vector_norm(normal, dim=-1), torch.ones(1, 16, 16))

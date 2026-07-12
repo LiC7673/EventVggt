@@ -104,7 +104,7 @@ class EventOnlyFeatureAdapter(nn.Module):
 
 
 class EventOnlyNormalDecoder(nn.Module):
-    """Predict an absolute unit normal from events only; no RGB/coarse input."""
+    """Predict a full-resolution unit normal directly from the event voxel."""
 
     def __init__(self, event_channels, hidden_channels=64):
         super().__init__()
@@ -120,11 +120,12 @@ class EventOnlyNormalDecoder(nn.Module):
         with torch.no_grad():
             self.decoder[-1].bias.copy_(torch.tensor([0.0, 0.0, 1.0]))
 
-    def forward(self, event_feature, gate, output_size):
-        raw = self.decoder(event_feature)
-        if raw.shape[-2:] != tuple(output_size):
-            raw = F.interpolate(raw, output_size, mode="bilinear", align_corners=False)
-            gate = F.interpolate(gate, output_size, mode="bilinear", align_corners=False)
+    def forward(self, event_feature, gate):
+        if event_feature.shape[-2:] != gate.shape[-2:]:
+            raise ValueError("event-normal feature and gate must share pixel resolution")
+        # Mask after any local event preprocessing. This prevents convolution
+        # and normalization from creating predictions in remote empty areas.
+        raw = self.decoder(event_feature) * (gate > 0).to(event_feature.dtype)
         # Gate is intentionally not mixed into the vector: multiplying a
         # normal changes magnitude, not direction. It defines valid/support
         # and supervision regions only.
@@ -133,7 +134,7 @@ class EventOnlyNormalDecoder(nn.Module):
 
 
 class NormalOrientedGeometryContributionModel(UnifiedGeometryContributionModel):
-    checkpoint_schema = "normal_oriented_geometry_contribution_v1"
+    checkpoint_schema = "normal_oriented_geometry_contribution_v2_pixel_normal"
 
     def __init__(self, *args, event_adapter_levels=(0, 1),
                  support_dilation_kernel=5, enable_event_depth_residual=False, **kwargs):
@@ -159,7 +160,7 @@ class NormalOrientedGeometryContributionModel(UnifiedGeometryContributionModel):
             support_dilation_kernel=support_dilation_kernel,
         )
         self.event_normal_decoder = EventOnlyNormalDecoder(
-            event_channels, kwargs.get("event_hidden_dim", 48)
+            2 * self.event_encoder.num_bins, kwargs.get("event_hidden_dim", 48)
         )
         self.event_adapter_levels = tuple(sorted(levels))
 
@@ -205,9 +206,18 @@ class NormalOrientedGeometryContributionModel(UnifiedGeometryContributionModel):
         batch, views_count = images.shape[:2]
         event_normal = normal_gate = None
         if decode_event_normal:
-            feature = event_pyramid[0].reshape(batch * views_count, event_pyramid[0].shape[2], *shapes[0])
-            gate = gates[0].reshape(batch * views_count, 1, *shapes[0])
-            event_normal, normal_gate = self.event_normal_decoder(feature, gate, images.shape[-2:])
+            # The normal branch never passes through a ViT/DPT patch grid.
+            # Each event pixel retains its native spatial location.
+            pixel_support = soft_event_support(
+                event_voxel, self.event_encoder.support_dilation_kernel
+            )
+            pixel_gate = pixel_support * spatial_contribution.unsqueeze(2).clamp(0, 1)
+            feature = normalize_event_voxel(
+                event_voxel, self.event_encoder.count_cmax
+            ).reshape(batch * views_count, event_voxel.shape[2], *images.shape[-2:])
+            gate = pixel_gate.reshape(batch * views_count, 1, *images.shape[-2:])
+            feature = feature * (gate > 0).to(feature.dtype)
+            event_normal, normal_gate = self.event_normal_decoder(feature, gate)
             event_normal = event_normal.reshape(batch, views_count, *event_normal.shape[1:])
             normal_gate = normal_gate.reshape(batch, views_count, *normal_gate.shape[1:])
         depth, depth_conf = self.depth_head(tokens, images=images, patch_start_idx=patch_start,

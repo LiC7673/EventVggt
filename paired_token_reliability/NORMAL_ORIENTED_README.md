@@ -13,6 +13,8 @@ Key differences from `unified_model.py` / `stage2_geometry_adapter/model.py`:
   projected maps in the current DPT ordering);
 - the event branch predicts an absolute unit normal using event features only;
   RGB/coarse normals never enter this decoder, and there is no depth-residual head;
+- the event-normal decoder operates at native pixel resolution and never uses
+  DPT/ViT patch-grid features; DPT levels 0/1 are used only for geometry refinement;
 - normal-gradient, detached depth-normal consistency, update-magnitude, and
   outside-support invariance losses are added.
 
@@ -31,8 +33,8 @@ written under `exp/normal_oriented_12train_4test/` by default; metrics are in
 `metrics.json` and `test_all_exposures/all_exposures_summary.json`, while logs
 are kept in `logs/train.log` and `logs/evaluate_all_exposures.log`.
 
-For sparse events this variant defaults to two temporal bins per polarity
-(`EVENT_BINS=2`): 2 positive + 2 negative channels. Training and held-out
+For sparse events this variant defaults to four temporal bins per polarity
+(`EVENT_BINS=4`): 4 positive + 4 negative channels. Training and held-out
 evaluation use the same value. Override it only for an explicit ablation.
 
 Useful ablations can be supplied as config overrides:
