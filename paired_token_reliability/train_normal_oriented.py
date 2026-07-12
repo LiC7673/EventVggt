@@ -28,7 +28,6 @@ def build_model(cfg, args, device):
         contribution_initial_value=0.95,
         contribution_use_geometry_prior=not args.no_geometry_prior,
         event_adapter_levels=tuple(getattr(cfg.model, "event_adapter_levels", [0, 1])),
-        normal_update_scale=float(getattr(cfg.model, "normal_update_scale", 0.15)),
         support_dilation_kernel=int(getattr(cfg.model, "support_dilation_kernel", 5)),
         enable_event_depth_residual=bool(getattr(cfg.model, "enable_event_depth_residual", False)),
     )
@@ -60,8 +59,7 @@ def criterion_for(args, phase):
         patch_grid_weight=args.patch_grid_weight, grid_patch_size=args.grid_patch_size,
         normal_gradient_weight=0.5,
         depth_normal_consistency_weight=args.depth_event_normal_weight,
-        normal_update_weight=args.update_weight,
-        outside_support_weight=0.2, depth_outside_support_weight=0.2,
+        depth_outside_support_weight=0.2,
         detach_normal_target=True, points_loss_type="l1",
     )
 

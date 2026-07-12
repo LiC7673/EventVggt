@@ -103,13 +103,12 @@ class EventOnlyFeatureAdapter(nn.Module):
         return rgb_feature + applied_update, applied_update, raw_update.abs().mean()
 
 
-class BoundedNormalResidualDecoder(nn.Module):
-    """Event-only bounded delta-normal, added to the RGB coarse normal."""
+class EventOnlyNormalDecoder(nn.Module):
+    """Predict an absolute unit normal from events only; no RGB/coarse input."""
 
-    def __init__(self, event_channels, hidden_channels=64, normal_update_scale=0.15):
+    def __init__(self, event_channels, hidden_channels=64):
         super().__init__()
         hidden = max(int(hidden_channels), 16)
-        self.normal_update_scale = float(normal_update_scale)
         self.decoder = nn.Sequential(
             nn.Conv2d(event_channels, hidden, 3, padding=1, bias=False),
             nn.GroupNorm(_groups(hidden), hidden), nn.GELU(),
@@ -118,23 +117,25 @@ class BoundedNormalResidualDecoder(nn.Module):
             nn.Conv2d(hidden, 3, 1),
         )
         nn.init.zeros_(self.decoder[-1].weight)
-        nn.init.zeros_(self.decoder[-1].bias)
+        with torch.no_grad():
+            self.decoder[-1].bias.copy_(torch.tensor([0.0, 0.0, 1.0]))
 
-    def forward(self, event_feature, gate, coarse_normal, output_size):
+    def forward(self, event_feature, gate, output_size):
         raw = self.decoder(event_feature)
         if raw.shape[-2:] != tuple(output_size):
             raw = F.interpolate(raw, output_size, mode="bilinear", align_corners=False)
             gate = F.interpolate(gate, output_size, mode="bilinear", align_corners=False)
-        delta = gate * (self.normal_update_scale * torch.tanh(raw.float()))
-        coarse = coarse_normal.movedim(-1, 1).float()
-        final = F.normalize(coarse + delta, dim=1, eps=1.0e-6)
-        return final.movedim(1, -1), delta.movedim(1, -1), gate[:, 0]
+        # Gate is intentionally not mixed into the vector: multiplying a
+        # normal changes magnitude, not direction. It defines valid/support
+        # and supervision regions only.
+        normal = F.normalize(raw.float(), dim=1, eps=1.0e-6)
+        return normal.movedim(1, -1), gate[:, 0]
 
 
 class NormalOrientedGeometryContributionModel(UnifiedGeometryContributionModel):
     checkpoint_schema = "normal_oriented_geometry_contribution_v1"
 
-    def __init__(self, *args, event_adapter_levels=(0, 1), normal_update_scale=0.15,
+    def __init__(self, *args, event_adapter_levels=(0, 1),
                  support_dilation_kernel=5, enable_event_depth_residual=False, **kwargs):
         if enable_event_depth_residual:
             raise NotImplementedError("toDo.md keeps the optional depth residual disabled by default")
@@ -157,8 +158,8 @@ class NormalOrientedGeometryContributionModel(UnifiedGeometryContributionModel):
             count_cmax=self.event_encoder.count_cmax,
             support_dilation_kernel=support_dilation_kernel,
         )
-        self.event_normal_decoder = BoundedNormalResidualDecoder(
-            event_channels, kwargs.get("event_hidden_dim", 48), normal_update_scale
+        self.event_normal_decoder = EventOnlyNormalDecoder(
+            event_channels, kwargs.get("event_hidden_dim", 48)
         )
         self.event_adapter_levels = tuple(sorted(levels))
 
@@ -199,16 +200,12 @@ class NormalOrientedGeometryContributionModel(UnifiedGeometryContributionModel):
         shapes = dpt_feature_shapes(*images.shape[-2:], self.patch_size)
         event_pyramid, gates = self.event_encoder(event_voxel, spatial_contribution, shapes)
         batch, views_count = images.shape[:2]
-        event_normal = delta_normal = normal_gate = None
+        event_normal = normal_gate = None
         if decode_event_normal:
             feature = event_pyramid[0].reshape(batch * views_count, event_pyramid[0].shape[2], *shapes[0])
             gate = gates[0].reshape(batch * views_count, 1, *shapes[0])
-            coarse_flat = coarse_normals.reshape(batch * views_count, *coarse_normals.shape[2:])
-            event_normal, delta_normal, normal_gate = self.event_normal_decoder(
-                feature, gate, coarse_flat, images.shape[-2:]
-            )
+            event_normal, normal_gate = self.event_normal_decoder(feature, gate, images.shape[-2:])
             event_normal = event_normal.reshape(batch, views_count, *event_normal.shape[1:])
-            delta_normal = delta_normal.reshape(batch, views_count, *delta_normal.shape[1:])
             normal_gate = normal_gate.reshape(batch, views_count, *normal_gate.shape[1:])
         depth, depth_conf = self.depth_head(tokens, images=images, patch_start_idx=patch_start,
             frames_chunk_size=self.head_frames_chunk_size, event_pyramid=event_pyramid, contribution_pyramid=gates)
@@ -228,13 +225,13 @@ class NormalOrientedGeometryContributionModel(UnifiedGeometryContributionModel):
                 adapter_depth_update_magnitudes=torch.stack(self.depth_head.last_update_magnitudes),
                 adapter_point_update_magnitudes=torch.stack(self.point_head.last_update_magnitudes))
             if event_normal is not None:
-                item.update(event_normal=event_normal[:, index], normal_update=delta_normal[:, index],
+                item.update(event_normal=event_normal[:, index],
                             event_normal_reliability=normal_gate[:, index],
                             event_normal_support=normal_gate[:, index] > 0)
             results.append(item)
         return GeometryAdapterOutput(ress=results, views=views)
 
 
-__all__ = ["BoundedNormalResidualDecoder", "EventOnlyFeatureAdapter",
+__all__ = ["EventOnlyNormalDecoder", "EventOnlyFeatureAdapter",
            "NormalOrientedGeometryContributionModel", "ZeroPreservingEventPyramid",
            "soft_event_support"]

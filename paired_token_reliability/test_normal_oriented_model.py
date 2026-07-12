@@ -3,7 +3,7 @@
 import torch
 
 from paired_token_reliability.normal_oriented_model import (
-    BoundedNormalResidualDecoder, EventOnlyFeatureAdapter,
+    EventOnlyNormalDecoder, EventOnlyFeatureAdapter,
     ZeroPreservingEventPyramid,
 )
 
@@ -29,13 +29,8 @@ def test_zero_contribution_and_rgb_shortcut_removal():
     assert torch.count_nonzero(update_zero) == 0
 
 
-def test_normal_residual_is_bounded_and_zero_gate_restores_coarse():
-    decoder = BoundedNormalResidualDecoder(8, 16, normal_update_scale=0.15)
-    decoder.decoder[-1].bias.data.fill_(10.0)
+def test_event_normal_is_standalone_and_unit_length():
+    decoder = EventOnlyNormalDecoder(8, 16)
     feature = torch.randn(1, 8, 8, 8)
-    coarse = torch.zeros(1, 16, 16, 3); coarse[..., 2] = 1
-    final, delta, _ = decoder(feature, torch.ones(1, 1, 8, 8), coarse, (16, 16))
-    assert delta.abs().max() <= 0.150001
-    restored, zero_delta, _ = decoder(feature, torch.zeros(1, 1, 8, 8), coarse, (16, 16))
-    torch.testing.assert_close(restored, coarse)
-    assert torch.count_nonzero(zero_delta) == 0
+    normal, _ = decoder(feature, torch.ones(1, 1, 8, 8), (16, 16))
+    torch.testing.assert_close(torch.linalg.vector_norm(normal, dim=-1), torch.ones(1, 16, 16))
