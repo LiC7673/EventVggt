@@ -1,0 +1,4 @@
+variant: remove_rgb_shortcut
+base_config: ../../config/finetune_event.yaml
+description: Event-only adapter input; removes the RGB shortcut from raw update prediction.
+

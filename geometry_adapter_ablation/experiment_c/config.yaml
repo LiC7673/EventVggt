@@ -1,0 +1,4 @@
+variant: support_constrained
+base_config: ../../config/finetune_event.yaml
+description: Soft contribution gate multiplied by an explicit raw-event support pyramid.
+

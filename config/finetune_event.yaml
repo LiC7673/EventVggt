@@ -88,6 +88,9 @@ data:
   scene_names: null
   initial_scene_idx: 0
   active_scene_count: 3  # Increase to train on multiple scenes
+  # Frame 0 has event_time=[0,0]; start at frame 1 so every RGB view has a
+  # preceding-to-current event interval.
+  min_train_start_id: 1
   test_frame_count: 10  # Last N frames used for test set, rest for train
 
 hydra:

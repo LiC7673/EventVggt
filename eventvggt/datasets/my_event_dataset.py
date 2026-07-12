@@ -376,7 +376,12 @@ class MyEventDataset(BaseEventMultiViewDataset):
             # For test split: at least one frame must be in test range [train_frame_count, frame_count)
             # So start_id + num_views > train_frame_count
             # Which means start_id >= train_frame_count - num_views + 1
-            min_start_id = max(0, train_frame_count - self.num_views + 1)
+            # Also exclude absolute frame 0: it has no preceding event interval.
+            min_start_id = max(
+                self.min_train_start_id,
+                1,
+                train_frame_count - self.num_views + 1,
+            )
             start_ids = list(range(min_start_id, frame_count - self.num_views + 1))
         else:
             # Default: use all start_ids (for backward compatibility)

@@ -193,7 +193,9 @@ def make_unified_dataset(cfg, split, pairs):
         initial_scene_idx=initial_scene_idx,
         active_scene_count=active_scene_count,
         test_frame_count=frame_count,
-        min_train_start_id=int(getattr(data, "min_train_start_id", 0)),
+        # Frame 0 has no preceding exposure interval, hence no physically
+        # corresponding event packet. Unified event training starts at frame 1.
+        min_train_start_id=max(int(getattr(data, "min_train_start_id", 1)), 1),
         event_y_flip=getattr(data, "event_y_flip", "auto"),
         event_spatial_transform=getattr(data, "event_spatial_transform", "auto"),
         event_resize_method=str(getattr(data, "event_resize_method", "voxel_antialias")),
@@ -362,6 +364,14 @@ def prepare_pair(batch, device, args, phase):
     )
     target_views = _select_views(views_a, views_b, ~ref_is_a)
     reference_views = _select_views(views_a, views_b, ref_is_a)
+    for view_index, view in enumerate(target_views):
+        has_event = view.get("has_event")
+        if torch.is_tensor(has_event) and not bool(has_event.bool().all()):
+            raise RuntimeError(
+                "An RGB frame without a preceding event interval entered unified "
+                f"training at view={view_index}, instance={view.get('instance', 'unknown')!r}. "
+                "Frame 0 must be excluded with data.min_train_start_id=1."
+            )
     target_views = use_phase_event_source(target_views, phase)
     reference_views = use_phase_event_source(reference_views, phase)
     event = fe.stack_view_field(target_views, "event_voxel").float()

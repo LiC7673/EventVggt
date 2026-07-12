@@ -1,0 +1,4 @@
+variant: soft_gating
+base_config: ../../config/finetune_event.yaml
+description: Replaces the hard patch support threshold with a continuous contribution gate.
+

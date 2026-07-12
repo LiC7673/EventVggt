@@ -1,0 +1,4 @@
+variant: high_resolution
+base_config: ../../config/finetune_event.yaml
+description: Enables event updates only at DPT levels 0 and 1; levels 2 and 3 are exact RGB paths.
+
