@@ -14,6 +14,24 @@ from paired_token_reliability.normal_oriented_model import NormalOrientedGeometr
 from paired_token_reliability import train_unified_geometry_contribution as legacy
 
 
+_legacy_configure_phase = legacy.configure_phase
+
+
+def configure_phase(model, phase, train_heads_a=False):
+    """Freeze disabled DPT levels so DDP never waits for nonexistent grads."""
+    _legacy_configure_phase(model, phase, train_heads_a)
+    enabled = set(model.event_adapter_levels)
+    for head in (model.depth_head, model.point_head):
+        for index, adapter in enumerate(head.geometry_adapters):
+            if index not in enabled:
+                adapter.requires_grad_(False)
+    # Each scale projection is private to one DPT level. Projections for
+    # disabled adapters otherwise become DDP-unused parameters in A/C.
+    for index, projection in enumerate(model.event_encoder.scale_projections):
+        if index not in enabled:
+            projection.requires_grad_(False)
+
+
 def build_model(cfg, args, device):
     model = NormalOrientedGeometryContributionModel(
         img_size=int(cfg.model.img_size), patch_size=int(cfg.model.patch_size),
@@ -69,6 +87,7 @@ def main(argv=None):
     # handling, while replacing only the model/loss/schema symbols.
     legacy.build_model = build_model
     legacy.criterion_for = criterion_for
+    legacy.configure_phase = configure_phase
     legacy.UnifiedGeometryContributionModel = NormalOrientedGeometryContributionModel
     legacy.main(argv)
 
