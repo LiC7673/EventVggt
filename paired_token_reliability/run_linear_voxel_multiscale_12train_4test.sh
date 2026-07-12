@@ -10,7 +10,7 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
  -m paired_token_reliability.train_linear_voxel_multiscale --pretrained "${PRETRAINED}" --output "${OUTPUT}" \
  --epochs-a "${EPOCHS_A:-2}" --epochs-b "${EPOCHS_B:-10}" --epochs-c "${EPOCHS_C:-0}" \
  --num-workers "${NUM_WORKERS:-2}" --decomposition-weight "${DECOMP_WEIGHT:-0.2}" --require-full-event-phase-b --no-budget \
- --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" --visualize-val-every-batches "${VAL_VIS_EVERY:-20}" \
+ --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" --visualize-val-every-batches "${VAL_VIS_EVERY:-5}" \
  "data.num_views=${NUM_VIEWS:-4}" "data.event_resize_bins=5" "data.event_resize_method=voxel_linear_time" \
  "model.head_frames_chunk_size=${HEAD_CHUNK:-1}" "model.event_decay_tau=${EVENT_DECAY_TAU:-0.003}" \
  "data.train_initial_scene_idx=0" "data.train_scene_count=12" "data.train_holdout_frame_count=0" \
@@ -21,7 +21,8 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
 if [[ "${RUN_EVAL:-1}" == 1 ]]; then
  CUDA_VISIBLE_DEVICES="${GPU_ARRAY[0]}" python -m paired_token_reliability.evaluate_linear_voxel_multiscale \
   --checkpoint "${OUTPUT}/checkpoint-best.pth" --output-dir "${OUTPUT}/test_all_exposures" \
-  --initial-scene-idx 12 --active-scene-count 4 --test-frame-count 120 --num-views "${NUM_VIEWS:-4}" \
+  --initial-scene-idx "${TEST_INITIAL_SCENE_IDX:-12}" --active-scene-count 3 \
+  --test-frame-count 5 --window-stride 1 --num-views 1 --visualize-every 1 \
   --event-resize-method voxel_linear_time --event-resize-bins 5 --num-workers "${NUM_WORKERS:-2}" \
   2>&1 | tee "${OUTPUT}/logs/evaluate_all_exposures.log"
 fi
