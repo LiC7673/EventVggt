@@ -11,7 +11,7 @@ if [[ -z "${MASTER_PORT:-}" ]]; then
   MASTER_PORT="$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"
 fi
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
-EXP_NAME="${EXP_NAME:-normal_oriented_12train_4test}"
+EXP_NAME="${EXP_NAME:-normal_oriented_2_bin}"
 OUTPUT="${OUTPUT:-exp/${EXP_NAME}}"
 EPOCHS_A="${EPOCHS_A:-2}"
 EPOCHS_B="${EPOCHS_B:-10}"
