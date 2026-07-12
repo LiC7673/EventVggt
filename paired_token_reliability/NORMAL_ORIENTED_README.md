@@ -31,6 +31,10 @@ written under `exp/normal_oriented_12train_4test/` by default; metrics are in
 `metrics.json` and `test_all_exposures/all_exposures_summary.json`, while logs
 are kept in `logs/train.log` and `logs/evaluate_all_exposures.log`.
 
+For sparse events this variant defaults to two temporal bins per polarity
+(`EVENT_BINS=2`): 2 positive + 2 negative channels. Training and held-out
+evaluation use the same value. Override it only for an explicit ablation.
+
 Useful ablations can be supplied as config overrides:
 
 ```bash

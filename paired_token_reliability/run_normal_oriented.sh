@@ -18,6 +18,7 @@ EPOCHS_B="${EPOCHS_B:-10}"
 EPOCHS_C="${EPOCHS_C:-0}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
+EVENT_BINS="${EVENT_BINS:-2}"
 DECOMP_WEIGHT="${DECOMP_WEIGHT:-0.2}"
 
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
@@ -35,6 +36,7 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
   --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" \
   --visualize-val-every-batches "${VAL_VIS_EVERY:-20}" \
   "data.num_views=${NUM_VIEWS}" "model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
+  "data.event_resize_bins=${EVENT_BINS}" \
   "model.event_adapter_uses_rgb=false" "model.event_adapter_levels=[0,1]" \
   "model.enable_event_depth_residual=false" "model.support_dilation_kernel=5" \
   "data.train_initial_scene_idx=0" "data.train_scene_count=12" \
@@ -48,7 +50,7 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
 
 if [[ "${RUN_EVAL:-1}" == "1" ]]; then
   CHECKPOINT="${OUTPUT}/checkpoint-best.pth" OUTPUT_DIR="${OUTPUT}/test_all_exposures" \
-  GPU="${GPU_ARRAY[0]}" NUM_VIEWS="${NUM_VIEWS}" \
+  GPU="${GPU_ARRAY[0]}" NUM_VIEWS="${NUM_VIEWS}" EVENT_BINS="${EVENT_BINS}" \
   bash paired_token_reliability/run_normal_oriented_all_exposures_eval.sh \
     2>&1 | tee "${OUTPUT}/logs/evaluate_all_exposures.log"
 fi

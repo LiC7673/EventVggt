@@ -16,5 +16,6 @@ CUDA_VISIBLE_DEVICES="${GPU}" python -m paired_token_reliability.evaluate_normal
   --active-scene-count "${TEST_SCENE_COUNT:-4}" \
   --test-frame-count "${HELDOUT_TEST_FRAME_COUNT:-120}" \
   --window-stride "${WINDOW_STRIDE:-4}" --num-views "${NUM_VIEWS:-4}" \
+  --event-resize-bins "${EVENT_BINS:-2}" \
   --num-workers "${NUM_WORKERS:-2}" --visualize-every "${TEST_VIS_EVERY:-20}" \
   "$@"
