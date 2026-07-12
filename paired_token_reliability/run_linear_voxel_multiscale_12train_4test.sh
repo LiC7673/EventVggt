@@ -4,10 +4,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 GPUS="${GPUS:-${GPU:-2}}"; IFS=',' read -r -a GPU_ARRAY <<< "${GPUS}"; NPROC="${#GPU_ARRAY[@]}"
 if [[ -z "${MASTER_PORT:-}" ]]; then MASTER_PORT="$(python -c 'import socket;s=socket.socket();s.bind(("",0));print(s.getsockname()[1]);s.close()')"; fi
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"; OUTPUT="${OUTPUT:-exp/linear_voxel_multiscale_5bin_12train_4test}"
+TRAIN_MODULE="${TRAIN_MODULE:-paired_token_reliability.train_linear_voxel_multiscale}"
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}" CUDA_VISIBLE_DEVICES="${GPUS}"
 mkdir -p "${OUTPUT}/logs"
 python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MASTER_PORT}" \
- -m paired_token_reliability.train_linear_voxel_multiscale --pretrained "${PRETRAINED}" --output "${OUTPUT}" \
+ -m "${TRAIN_MODULE}" --pretrained "${PRETRAINED}" --output "${OUTPUT}" \
  --epochs-a "${EPOCHS_A:-2}" --epochs-b "${EPOCHS_B:-10}" --epochs-c "${EPOCHS_C:-0}" \
  --num-workers "${NUM_WORKERS:-2}" --decomposition-weight "${DECOMP_WEIGHT:-0.2}" --require-full-event-phase-b --no-budget \
  --visualize-every-batches "${TRAIN_VIS_EVERY:-40}" --visualize-val-every-batches "${VAL_VIS_EVERY:-5}" \
