@@ -22,6 +22,7 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
   "data.num_views=${NUM_VIEWS}" "data.event_resize_bins=5" \
   "model.head_frames_chunk_size=${HEAD_CHUNK:-1}" "model.signed_pixel_hidden=${PIXEL_HIDDEN:-32}" \
   "model.depth_update_scale=${DEPTH_UPDATE_SCALE:-0.03}" "model.support_dilation_kernel=5" \
+  "model.event_decay_tau=${EVENT_DECAY_TAU:-0.003}" \
   "data.train_initial_scene_idx=0" "data.train_scene_count=12" "data.train_holdout_frame_count=0" \
   "data.test_initial_scene_idx=12" "data.test_scene_count=4" "data.heldout_test_frame_count=120" \
   "data.event_source_mode=decomposition_full" "data.decomposition_supervision=true" \

@@ -14,3 +14,9 @@ Both absolute event normals and bounded relative depth updates come from a
 stride-one, full-resolution multi-dilation encoder. No event update is injected
 at a DPT/ViT patch grid, and no resize/interpolation occurs in the event-normal
 or pixel-depth path.
+
+Before encoding, bin centers are exponentially decayed toward the current
+window end: `w_i=exp(-(t_current-t_i)/tau)`. The default is
+`EVENT_DECAY_TAU=0.003` seconds. Each saved training visualization also writes
+`*_temporal_decay.png` containing the signed projection, decayed mass, and the
+five numerical bin weights.

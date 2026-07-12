@@ -23,6 +23,19 @@ def split_to_signed(event_voxel: torch.Tensor, bins: int) -> torch.Tensor:
     return (positive - negative).clamp(-1, 1)
 
 
+def temporal_decay_signed(signed: torch.Tensor, time_range: torch.Tensor,
+                          tau: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Exponentially downweight old bins using inferred uniform bin centers."""
+    if tau <= 0:
+        raise ValueError("event_decay_tau must be positive seconds")
+    bins = signed.shape[2]
+    t0, current = time_range[..., 0], time_range[..., 1]
+    fraction = (torch.arange(bins, device=signed.device, dtype=signed.dtype) + .5) / bins
+    centers = t0.unsqueeze(-1) + (current - t0).unsqueeze(-1) * fraction
+    weights = torch.exp(-(current.unsqueeze(-1) - centers) / float(tau)).clamp(0, 1)
+    return signed * weights.unsqueeze(-1).unsqueeze(-1), weights
+
+
 def signed_support(event: torch.Tensor, kernel: int = 5) -> torch.Tensor:
     support = event.ne(0).any(dim=2, keepdim=True).to(event.dtype)
     if kernel > 1:
@@ -75,12 +88,14 @@ class SignedMultiscalePixelModel(UnifiedGeometryContributionModel):
     checkpoint_schema = "signed_multiscale_pixel_geometry_v1"
 
     def __init__(self, *args, signed_event_bins=5, pixel_hidden=32,
-                 support_dilation_kernel=5, depth_update_scale=0.03, **kwargs):
+                 support_dilation_kernel=5, depth_update_scale=0.03,
+                 event_decay_tau=0.003, **kwargs):
         kwargs["event_num_bins"] = int(signed_event_bins)
         super().__init__(*args, **kwargs)
         self.signed_event_bins = int(signed_event_bins)
         self.support_dilation_kernel = int(support_dilation_kernel)
         self.depth_update_scale = float(depth_update_scale)
+        self.event_decay_tau = float(event_decay_tau)
         self.contribution_net = SignedContributionNet(self.signed_event_bins, pixel_hidden,
                                                        kwargs.get("contribution_initial_value", .95))
         self.event_encoder = SignedMultiScaleEncoder(self.signed_event_bins, pixel_hidden)
@@ -101,7 +116,7 @@ class SignedMultiscalePixelModel(UnifiedGeometryContributionModel):
     def predict_contribution(self, views):
         images, split_event, intrinsics = self._stack_inputs(views)
         split_event, intrinsics = split_event.to(images.device), intrinsics.to(images.device)
-        signed = split_to_signed(split_event, self.signed_event_bins)
+        signed, _ = self._decayed_signed(views, split_event)
         tokens, patch_start = self.aggregator(images)
         coarse_depth, _ = self.depth_head(tokens, images=images, patch_start_idx=patch_start,
                                            frames_chunk_size=self.head_frames_chunk_size)
@@ -109,11 +124,22 @@ class SignedMultiscalePixelModel(UnifiedGeometryContributionModel):
         coarse_normal = depth_to_normals(coarse_map.float(), intrinsics.float())
         return self.contribution_net(signed, images, coarse_map, coarse_normal)
 
+    def _decayed_signed(self, views, split_event):
+        signed = split_to_signed(split_event, self.signed_event_bins)
+        ranges = []
+        for view in views:
+            value = view.get("event_time_range")
+            if not torch.is_tensor(value):
+                raise KeyError("event_time_range is required for physical temporal decay")
+            ranges.append(value.to(device=signed.device, dtype=signed.dtype))
+        time_range = torch.stack(ranges, dim=1)
+        return temporal_decay_signed(signed, time_range, self.event_decay_tau)
+
     def forward(self, views, query_points: Optional[torch.Tensor] = None,
                 contribution_override=None, **_kwargs):
         images, split_event, intrinsics = self._stack_inputs(views)
         split_event, intrinsics = split_event.to(images.device), intrinsics.to(images.device)
-        signed = split_to_signed(split_event, self.signed_event_bins)
+        signed, decay_weights = self._decayed_signed(views, split_event)
         tokens, patch_start = self.aggregator(images)
         pose = self.camera_head(tokens)[-1]
         coarse_depth, coarse_conf = self.depth_head(tokens, images=images, patch_start_idx=patch_start,
@@ -144,7 +170,8 @@ class SignedMultiscalePixelModel(UnifiedGeometryContributionModel):
                 depth=depth[:, i], normal=final_normal[:, i], depth_conf=coarse_conf[:, i],
                 depth_coarse=coarse_depth[:, i], depth_coarse_conf=coarse_conf[:, i], camera_pose=pose[:, i],
                 event_contribution=contribution[:, i], event_contribution_spatial=contribution[:, i],
-                signed_event=signed[:, i], event_normal=event_normal[:, i],
+                signed_event=signed[:, i], temporal_decay_weights=decay_weights[:, i],
+                event_normal=event_normal[:, i],
                 # Normal prediction/supervision is dense on the dataset valid
                 # object mask. Event support only raises its confidence weight;
                 # it never cuts the predicted normal into an event-shaped map.
@@ -157,4 +184,5 @@ class SignedMultiscalePixelModel(UnifiedGeometryContributionModel):
         return GeometryAdapterOutput(ress=results, views=views)
 
 
-__all__ = ["SignedMultiscalePixelModel", "SignedMultiScaleEncoder", "split_to_signed"]
+__all__ = ["SignedMultiscalePixelModel", "SignedMultiScaleEncoder", "split_to_signed",
+           "temporal_decay_signed"]

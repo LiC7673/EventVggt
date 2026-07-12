@@ -717,6 +717,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         *,
         num_bins=10,
         time_window=None,
+        linear_time=False,
     ):
         num_bins = max(int(num_bins), 1)
         window_t0 = window_t1 = None
@@ -755,25 +756,35 @@ class MyEventDataset(BaseEventMultiViewDataset):
         if not np.isfinite(t1):
             t1 = t0
 
-        if t1 <= t0:
-            bin_ids = np.zeros(event_t.shape, dtype=np.int64)
-            bin_times = np.full((num_bins,), t0, dtype=np.float32)
-        else:
-            norm_t = (event_t.astype(np.float64) - t0) / max(t1 - t0, 1e-12)
-            bin_ids = np.floor(norm_t * num_bins).astype(np.int64)
-            bin_ids = np.clip(bin_ids, 0, num_bins - 1)
-            bin_times = (
-                t0 + (np.arange(num_bins, dtype=np.float32) + 0.5) * ((t1 - t0) / num_bins)
-            ).astype(np.float32)
-
-        channel_ids = bin_ids + np.where(event_p > 0, 0, num_bins)
-        flat_idx = (
-            channel_ids.astype(np.int64) * (src_height * src_width)
-            + event_xy[:, 1].astype(np.int64) * src_width
-            + event_xy[:, 0].astype(np.int64)
-        )
         voxel = np.zeros((2 * num_bins, src_height, src_width), dtype=np.float32)
-        np.add.at(voxel.reshape(-1), flat_idx, np.abs(event_p).astype(np.float32, copy=False))
+        polarity_offset = np.where(event_p > 0, 0, num_bins).astype(np.int64)
+        spatial_index = (event_xy[:, 1].astype(np.int64) * src_width
+                         + event_xy[:, 0].astype(np.int64))
+        magnitude = np.abs(event_p).astype(np.float32, copy=False)
+        if linear_time and num_bins > 1 and t1 > t0:
+            # Standard event voxel grid: continuous normalized time is splatted
+            # to its two neighboring temporal bins with the triangular kernel
+            # k(a)=max(0, 1-|a|). Polarity channels never cancel each other.
+            continuous_bin = ((event_t.astype(np.float64) - t0)
+                              / max(t1 - t0, 1e-12) * (num_bins - 1))
+            continuous_bin = np.clip(continuous_bin, 0.0, float(num_bins - 1))
+            left = np.floor(continuous_bin).astype(np.int64)
+            right = np.minimum(left + 1, num_bins - 1)
+            right_weight = (continuous_bin - left).astype(np.float32)
+            left_weight = 1.0 - right_weight
+            for bin_ids, temporal_weight in ((left, left_weight), (right, right_weight)):
+                channel_ids = bin_ids + polarity_offset
+                flat_idx = channel_ids * (src_height * src_width) + spatial_index
+                np.add.at(voxel.reshape(-1), flat_idx, magnitude * temporal_weight)
+        else:
+            if t1 <= t0:
+                bin_ids = np.zeros(event_t.shape, dtype=np.int64)
+            else:
+                norm_t = (event_t.astype(np.float64) - t0) / max(t1 - t0, 1e-12)
+                bin_ids = np.clip(np.floor(norm_t * num_bins).astype(np.int64), 0, num_bins - 1)
+            channel_ids = bin_ids + polarity_offset
+            flat_idx = channel_ids * (src_height * src_width) + spatial_index
+            np.add.at(voxel.reshape(-1), flat_idx, magnitude)
 
         interpolation = cv2.INTER_AREA if dst_width <= src_width and dst_height <= src_height else cv2.INTER_LINEAR
         area_scale = float(src_width * src_height) / max(float(dst_width * dst_height), 1.0)
@@ -811,7 +822,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         resize_method = str(resize_method or "voxel_antialias").lower()
 
         if event_xy.size == 0:
-            if resize_method in {"voxel", "voxel_antialias", "antialias"}:
+            if resize_method in {"voxel", "voxel_antialias", "antialias", "voxel_linear_time"}:
                 return MyEventDataset._pack_event_data(
                     np.zeros((0, 2), dtype=np.int32),
                     np.zeros((0,), dtype=np.float32),
@@ -849,7 +860,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
         event_p = event_p[valid_src].astype(np.float32, copy=False)
 
         if src_width == dst_width and src_height == dst_height:
-            if resize_method in {"voxel", "voxel_antialias", "antialias"}:
+            if resize_method in {"voxel", "voxel_antialias", "antialias", "voxel_linear_time"}:
                 return MyEventDataset._events_to_antialias_voxel_resize(
                     resized_xy,
                     event_t,
@@ -860,6 +871,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
                     dst_height,
                     num_bins=resize_bins,
                     time_window=time_window,
+                    linear_time=(resize_method == "voxel_linear_time"),
                 )
             return MyEventDataset._pack_event_data(resized_xy.astype(np.int32), event_t, event_p)
 
@@ -877,7 +889,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             )
             return MyEventDataset._pack_event_data(resized_xy[valid], event_t[valid], event_p[valid])
 
-        if resize_method not in {"voxel", "voxel_antialias", "antialias"}:
+        if resize_method not in {"voxel", "voxel_antialias", "antialias", "voxel_linear_time"}:
             raise ValueError(f"Unsupported event_resize_method={resize_method}")
 
         return MyEventDataset._events_to_antialias_voxel_resize(
@@ -890,6 +902,7 @@ class MyEventDataset(BaseEventMultiViewDataset):
             dst_height,
             num_bins=resize_bins,
             time_window=time_window,
+            linear_time=(resize_method == "voxel_linear_time"),
         )
 
     @staticmethod
