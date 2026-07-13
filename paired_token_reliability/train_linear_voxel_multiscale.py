@@ -40,8 +40,29 @@ def criterion_for(args,phase):
     return _ContributionObjective(criterion,task_weight=0.10) if phase=="contribution" else criterion
 
 
+def configure_phase(model,phase,_train_heads_a=False):
+    """Train the modules actually used by the full-resolution pixel forward."""
+    model.requires_grad_(False)
+    if phase=="adapter":
+        model.event_encoder.requires_grad_(True)
+        model.event_normal_decoder.requires_grad_(True)
+        model.depth_local_head.requires_grad_(True)
+    elif phase=="contribution":
+        model.contribution_net.requires_grad_(True)
+    elif phase=="joint":
+        model.contribution_net.requires_grad_(True)
+        model.event_encoder.requires_grad_(True)
+        model.event_normal_decoder.requires_grad_(True)
+        model.depth_local_head.requires_grad_(True)
+    else:
+        raise ValueError(phase)
+    # RGB backbone/heads and obsolete patch-grid adapters stay frozen.
+    model.train(); model.aggregator.eval(); model.camera_head.eval()
+    model.depth_head.eval(); model.point_head.eval()
+
+
 def main(argv=None):
-    pipeline.build_model=build_model; pipeline.configure_phase=base.configure_phase
+    pipeline.build_model=build_model; pipeline.configure_phase=configure_phase
     pipeline.criterion_for=criterion_for; pipeline.save_visual=base.save_visual
     pipeline.UnifiedGeometryContributionModel=LinearVoxelMultiscalePixelModel
     pipeline.main(argv)
