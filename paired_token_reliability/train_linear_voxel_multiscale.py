@@ -14,16 +14,35 @@ def build_model(cfg, args, device):
         depth_update_scale=float(getattr(cfg.model,"depth_update_scale",.03)),
         event_decay_tau=float(getattr(cfg.model,"event_decay_tau",.003)),
         event_hidden_dim=32, event_pyramid_channels=32, adapter_hidden_channels=64,
-        contribution_channels=32, contribution_initial_value=.95)
+        contribution_channels=32, contribution_initial_value=.70)
     message=model.load_state_dict(strip_module_prefix(fe.unwrap_state_dict(torch_load(args.pretrained))),strict=False)
     required=[k for k in message.missing_keys if k.startswith(("aggregator.","camera_head."))]
     if required: raise RuntimeError(f"base checkpoint missing VGGT weights: {required[:10]}")
     return model.to(device)
 
 
+class _ContributionObjective:
+    """Keep attribution semantics instead of letting task loss open every gate."""
+    def __init__(self, criterion, task_weight=0.10):
+        self.criterion=criterion; self.task_weight=float(task_weight)
+    def __call__(self,*args,**kwargs):
+        result=self.criterion(*args,**kwargs); d=result.details
+        result.loss=(self.task_weight*d["geometry"]
+                     + self.criterion.decomposition_weight*d["decomposition"]
+                     + self.criterion.pair_weight*d["pair"]
+                     + self.criterion.budget_weight*d["budget"]
+                     + self.criterion.geometry_rank_weight*d["geometry_rank"])
+        return result
+
+
+def criterion_for(args,phase):
+    criterion=base.criterion_for(args,phase)
+    return _ContributionObjective(criterion,task_weight=0.10) if phase=="contribution" else criterion
+
+
 def main(argv=None):
     pipeline.build_model=build_model; pipeline.configure_phase=base.configure_phase
-    pipeline.criterion_for=base.criterion_for; pipeline.save_visual=base.save_visual
+    pipeline.criterion_for=criterion_for; pipeline.save_visual=base.save_visual
     pipeline.UnifiedGeometryContributionModel=LinearVoxelMultiscalePixelModel
     pipeline.main(argv)
 

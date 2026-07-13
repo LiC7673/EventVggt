@@ -485,6 +485,12 @@ def save_visual(
     valid = aux["valid_live"][0, 0]
     normal_valid = aux["normal_valid_live"][0, 0]
     predicted_normal = visual_normal(aux["normal_pred_live"][0, 0], normal_valid)
+    intrinsics = fe.stack_view_field(views, "camera_intrinsics").to(coarse)
+    coarse_normal_live = fe.depth_to_normals(
+        torch.stack([item["depth_coarse"] for item in output.ress], dim=1).squeeze(-1).float(),
+        intrinsics.float(),
+    )
+    coarse_normal = visual_normal(coarse_normal_live[0, 0], normal_valid)
     target_normal = visual_normal(aux["normal_gt_live"][0, 0], normal_valid)
     event_normal = (
         visual_normal(
@@ -527,6 +533,7 @@ def save_visual(
         (visual_map(pred * valid), "pred depth", "viridis"),
         (visual_signed((pred - coarse) * valid), "depth update", "coolwarm"),
         (visual_map(gt * valid), "GT depth", "viridis"),
+        (coarse_normal, "coarse normal", None),
         (predicted_normal, "pred normal", None),
         (target_normal, "GT normal", None),
         *(((event_normal, "event normal", None),) if event_normal is not None else ()),
@@ -653,6 +660,38 @@ def run_epoch(
                 f"Cmean={values['contribution_mean']:.4f} Cstd={values['contribution_std']:.4f}",
                 flush=True,
             )
+        if rank == 0 and training and (batch_index + 1) % 500 == 0:
+            with torch.no_grad():
+                pred_depth = result.aux["depth_pred_live"].float()
+                coarse_depth = torch.stack(
+                    [item["depth_coarse"] for item in output.ress], dim=1
+                ).squeeze(-1).float()
+                gt_depth = fe.stack_view_field(target_views, "depthmap").to(pred_depth).float()
+                metric_valid = result.aux["valid_live"].bool()
+
+                def depth_metrics(current):
+                    mask = metric_valid & torch.isfinite(current) & (current > 1e-6) & (gt_depth > 1e-6)
+                    current_valid = current[mask].clamp_min(1e-6)
+                    target_valid = gt_depth[mask].clamp_min(1e-6)
+                    if current_valid.numel() == 0:
+                        return (float("nan"),) * 4
+                    mae = (current_valid - target_valid).abs().mean()
+                    absrel = ((current_valid - target_valid).abs() / target_valid).mean()
+                    rmselog = ((current_valid.log() - target_valid.log()).square().mean()).sqrt()
+                    ratio = torch.maximum(current_valid / target_valid, target_valid / current_valid)
+                    delta1 = (ratio < 1.25).float().mean()
+                    return tuple(float(value) for value in (mae, absrel, rmselog, delta1))
+
+                coarse_metric = depth_metrics(coarse_depth)
+                final_metric = depth_metrics(pred_depth)
+                print(
+                    f"[{phase} depth-metric@{batch_index+1:05d}] "
+                    f"coarse(MAE={coarse_metric[0]:.5f},AbsRel={coarse_metric[1]:.5f},"
+                    f"RMSElog={coarse_metric[2]:.5f},d1={coarse_metric[3]:.4f}) "
+                    f"final(MAE={final_metric[0]:.5f},AbsRel={final_metric[1]:.5f},"
+                    f"RMSElog={final_metric[2]:.5f},d1={final_metric[3]:.4f})",
+                    flush=True,
+                )
     return reduce_metrics(totals, batches, device, distributed)
 
 

@@ -21,7 +21,7 @@ export EVENT_DECAY_TAU="${EVENT_DECAY_TAU:-0.005}"
 
 # More capacity is allocated only to the full-resolution event/pixel branch.
 export PIXEL_HIDDEN="${PIXEL_HIDDEN:-64}"
-export EPOCHS_A="${EPOCHS_A:-3}"
+export EPOCHS_A="${EPOCHS_A:-2}"
 export EPOCHS_B="${EPOCHS_B:-14}"
 export EPOCHS_C="${EPOCHS_C:-1}"
 
