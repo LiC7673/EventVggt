@@ -7,6 +7,7 @@ from paired_token_reliability.linear_voxel_calibrated_model import (
     CalibratedLinearVoxelMultiscalePixelModel,
 )
 from paired_token_reliability import train_linear_voxel_multiscale as base
+from paired_token_reliability import train_signed_multiscale as visual_base
 from paired_token_reliability import train_unified_geometry_contribution as pipeline
 
 
@@ -69,7 +70,7 @@ def main(argv=None):
     pipeline.configure_phase = configure_phase
     pipeline.optimizer_for = optimizer_for
     pipeline.criterion_for = base.criterion_for
-    pipeline.save_visual = base.save_visual
+    pipeline.save_visual = visual_base.save_visual
     pipeline.UnifiedGeometryContributionModel = CalibratedLinearVoxelMultiscalePixelModel
     pipeline.main(argv)
 
