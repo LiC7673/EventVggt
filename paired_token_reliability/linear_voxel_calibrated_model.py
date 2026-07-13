@@ -54,15 +54,22 @@ class CalibratedLinearVoxelMultiscalePixelModel(LinearVoxelMultiscalePixelModel)
 
             item["depth"] = final_map.unsqueeze(-1)
             item["normal"] = depth_to_normals(final_map.float(), intrinsics)
+            # Coarse and final must be reported in exactly the same metric
+            # coordinate system.  Keep the pretrained head's uncalibrated
+            # tensor only as an explicitly named diagnostic.
+            item["depth_coarse_raw"] = item["depth_coarse"]
+            item["depth_coarse"] = calibrated_base.unsqueeze(-1)
             item["depth_calibrated_base"] = calibrated_base.unsqueeze(-1)
             # Keep this panel local: a uniform global scale should not hide the
             # event branch's spatial correction.
             item["depth_pixel_update"] = calibrated_base * local_ratio
-            item["depth_total_update"] = final_map - raw_coarse
+            item["depth_total_update"] = final_map - calibrated_base
             item["metric_depth_scale"] = scale
 
             local_ratios.append(local_ratio.detach().abs())
-            total_ratios.append((final_map.detach() / raw_coarse.detach().clamp_min(1e-6) - 1.0).abs())
+            total_ratios.append(
+                (final_map.detach() / calibrated_base.detach().clamp_min(1e-6) - 1.0).abs()
+            )
             support_masks.append(item["event_normal_reliability"].detach() > 0)
 
         # Training-side utilization audit.  This is deliberately in the new
