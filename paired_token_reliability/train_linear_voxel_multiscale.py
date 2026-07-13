@@ -59,6 +59,24 @@ def configure_phase(model,phase,_train_heads_a=False):
     # RGB backbone/heads and obsolete patch-grid adapters stay frozen.
     model.train(); model.aggregator.eval(); model.camera_head.eval()
     model.depth_head.eval(); model.point_head.eval()
+    if phase in {"adapter","joint"}:
+        assert any(p.requires_grad for p in model.depth_local_head.parameters()), "depth_local_head is frozen"
+        assert any(p.requires_grad for p in model.event_normal_decoder.parameters()), "event_normal_decoder is frozen"
+        assert any(p.requires_grad for p in model.event_encoder.parameters()), "event_encoder is frozen"
+    if phase in {"contribution","joint"}:
+        assert any(p.requires_grad for p in model.contribution_net.parameters()), "contribution_net is frozen"
+    assert not any(p.requires_grad for p in model.depth_head.geometry_adapters.parameters())
+    assert not any(p.requires_grad for p in model.point_head.geometry_adapters.parameters())
+    signature=(phase,tuple(name for name,p in model.named_parameters() if p.requires_grad))
+    if getattr(model,"_trainable_audit",None)!=signature:
+        model._trainable_audit=signature
+        counts={
+            "event_encoder":sum(p.numel() for p in model.event_encoder.parameters() if p.requires_grad),
+            "normal_decoder":sum(p.numel() for p in model.event_normal_decoder.parameters() if p.requires_grad),
+            "depth_local":sum(p.numel() for p in model.depth_local_head.parameters() if p.requires_grad),
+            "contribution":sum(p.numel() for p in model.contribution_net.parameters() if p.requires_grad),
+        }
+        print(f"[trainable audit/{phase}] {counts}",flush=True)
 
 
 def main(argv=None):

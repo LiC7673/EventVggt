@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 mkdir -p exp/launcher_logs
-OUTPUT="${FUSION_OUTPUT:-exp/linear_voxel_fusion_100pct_gpu4}" \
+OUTPUT="${FUSION_OUTPUT:-exp/linear_voxel_fusion_100pct_gpu4_fixed}" \
 bash paired_token_reliability/run_linear_voxel_fusion_100pct_gpu4.sh "$@" \
   > exp/launcher_logs/fusion_100pct_gpu4.log 2>&1 & P4=$!
 OUTPUT="${METRIC_OUTPUT:-exp/linear_voxel_metric_only_100pct_gpu5}" \
