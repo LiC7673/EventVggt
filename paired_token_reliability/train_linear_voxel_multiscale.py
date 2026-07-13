@@ -15,6 +15,10 @@ def build_model(cfg, args, device):
         event_decay_tau=float(getattr(cfg.model,"event_decay_tau",.003)),
         event_hidden_dim=32, event_pyramid_channels=32, adapter_hidden_channels=64,
         contribution_channels=32, contribution_initial_value=.70)
+    if bool(getattr(cfg.model,"force_full_contribution",False)) and not model.force_full_contribution:
+        from paired_token_reliability.linear_voxel_multiscale_model import _ForcedFullContribution
+        model.contribution_net=_ForcedFullContribution(model.contribution_net)
+        model.force_full_contribution=True
     message=model.load_state_dict(strip_module_prefix(fe.unwrap_state_dict(torch_load(args.pretrained))),strict=False)
     required=[k for k in message.missing_keys if k.startswith(("aggregator.","camera_head."))]
     if required: raise RuntimeError(f"base checkpoint missing VGGT weights: {required[:10]}")

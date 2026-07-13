@@ -56,6 +56,7 @@ def build_model(checkpoint: Path, _override, device: torch.device):
         head_frames_chunk_size=int(getattr(m,"head_frames_chunk_size",2)),voxel_bins=5,
         pixel_hidden=int(getattr(m,"signed_pixel_hidden",32)),support_dilation_kernel=int(getattr(m,"support_dilation_kernel",5)),
         depth_update_scale=float(getattr(m,"depth_update_scale",.03)),event_decay_tau=float(getattr(m,"event_decay_tau",.003)),
+        force_full_contribution=bool(getattr(m,"force_full_contribution",False)),
         event_hidden_dim=32,event_pyramid_channels=32,adapter_hidden_channels=64,contribution_channels=32)
     model.load_state_dict(strip_module_prefix(fe.unwrap_state_dict(raw)),strict=True)
     return model.to(device).eval(),cfg

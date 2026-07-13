@@ -1,22 +1,37 @@
 """Pixel multi-scale model consuming polarity-separated linear-time voxels."""
 from __future__ import annotations
 import torch
+import torch.nn as nn
 from paired_token_reliability.signed_multiscale_model import (
     SignedContributionNet, SignedMultiScaleEncoder, SignedMultiscalePixelModel,
 )
+
+
+class _ForcedFullContribution(nn.Module):
+    """C=1 ablation while retaining a zero-gradient DDP dependency."""
+    def __init__(self, learned):
+        super().__init__(); self.learned=learned
+        self.coarse_feature_dim=getattr(learned,"coarse_feature_dim",0)
+    def forward(self,*args,**kwargs):
+        predicted=self.learned(*args,**kwargs)
+        return torch.ones_like(predicted)+0.0*predicted
 
 
 class LinearVoxelMultiscalePixelModel(SignedMultiscalePixelModel):
     """Use V(x,y,b,p) directly; never collapse positive/negative polarity."""
     checkpoint_schema = "linear_time_voxel_multiscale_pixel_v1"
 
-    def __init__(self, *args, voxel_bins=5, pixel_hidden=32, **kwargs):
+    def __init__(self, *args, voxel_bins=5, pixel_hidden=32,
+                 force_full_contribution=False, **kwargs):
         super().__init__(*args, signed_event_bins=voxel_bins, pixel_hidden=pixel_hidden, **kwargs)
         self.voxel_bins = int(voxel_bins)
         channels = 2 * self.voxel_bins
         self.contribution_net = SignedContributionNet(channels, pixel_hidden,
                                                        kwargs.get("contribution_initial_value", .95))
         self.event_encoder = SignedMultiScaleEncoder(channels, pixel_hidden)
+        self.force_full_contribution=bool(force_full_contribution)
+        if self.force_full_contribution:
+            self.contribution_net=_ForcedFullContribution(self.contribution_net)
 
     def _decayed_signed(self, views, split_event):
         if split_event.shape[2] != 2 * self.voxel_bins:
