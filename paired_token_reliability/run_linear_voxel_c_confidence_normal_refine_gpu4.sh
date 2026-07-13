@@ -1,11 +1,11 @@
-iu#!/usr/bin/env bash
-# Dense 50%-bounded event refinement; no hard event-support output mask.
+#!/usr/bin/env bash
+# C-connected normal confidence + 3-step dense normal-guided depth refinement.
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 
 export GPUS="${GPUS:-4}"
-export OUTPUT="${OUTPUT:-exp/linear_voxel_conditioned_dense_50pct_scale_warmup_gpu4}"
-export TRAIN_MODULE="paired_token_reliability.train_linear_voxel_conditioned_dense_scale_warmup"
+export OUTPUT="${OUTPUT:-exp/linear_voxel_c_confidence_normal_refine_gpu4}"
+export TRAIN_MODULE="paired_token_reliability.train_linear_voxel_conditioned_confidence_refine"
 export RUN_EVAL=0
 
 bash paired_token_reliability/run_linear_voxel_multiscale_12train_4test.sh \
@@ -17,9 +17,11 @@ bash paired_token_reliability/run_linear_voxel_multiscale_12train_4test.sh \
   "model.scale_warmup_steps=1000" \
   "model.event_min_pixel_mass=0.10" \
   "model.support_dilation_kernel=3" \
+  "model.normal_refine_iterations=3" \
+  "model.normal_refine_step_limit=0.05" \
   "$@"
 
-CUDA_VISIBLE_DEVICES="${GPUS}" python -m paired_token_reliability.evaluate_linear_voxel_conditioned_dense_scale_warmup \
+CUDA_VISIBLE_DEVICES="${GPUS}" python -m paired_token_reliability.evaluate_linear_voxel_conditioned_confidence_refine \
   --checkpoint "${OUTPUT}/checkpoint-best.pth" \
   --output-dir "${OUTPUT}/test_all_exposures" \
   --initial-scene-idx "${TEST_INITIAL_SCENE_IDX:-12}" --active-scene-count 3 \
