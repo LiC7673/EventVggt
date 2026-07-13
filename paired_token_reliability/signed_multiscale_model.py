@@ -159,6 +159,15 @@ class SignedMultiscalePixelModel(UnifiedGeometryContributionModel):
         event_normal = event_normal.movedim(1, -1).reshape(b, v, *signed.shape[-2:], 3)
         delta_ratio = self.depth_update_scale * torch.tanh(self.depth_local_head(flat)[:, 0])
         delta_ratio = delta_ratio.reshape(b, v, *signed.shape[-2:]) * gate[:, :, 0]
+        # Regularize the correction field itself. Without this term a
+        # point-wise depth objective can carve local dents into an otherwise
+        # planar coarse surface. TV keeps low-curvature regions coherent while
+        # still allowing discontinuities where supervised depth requires them.
+        update_tv = 0.5 * (
+            (delta_ratio[..., :, 1:] - delta_ratio[..., :, :-1]).abs().mean()
+            + (delta_ratio[..., 1:, :] - delta_ratio[..., :-1, :]).abs().mean()
+        )
+        update_regularizer = delta_ratio.abs().mean() + 0.5 * update_tv
         depth_map = coarse_map * (1.0 + delta_ratio)
         depth = depth_map.unsqueeze(-1)
         final_normal = depth_to_normals(depth_map.float(), intrinsics.float())
@@ -177,7 +186,8 @@ class SignedMultiscalePixelModel(UnifiedGeometryContributionModel):
                 # it never cuts the predicted normal into an event-shaped map.
                 event_normal_reliability=gate[:, i, 0],
                 event_normal_support=torch.ones_like(support[:, i, 0], dtype=torch.bool),
-                depth_pixel_update=(depth_map-coarse_map)[:, i], adapter_update_loss=delta_ratio.abs().mean(),
+                depth_pixel_update=(depth_map-coarse_map)[:, i],
+                depth_update_tv=update_tv, adapter_update_loss=update_regularizer,
                 adapter_alpha_depth=depth_map.new_zeros(4), adapter_alpha_point=depth_map.new_zeros(4),
                 adapter_depth_update_magnitudes=depth_map.new_zeros(4),
                 adapter_point_update_magnitudes=depth_map.new_zeros(4), selected_event_mass=signed[:, i].abs().sum(1)))

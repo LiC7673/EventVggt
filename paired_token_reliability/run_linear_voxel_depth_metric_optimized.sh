@@ -32,10 +32,10 @@ bash paired_token_reliability/run_linear_voxel_multiscale_12train_4test.sh \
   --normal-weight 0.0 \
   --event-normal-weight 0.0 \
   --depth-event-normal-weight 0.0 \
-  --depth-gradient-weight 0.05 \
-  --depth-curvature-weight 0.0 \
+  --depth-gradient-weight 0.50 \
+  --depth-curvature-weight 0.20 \
   --patch-grid-weight 0.0 \
-  --update-weight 0.0 \
+  --update-weight 0.01 \
   --pair-weight 0.02 \
   --decomposition-weight 0.05 \
   --geometry-rank-weight 0.0 \
@@ -43,5 +43,5 @@ bash paired_token_reliability/run_linear_voxel_multiscale_12train_4test.sh \
   "model.signed_pixel_hidden=${PIXEL_HIDDEN}" \
   "model.depth_update_scale=${DEPTH_UPDATE_SCALE}" \
   "model.event_decay_tau=${EVENT_DECAY_TAU}" \
-  "model.support_dilation_kernel=${SUPPORT_KERNEL:-31}" \
+  "model.support_dilation_kernel=${SUPPORT_KERNEL:-7}" \
   "$@"
