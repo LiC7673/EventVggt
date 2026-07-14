@@ -81,7 +81,49 @@ def build_model(config_path: Path, checkpoint_path: Path, device: torch.device):
     return model, cfg
 
 
-def make_loader(args, scene: str) -> DataLoader:
+def detect_common_ldr_event_ids(args) -> List[str]:
+    dataset = get_rgb_ldr_dataset(
+        root=args.data_root,
+        num_views=args.num_views,
+        resolution=(args.width, args.height),
+        fps=args.fps,
+        seed=args.seed,
+        scene_names=list(args.scenes),
+        initial_scene_idx=0,
+        active_scene_count=len(args.scenes),
+        split="test",
+        test_frame_count=args.test_frame_count,
+        ldr_event_id="random",
+        return_normal_gt=False,
+    )
+    active = list(dataset.get_active_scenes())
+    if set(active) != set(args.scenes):
+        raise RuntimeError(
+            f"requested scenes={args.scenes!r}, but detector selected {active!r}"
+        )
+    values = list(dataset.get_active_ldr_events(common=True))
+    if not values:
+        raise RuntimeError(
+            "The selected test scenes do not share any common ev_* RGB level."
+        )
+    return values
+
+
+def resolve_ldr_event_ids(args) -> List[str]:
+    # Keep the old singular option as an explicit compatibility override.
+    if args.ldr_event_id:
+        return [normalize_ldr_id(args.ldr_event_id)]
+    raw = str(args.ldr_event_ids).strip()
+    if raw.lower() in {"auto", "common", "all"}:
+        return detect_common_ldr_event_ids(args)
+    values = [normalize_ldr_id(item.strip()) for item in raw.split(",") if item.strip()]
+    if not values:
+        raise ValueError("--ldr-event-ids must be 'auto' or a comma-separated ev_* list")
+    # Stable de-duplication retains the user-specified evaluation order.
+    return list(dict.fromkeys(values))
+
+
+def make_loader(args, scene: str, ldr_event_id: str) -> DataLoader:
     dataset = get_rgb_ldr_dataset(
         root=args.data_root,
         num_views=args.num_views,
@@ -93,7 +135,7 @@ def make_loader(args, scene: str) -> DataLoader:
         active_scene_count=1,
         split="test",
         test_frame_count=args.test_frame_count,
-        ldr_event_id=normalize_ldr_id(args.ldr_event_id),
+        ldr_event_id=ldr_event_id,
         return_normal_gt=False,
     )
     if len(dataset) == 0:
@@ -101,7 +143,7 @@ def make_loader(args, scene: str) -> DataLoader:
     active = list(dataset.get_active_scenes())
     if active != [scene]:
         raise RuntimeError(f"requested scene {scene!r}, but dataset selected {active!r}")
-    print(f"[data] scene={scene} samples={len(dataset)} ldr={args.ldr_event_id}")
+    print(f"[data] scene={scene} samples={len(dataset)} ldr={ldr_event_id}")
     return DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -313,11 +355,32 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-config", default="config/finetune_no_event.yaml")
     parser.add_argument("--pretrained", default="ckpt/model.pt")
-    parser.add_argument("--finetuned", default="checkpoints/fine_rgb_ev_-1/checkpoint-last.pth")
-    parser.add_argument("--output-dir", default="exp/rgb_pretrained_vs_finetuned")
+    parser.add_argument(
+        "--finetuned", default=None,
+        help="Optional single checkpoint override. By default, each ev_* level uses "
+             "the matching path from --finetuned-template.",
+    )
+    parser.add_argument(
+        "--finetuned-template",
+        default="checkpoints/fine_rgb_{ldr_event_id}/checkpoint-last.pth",
+        help="Per-level checkpoint template; supports {ldr_event_id} and {ldr}.",
+    )
+    parser.add_argument(
+        "--skip-missing-finetuned", action="store_true",
+        help="Still report pretrained rows when a matching fine-tuned checkpoint is absent.",
+    )
+    parser.add_argument("--output-dir", default="exp/rgb_all_ev_pretrained_vs_finetuned")
     parser.add_argument("--data-root", default="/data1/lzh/dataset/reflective_raw")
     parser.add_argument("--scenes", nargs="+", default=list(DEFAULT_SCENES))
-    parser.add_argument("--ldr-event-id", default="ev_-1")
+    parser.add_argument(
+        "--ldr-event-ids", default="auto",
+        help="'auto' evaluates every ev_* level common to all selected scenes; "
+             "otherwise provide a comma-separated list.",
+    )
+    parser.add_argument(
+        "--ldr-event-id", default=None,
+        help="Deprecated single-level override retained for compatibility.",
+    )
     parser.add_argument("--num-views", type=int, default=1)
     parser.add_argument("--test-frame-count", type=int, default=10)
     parser.add_argument("--width", type=int, default=518)
@@ -337,29 +400,97 @@ def main():
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     config_path = Path(args.base_config)
-    loaders = {scene: make_loader(args, scene) for scene in args.scenes}
-    experiments = (
-        ("rgb_pretrained_no_finetune", Path(args.pretrained)),
-        ("rgb_finetuned", Path(args.finetuned)),
-    )
+    ldr_event_ids = resolve_ldr_event_ids(args)
+    print(f"[LDR levels] {ldr_event_ids}")
+    loaders_by_ldr = {
+        ldr_event_id: {
+            scene: make_loader(args, scene, ldr_event_id) for scene in args.scenes
+        }
+        for ldr_event_id in ldr_event_ids
+    }
+    if args.finetuned:
+        finetuned_paths = {
+            ldr_event_id: Path(args.finetuned) for ldr_event_id in ldr_event_ids
+        }
+    else:
+        finetuned_paths = {
+            ldr_event_id: Path(args.finetuned_template.format(
+                ldr_event_id=ldr_event_id, ldr=ldr_event_id
+            ))
+            for ldr_event_id in ldr_event_ids
+        }
+    missing_finetuned = {
+        level: path for level, path in finetuned_paths.items() if not path.is_file()
+    }
+    if missing_finetuned and not args.skip_missing_finetuned:
+        formatted = "\n".join(
+            f"  {level}: {path}" for level, path in missing_finetuned.items()
+        )
+        raise FileNotFoundError(
+            "Missing matching RGB-finetuned checkpoints:\n" + formatted +
+            "\nRun the per-EV finetuning jobs, set --finetuned-template, or use "
+            "--skip-missing-finetuned."
+        )
+
+    def append_level_rows(name, checkpoint_path, ldr_event_id, per_scene, overall):
+        checkpoint_text = str(checkpoint_path)
+        for scene, metrics in per_scene.items():
+            rows.append({
+                "experiment": name,
+                "ldr_event_id": ldr_event_id,
+                "scene": scene,
+                "checkpoint": checkpoint_text,
+                **metrics.result(),
+            })
+        rows.append({
+            "experiment": name,
+            "ldr_event_id": ldr_event_id,
+            "scene": "ALL_PIXEL_WEIGHTED",
+            "checkpoint": checkpoint_text,
+            **overall.result(),
+        })
+
     rows = []
-    for name, checkpoint_path in experiments:
+    pretrained_path = Path(args.pretrained)
+    pretrained_model, _ = build_model(config_path, pretrained_path, device)
+    for ldr_event_id, loaders in loaders_by_ldr.items():
+        print(f"[eval level] experiment=rgb_pretrained_no_finetune ldr={ldr_event_id}")
+        per_scene, overall = evaluate(
+            pretrained_model, loaders, device, args.amp, args.max_batches
+        )
+        append_level_rows(
+            "rgb_pretrained_no_finetune", pretrained_path,
+            ldr_event_id, per_scene, overall,
+        )
+    del pretrained_model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    for ldr_event_id, loaders in loaders_by_ldr.items():
+        checkpoint_path = finetuned_paths[ldr_event_id]
+        if not checkpoint_path.is_file():
+            print(f"[skip] rgb_finetuned ldr={ldr_event_id}: {checkpoint_path}")
+            continue
+        print(
+            f"[eval level] experiment=rgb_finetuned ldr={ldr_event_id} "
+            f"checkpoint={checkpoint_path}"
+        )
         model, _ = build_model(config_path, checkpoint_path, device)
         per_scene, overall = evaluate(
             model, loaders, device, args.amp, args.max_batches
         )
-        for scene, metrics in per_scene.items():
-            rows.append({"experiment": name, "scene": scene, **metrics.result()})
-        rows.append({"experiment": name, "scene": "ALL_PIXEL_WEIGHTED", **overall.result()})
+        append_level_rows(
+            "rgb_finetuned", checkpoint_path, ldr_event_id, per_scene, overall
+        )
         del model
         if device.type == "cuda":
             torch.cuda.empty_cache()
     output_dir = Path(args.output_dir)
     write_results(rows, output_dir)
-    print("\nexperiment                  scene                                      AbsRel  A-AbsRel Nmean  N<11.25")
+    print("\nexperiment                  EV       scene                                      AbsRel  A-AbsRel Nmean  N<11.25")
     for row in rows:
         print(
-            f"{row['experiment']:<27} {row['scene']:<42} "
+            f"{row['experiment']:<27} {row['ldr_event_id']:<8} {row['scene']:<42} "
             f"{row['abs_rel']:.5f}  {row['aligned_abs_rel']:.5f}  "
             f"{row['normal_mean_deg']:.3f}  {row['normal_11_25']:.4f}"
         )
