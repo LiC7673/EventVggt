@@ -39,7 +39,7 @@ class LdrEventToHdrTokenAligner(nn.Module):
 
 
 class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel):
-    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_predicted_c_v6"
+    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_predicted_c_v7"
 
     def __init__(self, *args, pixel_hidden=32, hdr_token_bottleneck=256,
                  alignment_confidence_tau=.10, hdr_warmup_steps=1000,
@@ -48,7 +48,10 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                  **kwargs):
         super().__init__(*args, pixel_hidden=pixel_hidden, **kwargs)
         hidden = int(pixel_hidden)
-        token_dim = int(kwargs.get("embed_dim"))
+        # VGGT's aggregator exposes concatenated local/global tokens.  Their
+        # channel width is therefore 2 * embed_dim (2048 for embed_dim=1024),
+        # not the transformer's internal embed_dim itself.
+        token_dim = 2 * int(kwargs.get("embed_dim"))
         self.full_geo_aligner = FullToGeoAlignment(hidden)
         self.event_token_projection = nn.Conv2d(hidden, token_dim, 1)
         self.ldr_event_hdr_aligner = LdrEventToHdrTokenAligner(

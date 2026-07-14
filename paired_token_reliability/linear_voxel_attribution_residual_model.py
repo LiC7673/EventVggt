@@ -73,13 +73,15 @@ class MissingGeometryResidualAdapter(nn.Module):
 
 
 class AttributionResidualLinearVoxelModel(DualAlignmentHDRLinearVoxelModel):
-    checkpoint_schema = "linear_voxel_attribution_missing_geometry_residual_v1"
+    checkpoint_schema = "linear_voxel_attribution_missing_geometry_residual_v2"
 
     def __init__(self, *args, geometry_projection_dim=256,
                  saturation_threshold=.98, ablate_event_attribution=False,
                  ablate_missing_residual=False, **kwargs):
         super().__init__(*args, **kwargs)
-        token_dim = int(kwargs.get("embed_dim"))
+        # Keep this adapter aligned with the parent VGGT aggregator output:
+        # tokens concatenate two embed_dim-wide streams.
+        token_dim = 2 * int(kwargs.get("embed_dim"))
         self.full_geo_aligner = IdentityEventAlignment()
         self.geometry_residual_adapter = MissingGeometryResidualAdapter(
             token_dim, geometry_projection_dim

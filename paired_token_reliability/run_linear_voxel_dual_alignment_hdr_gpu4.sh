@@ -4,7 +4,9 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 
 export GPUS="${GPUS:-4}"
-export OUTPUT="${OUTPUT:-exp/linear_voxel_dual_alignment_hdr_predicted_c_gpu4}"
+# v7 fixes the VGGT aggregator token width (2 * embed_dim).  Keep it in a
+# separate directory so RESUME=auto cannot load an incompatible v6 adapter.
+export OUTPUT="${OUTPUT:-exp/linear_voxel_dual_alignment_hdr_predicted_c_v7_gpu4}"
 export TRAIN_MODULE="paired_token_reliability.train_linear_voxel_dual_alignment_hdr"
 export RUN_EVAL=0
 export EPOCHS_A="${EPOCHS_A:-12}"
