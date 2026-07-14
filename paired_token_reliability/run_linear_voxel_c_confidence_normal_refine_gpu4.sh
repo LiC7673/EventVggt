@@ -8,6 +8,31 @@ export OUTPUT="${OUTPUT:-exp/linear_voxel_c_confidence_normal_refine_gpu4}"
 export TRAIN_MODULE="paired_token_reliability.train_linear_voxel_conditioned_confidence_refine"
 export RUN_EVAL=0
 
+# Resume the newest completed phase epoch by default.  Set RESUME=none to
+# restart from ckpt/model.pt, or RESUME=/path/to/checkpoint.pth explicitly.
+RESUME="${RESUME:-auto}"
+RESUME_ARGS=()
+if [[ "${RESUME}" == "auto" ]]; then
+  LATEST=""
+  for CANDIDATE in "${OUTPUT}"/checkpoint-*-last.pth; do
+    [[ -f "${CANDIDATE}" ]] || continue
+    if [[ -z "${LATEST}" || "${CANDIDATE}" -nt "${LATEST}" ]]; then
+      LATEST="${CANDIDATE}"
+    fi
+  done
+  if [[ -n "${LATEST}" ]]; then
+    RESUME_ARGS=(--resume "${LATEST}")
+    export APPEND_TRAIN_LOG=1
+    echo "[resume] auto-selected ${LATEST}"
+  else
+    echo "[resume] no *-last.pth found under ${OUTPUT}; starting a fresh run"
+  fi
+elif [[ "${RESUME}" != "none" && "${RESUME}" != "off" && -n "${RESUME}" ]]; then
+  RESUME_ARGS=(--resume "${RESUME}")
+  export APPEND_TRAIN_LOG=1
+  echo "[resume] using explicit checkpoint ${RESUME}"
+fi
+
 bash paired_token_reliability/run_linear_voxel_multiscale_12train_4test.sh \
   --point-weight 0.0 --decomposition-weight 1.0 --pair-weight 0.10 \
   --update-weight 0.001 \
@@ -19,6 +44,7 @@ bash paired_token_reliability/run_linear_voxel_multiscale_12train_4test.sh \
   "model.support_dilation_kernel=3" \
   "model.normal_refine_iterations=3" \
   "model.normal_refine_step_limit=0.05" \
+  "${RESUME_ARGS[@]}" \
   "$@"
 
 CUDA_VISIBLE_DEVICES="${GPUS}" python -m paired_token_reliability.evaluate_linear_voxel_conditioned_confidence_refine \

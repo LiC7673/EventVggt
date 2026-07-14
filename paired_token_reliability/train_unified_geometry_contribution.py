@@ -69,6 +69,10 @@ def parser():
     value.add_argument("--config", default=str(ROOT / "config" / "finetune_event.yaml"))
     value.add_argument("--pretrained", default=str(ROOT / "ckpt" / "model.pt"))
     value.add_argument("--output", default="abl_event_exp/unified_geometry_contribution")
+    value.add_argument(
+        "--resume", default=None,
+        help="Resume from a unified *-last.pth checkpoint instead of restarting the schedule.",
+    )
     value.add_argument("--exposures", default="0,1,2,5,10")
     value.add_argument("--pair-mode", choices=("all", "adjacent", "anchor"), default="anchor")
     value.add_argument(
@@ -695,7 +699,19 @@ def run_epoch(
     return reduce_metrics(totals, batches, device, distributed)
 
 
-def save_checkpoint(path, model, optimizer, cfg, args, phase, epoch, metrics):
+def capture_runtime_state(model):
+    """Route-specific trainers may replace this hook before calling main()."""
+    return {}
+
+
+def restore_runtime_state(model, state):
+    """Restore counters that are not registered model buffers."""
+    del model, state
+
+
+def save_checkpoint(
+    path, model, optimizer, cfg, args, phase, epoch, metrics, trainer_state=None,
+):
     payload = {
         "schema": UnifiedGeometryContributionModel.checkpoint_schema,
         "model": model.state_dict(),
@@ -708,6 +724,7 @@ def save_checkpoint(path, model, optimizer, cfg, args, phase, epoch, metrics):
         "inference_requires": ["rgb", "event_voxel"],
         "bridge_used_at_inference": False,
         "reference_used_at_inference": False,
+        "trainer_state": trainer_state,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -724,6 +741,45 @@ def load_unified_phase_checkpoint(model, path):
             f"{expected!r}. The pre-resize adapter graph requires a fresh Phase-A run."
         )
     model.load_state_dict(checkpoint["model"], strict=True)
+
+
+def _history_from_disk(output):
+    path = output / "metrics.json"
+    if not path.is_file():
+        return []
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _best_from_history(history, phases):
+    best = {phase: math.inf for phase in phases}
+    for record in history:
+        phase = record.get("phase")
+        if phase not in best:
+            continue
+        validation = record.get("validation", {})
+        train = record.get("train", {})
+        score = validation.get("loss", train.get("loss", math.inf))
+        try:
+            best[phase] = min(best[phase], float(score))
+        except (TypeError, ValueError):
+            pass
+    return best
+
+
+def _legacy_resume_position(checkpoint, schedule):
+    phase = checkpoint.get("phase")
+    phase_epoch = int(checkpoint.get("epoch", -1))
+    positions = [index for index, item in enumerate(schedule) if item == phase]
+    if phase_epoch < 0 or phase_epoch >= len(positions):
+        raise RuntimeError(
+            f"Cannot infer resume position from phase={phase!r}, epoch={phase_epoch}; "
+            f"schedule={schedule}"
+        )
+    return positions[phase_epoch] + 1
 
 
 def main(argv=None):
@@ -822,18 +878,89 @@ def main(argv=None):
         output.mkdir(parents=True, exist_ok=True)
     if distributed:
         dist.barrier()
-    history = []
     schedule = build_alternating_phase_schedule(
         args.epochs_a, args.epochs_b, args.epochs_c
     )
     phase_totals = {
         phase: schedule.count(phase) for phase in ("adapter", "contribution", "joint")
     }
+    history = _history_from_disk(output) if args.resume else []
     phase_epochs = {phase: 0 for phase in phase_totals}
-    best = {phase: math.inf for phase in phase_totals}
+    best = _best_from_history(history, phase_totals)
     optimizers = {}
-    first_contribution = True
-    first_joint = True
+    resume_optimizer_states = {}
+    resume_global_epoch = 0
+    if args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+        checkpoint = torch_load(resume_path)
+        expected = UnifiedGeometryContributionModel.checkpoint_schema
+        if checkpoint.get("schema") != expected:
+            raise RuntimeError(
+                f"Resume checkpoint schema {checkpoint.get('schema')!r} does not match "
+                f"the current route {expected!r}."
+            )
+        model.load_state_dict(checkpoint["model"], strict=True)
+        saved = checkpoint.get("trainer_state") or {}
+        if saved:
+            saved_schedule = list(saved.get("schedule", schedule))
+            if saved_schedule != schedule:
+                raise RuntimeError(
+                    "Resume schedule differs from the current --epochs-a/b/c settings: "
+                    f"saved={saved_schedule}, current={schedule}"
+                )
+            resume_global_epoch = int(saved["next_global_epoch"])
+            phase_epochs.update({
+                key: int(value)
+                for key, value in saved.get("phase_epochs", {}).items()
+                if key in phase_epochs
+            })
+            best.update({
+                key: float(value)
+                for key, value in saved.get("best", {}).items()
+                if key in best
+            })
+            resume_optimizer_states = dict(saved.get("optimizer_states", {}))
+            saved_history = saved.get("history")
+            if isinstance(saved_history, list):
+                history = saved_history
+            restore_runtime_state(model, saved.get("runtime_state", {}))
+            resume_kind = "full"
+        else:
+            # Compatibility with checkpoints produced before --resume existed.
+            resume_global_epoch = _legacy_resume_position(checkpoint, schedule)
+            completed = schedule[:resume_global_epoch]
+            phase_epochs = {
+                phase: completed.count(phase) for phase in phase_totals
+            }
+            if checkpoint.get("optimizer") is not None:
+                resume_optimizer_states[checkpoint["phase"]] = checkpoint["optimizer"]
+            inferred_runtime = {
+                "scale_warmup_forward_step": len(completed) * len(train_loader),
+                "dense_global_step": sum(
+                    item in {"adapter", "joint"} for item in completed
+                ) * len(train_loader),
+            }
+            inferred_runtime["soft_dc_global_step"] = inferred_runtime[
+                "dense_global_step"
+            ]
+            restore_runtime_state(model, inferred_runtime)
+            resume_kind = "legacy-inferred"
+        if resume_global_epoch < 0 or resume_global_epoch > len(schedule):
+            raise RuntimeError(
+                f"Invalid next_global_epoch={resume_global_epoch} for schedule length {len(schedule)}"
+            )
+        if rank == 0:
+            print(
+                f"[resume] kind={resume_kind} checkpoint={resume_path.resolve()} "
+                f"next_global_epoch={resume_global_epoch} "
+                f"completed={' -> '.join(schedule[:resume_global_epoch]) or 'none'}",
+                flush=True,
+            )
+    completed_phases = schedule[:resume_global_epoch]
+    first_contribution = "contribution" not in completed_phases
+    first_joint = "joint" not in completed_phases
     if rank == 0:
         print(
             "epoch schedule=" + " -> ".join(
@@ -842,7 +969,8 @@ def main(argv=None):
             ),
             flush=True,
         )
-    for global_epoch, phase in enumerate(schedule):
+    for global_epoch in range(resume_global_epoch, len(schedule)):
+        phase = schedule[global_epoch]
         if phase == "contribution" and first_contribution:
             # Begin B from the best of the two initial A warm-up epochs. Later
             # A/B switches retain the current unified model and optimizer state.
@@ -857,6 +985,11 @@ def main(argv=None):
         configure_phase(model, phase, args.train_geometry_heads_a)
         if phase not in optimizers:
             optimizers[phase] = optimizer_for(model, phase, args)
+            saved_optimizer = resume_optimizer_states.pop(phase, None)
+            if saved_optimizer is not None:
+                optimizers[phase].load_state_dict(saved_optimizer)
+                if rank == 0:
+                    print(f"[resume] restored {phase} optimizer", flush=True)
         optimizer = optimizers[phase]
         train_model = (
             DistributedDataParallel(
@@ -889,30 +1022,45 @@ def main(argv=None):
             "train": train_metrics,
             "validation": val_metrics,
         }
+        score = val_metrics.get("loss", train_metrics.get("loss", math.inf))
+        is_best = score < best[phase]
+        if is_best:
+            best[phase] = score
+        phase_epochs[phase] += 1
         if rank == 0:
             history.append(record)
             (output / "metrics.json").write_text(
                 json.dumps(history, indent=2), encoding="utf-8"
             )
-        score = val_metrics.get("loss", train_metrics.get("loss", math.inf))
-        if rank == 0:
+            trainer_state = {
+                "version": 1,
+                "schedule": list(schedule),
+                "next_global_epoch": global_epoch + 1,
+                "phase_epochs": dict(phase_epochs),
+                "best": dict(best),
+                "optimizer_states": {
+                    key: value.state_dict() for key, value in optimizers.items()
+                },
+                "runtime_state": capture_runtime_state(model),
+                "history": list(history),
+            }
             save_checkpoint(
                 output / f"checkpoint-{phase}-last.pth",
                 model, optimizer, cfg, args, phase, epoch, record,
+                trainer_state=trainer_state,
             )
-        if score < best[phase]:
-            best[phase] = score
-            if rank == 0:
+            if is_best:
                 save_checkpoint(
                     output / f"checkpoint-{phase}-best.pth",
                     model, optimizer, cfg, args, phase, epoch, record,
+                    trainer_state=trainer_state,
                 )
                 if phase in {"contribution", "joint"}:
                     save_checkpoint(
                         output / "checkpoint-best.pth",
                         model, optimizer, cfg, args, phase, epoch, record,
+                        trainer_state=trainer_state,
                     )
-        phase_epochs[phase] += 1
         if rank == 0:
             print(
                 f"[{phase}] epoch={epoch+1}/{epochs} global={global_epoch+1}/{len(schedule)} "

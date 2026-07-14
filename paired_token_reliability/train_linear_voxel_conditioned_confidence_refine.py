@@ -237,12 +237,30 @@ def criterion_for(args, phase):
     return ConfidenceNormalObjective(base, args) if phase in {"adapter", "joint"} else base
 
 
+def capture_runtime_state(model):
+    return {
+        "dense_global_step": int(dense._GLOBAL_DENSE_STEP),
+        "soft_dc_global_step": int(softdc._GLOBAL_SOFT_DC_STEP),
+        "scale_warmup_forward_step": int(model._scale_warmup_forward_step),
+    }
+
+
+def restore_runtime_state(model, state):
+    dense._GLOBAL_DENSE_STEP = int(state.get("dense_global_step", 0))
+    softdc._GLOBAL_SOFT_DC_STEP = int(state.get("soft_dc_global_step", 0))
+    model._scale_warmup_forward_step = int(
+        state.get("scale_warmup_forward_step", dense._GLOBAL_DENSE_STEP)
+    )
+
+
 def main(argv=None):
     pipeline.build_model = build_model
     pipeline.configure_phase = configure_phase
     pipeline.optimizer_for = optimizer_for
     pipeline.criterion_for = criterion_for
     pipeline.save_visual = save_visual
+    pipeline.capture_runtime_state = capture_runtime_state
+    pipeline.restore_runtime_state = restore_runtime_state
     pipeline.UnifiedGeometryContributionModel = ConditionedConfidenceNormalRefineLinearVoxelModel
     pipeline.main(argv)
 

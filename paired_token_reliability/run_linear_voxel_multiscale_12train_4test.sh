@@ -7,6 +7,8 @@ PRETRAINED="${PRETRAINED:-ckpt/model.pt}"; OUTPUT="${OUTPUT:-exp/linear_voxel_mu
 TRAIN_MODULE="${TRAIN_MODULE:-paired_token_reliability.train_linear_voxel_multiscale}"
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}" CUDA_VISIBLE_DEVICES="${GPUS}"
 mkdir -p "${OUTPUT}/logs"
+TEE_TRAIN_ARGS=()
+if [[ "${APPEND_TRAIN_LOG:-0}" == "1" ]]; then TEE_TRAIN_ARGS=(-a); fi
 python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MASTER_PORT}" \
  -m "${TRAIN_MODULE}" --pretrained "${PRETRAINED}" --output "${OUTPUT}" \
  --epochs-a "${EPOCHS_A:-2}" --epochs-b "${EPOCHS_B:-10}" --epochs-c "${EPOCHS_C:-0}" \
@@ -18,7 +20,7 @@ python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MAS
  "data.test_initial_scene_idx=12" "data.test_scene_count=4" "data.heldout_test_frame_count=120" \
  "data.event_source_mode=decomposition_full" "data.decomposition_supervision=true" \
  "data.decomposition_event_root=events_additive" "data.decomposition_geo_branch=geometry_motion" \
- "data.decomposition_full_branch=full" "$@" 2>&1 | tee "${OUTPUT}/logs/train.log"
+ "data.decomposition_full_branch=full" "$@" 2>&1 | tee "${TEE_TRAIN_ARGS[@]}" "${OUTPUT}/logs/train.log"
 if [[ "${RUN_EVAL:-1}" == 1 ]]; then
  CUDA_VISIBLE_DEVICES="${GPU_ARRAY[0]}" python -m paired_token_reliability.evaluate_linear_voxel_multiscale \
   --checkpoint "${OUTPUT}/checkpoint-best.pth" --output-dir "${OUTPUT}/test_all_exposures" \
