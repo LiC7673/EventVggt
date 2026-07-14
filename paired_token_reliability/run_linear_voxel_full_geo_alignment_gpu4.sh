@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 
-export GPUS="${GPUS:-4}"
+export GPUS="${GPUS:-3}"
 export OUTPUT="${OUTPUT:-exp/linear_voxel_full_geo_alignment_gpu4}"
 export TRAIN_MODULE="paired_token_reliability.train_linear_voxel_full_geo_alignment"
 export RUN_EVAL=0
