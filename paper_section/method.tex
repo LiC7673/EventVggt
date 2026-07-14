@@ -1,0 +1,403 @@
+% Required packages in the main paper:
+% \usepackage{amsmath,amssymb,bm}
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Formulation}
+\label{sec:formulation}
+
+For $N$ calibrated views, the input is a set of LDR images and their
+camera-aligned event streams,
+\begin{equation}
+    \mathcal{X}=\{(\bm I_i,\mathcal{E}_i,\bm K_i)\}_{i=1}^{N},
+    \qquad
+    \mathcal{E}_i=\{(\bm u_m,t_m,p_m)\}_{m=1}^{M_i},
+    \label{eq:input_definition}
+\end{equation}
+where $\bm u_m$, $t_m$, and $p_m\in\{+1,-1\}$ denote event position,
+timestamp, and polarity. The output is
+\begin{equation}
+    \mathcal{Y}=\{(D_i,\bm N_i,\bm P_i,\bm T_i)\}_{i=1}^{N},
+    \label{eq:output_definition}
+\end{equation}
+where $D_i$, $\bm N_i$, $\bm P_i$, and $\bm T_i$ are depth, surface
+normal, point map, and camera pose, respectively.
+
+The event stream is converted into a polarity-preserving voxel grid with
+$B$ temporal bins. With normalized time
+$\bar t_m=(B-1)(t_m-t_0)/(t_1-t_0)$, linear temporal splatting gives
+\begin{equation}
+    V_{i,b}^{p}(\bm u)=
+    \sum_{m=1}^{M_i}
+    \mathbf{1}[\bm u_m=\bm u]\,
+    \mathbf{1}[p_m=p]\,
+    \max\!\left(0,1-|b-\bar t_m|\right),
+    \quad b\in\{0,\ldots,B-1\}.
+    \label{eq:event_voxel_grid}
+\end{equation}
+We write
+\begin{equation}
+    \bm V_i=
+    [V_{i,0}^{+},\ldots,V_{i,B-1}^{+},
+     V_{i,0}^{-},\ldots,V_{i,B-1}^{-}]
+    \in\mathbb{R}^{2B\times H\times W}.
+    \label{eq:event_voxel_tensor}
+\end{equation}
+
+An RGB geometry backbone produces multi-view tokens and coarse geometry,
+\begin{equation}
+    \bm Z_i,\,D_i^{c},\,\bm P_i^{c},\,\bm T_i
+    =\mathcal{G}_{\mathrm{rgb}}
+    (\{\bm I_j\}_{j=1}^{N})_i,
+    \qquad
+    \bm N_i^{c}=\Pi(D_i^{c},\bm K_i),
+    \label{eq:rgb_coarse_geometry}
+\end{equation}
+where $\Pi$ is the differentiable depth-to-normal operator. The complete
+mapping is
+\begin{equation}
+    \boxed{
+    \begin{aligned}
+        C_i & =\mathcal{R}_{\theta}
+        (\bm V_i,\bm I_i,\bm Z_i,D_i^{c},\bm N_i^{c}),\\
+        \bm F_i^{e} & =\mathcal{E}_{\phi}(C_i\odot\bm V_i),\\
+        \widetilde{\bm N}_i & =
+        \mathcal{H}_{N}(\bm F_i^{e},D_i^{c},\bm N_i^{c},C_i),\\
+        D_i & =\mathcal{H}_{D}
+        (D_i^{c},\bm N_i^{c},\widetilde{\bm N}_i,
+         \bm F_i^{e},C_i,\bm K_i),\\
+        \bm N_i & =\Pi(D_i,\bm K_i),\\
+        \bm P_i & =\mathcal{H}_{P}(\bm Z_i,\bm F_i^{e},C_i).
+    \end{aligned}}
+    \label{eq:unified_pipeline}
+\end{equation}
+
+
+\subsection{Geometry-Aware Event Reliability}
+\label{sec:event_reliability}
+
+During training, controlled event generation provides a complete event stream
+$\bm V_i^{\mathrm{full}}$ and its geometry-related component
+$\bm V_i^{\mathrm{geo}}$. Their per-pixel temporal masses are
+\begin{equation}
+    A_i^{\mathrm{full}}(\bm u)=
+    \sum_{c=1}^{2B}|V_{i,c}^{\mathrm{full}}(\bm u)|,
+    \qquad
+    A_i^{\mathrm{geo}}(\bm u)=
+    \sum_{c=1}^{2B}|V_{i,c}^{\mathrm{geo}}(\bm u)|.
+    \label{eq:event_masses}
+\end{equation}
+The geometry contribution target is
+\begin{equation}
+    C_i^{*}(\bm u)=
+    M_i(\bm u)\,
+    \operatorname{clip}\!\left(
+    \frac{A_i^{\mathrm{geo}}(\bm u)}
+    {A_i^{\mathrm{full}}(\bm u)+\epsilon},0,1\right),
+    \label{eq:contribution_target}
+\end{equation}
+where $M_i$ is the valid-geometry mask. The contribution network predicts
+\begin{equation}
+    C_i^{e}=\sigma\!\left(
+    \mathcal{R}_{\theta}
+    (\bm V_i^{\mathrm{full}},\bm I_i^{e},
+     \bm Z_i^{e},D_i^{c,e},\bm N_i^{c,e})\right),
+    \quad C_i^{e}\in[0,1]^{H\times W}.
+    \label{eq:contribution_prediction}
+\end{equation}
+
+For two LDR observations $a$ and $b$ of the same view, the camera, scene
+geometry, and event interval are shared. Their contribution predictions are
+coupled with the corresponding RGB geometry predictions. We denote the
+camera- and scale-aligned geometry tuple by
+\begin{equation}
+    \bm G_i^{e}=
+    [\log\bar D_i^{c,e},\bm N_i^{c,e},\bar{\bm P}_i^{c,e}],
+    \qquad e\in\{a,b\},
+    \label{eq:paired_geometry_tuple}
+\end{equation}
+where the bar denotes alignment to the shared camera frame and depth scale.
+The per-pixel geometry discrepancy is
+\begin{equation}
+    d_i^{ab}(\bm u)=
+    \lambda_d\rho(\log\bar D_i^{c,a}-
+    \operatorname{sg}[\log\bar D_i^{c,b}])+
+    \lambda_n\left(1-\left\langle
+    \bm N_i^{c,a},\operatorname{sg}[\bm N_i^{c,b}]
+    \right\rangle\right)+
+    \lambda_p\rho(\bar{\bm P}_i^{c,a}-
+    \operatorname{sg}[\bar{\bm P}_i^{c,b}]),
+    \label{eq:paired_geometry_discrepancy}
+\end{equation}
+where all fields on the right-hand side are evaluated at $\bm u$. The
+multi-LDR consistency objective is
+\begin{equation}
+    \mathcal{L}_{\mathrm{LDR}}=
+    \frac{
+    \sum_{i,\bm u}W_i(\bm u)
+    \left|C_i^{a}(\bm u)-
+    \operatorname{sg}[C_i^{b}(\bm u)]\right|}
+    {\sum_{i,\bm u}W_i(\bm u)+\epsilon}
+    +
+    \frac{\sum_{i,\bm u}W_i(\bm u)\bar C_i(\bm u)
+    d_i^{ab}(\bm u)}
+    {\sum_{i,\bm u}W_i(\bm u)\bar C_i(\bm u)+\epsilon},
+    \qquad
+    \bar C_i=\operatorname{sg}\!\left[\frac{C_i^a+C_i^b}{2}\right],
+    \quad W_i=M_i\mathbf{1}[A_i^{\mathrm{full}}>0],
+    \label{eq:multi_ldr_consistency}
+\end{equation}
+where $\operatorname{sg}$ denotes stop-gradient. The controlled-event
+regression term is
+\begin{equation}
+    \mathcal{L}_{\mathrm{dec}}=
+    \frac{1}{2}\sum_{e\in\{a,b\}}
+    \frac{\sum_{i,\bm u}W_i(\bm u)
+    \rho\!\left(C_i^{e}(\bm u)-C_i^{*}(\bm u)\right)}
+    {\sum_{i,\bm u}W_i(\bm u)+\epsilon},
+    \label{eq:decomposition_supervision}
+\end{equation}
+where $\rho$ is the smooth-$\ell_1$ penalty.
+
+Let
+\begin{equation}
+    \Omega_i^{+}=\{\bm u:C_i^{*}(\bm u)\geq\tau_{+}\},
+    \qquad
+    \Omega_i^{-}=\{\bm u:C_i^{*}(\bm u)\leq\tau_{-}\}.
+\end{equation}
+The contribution ordering is optimized by
+\begin{equation}
+    \mathcal{L}_{\mathrm{rank}}=
+    \frac{1}{2N}\sum_{i=1}^{N}\sum_{e\in\{a,b\}}
+    \left[
+    m-mu_{\Omega_i^{+}}(C_i^{e})
+    +\mu_{\Omega_i^{-}}(C_i^{e})
+    \right]_{+}.
+    \label{eq:contribution_ranking}
+\end{equation}
+The reliability objective is
+\begin{equation}
+    \boxed{
+    \mathcal{L}_{C}=
+    \lambda_{\mathrm{dec}}\mathcal{L}_{\mathrm{dec}}+
+    \lambda_{\mathrm{LDR}}\mathcal{L}_{\mathrm{LDR}}+
+    \lambda_{\mathrm{rank}}\mathcal{L}_{\mathrm{rank}}.}
+    \label{eq:reliability_objective}
+\end{equation}
+At inference, only $C_i=C_i^{e}$ from the available LDR observation is used,
+and the selected event tensor is
+\begin{equation}
+    \widetilde{\bm V}_i=C_i\odot\bm V_i^{\mathrm{full}}.
+    \label{eq:reliability_weighted_event}
+\end{equation}
+
+
+\subsection{Event Geometric Property}
+\label{sec:event_normal_property}
+
+The weighted voxel grid is encoded with its temporal-bin and polarity axes
+preserved:
+\begin{equation}
+    \bm F_i^{e}=\mathcal{E}_{\phi}(\widetilde{\bm V}_i).
+    \label{eq:event_feature_encoding}
+\end{equation}
+The event branch predicts a bounded local normal residual and a normal
+confidence map,
+\begin{equation}
+    \Delta\bm N_i^{e}=	anh\!\left(
+    \mathcal{H}_{\Delta N}
+    ([\bm F_i^{e},\log D_i^{c},\bm N_i^{c}])\right),
+    \label{eq:event_normal_residual}
+\end{equation}
+\begin{equation}
+    Q_i^{N}=C_i\odot\sigma\!\left(
+    \mathcal{H}_{Q}
+    ([\bm F_i^{e},\log D_i^{c},\bm N_i^{c}])\right).
+    \label{eq:normal_confidence}
+\end{equation}
+The event-conditioned normal is
+\begin{equation}
+    \boxed{
+    \widetilde{\bm N}_i=
+    \operatorname{norm}\!\left(
+    \bm N_i^{c}+Q_i^{N}\odot\Delta\bm N_i^{e}
+    \right),}
+    \label{eq:event_conditioned_normal}
+\end{equation}
+where $\operatorname{norm}(\bm x)=\bm x/
+(\|\bm x\|_2+\epsilon)$.
+
+The event-support mask used for event-normal supervision is
+\begin{equation}
+    S_i(\bm u)=M_i(\bm u)\,
+    \mathbf{1}[A_i^{\mathrm{full}}(\bm u)>0].
+    \label{eq:event_normal_support}
+\end{equation}
+Given $\bm N_i^{*}=\Pi(D_i^{*},\bm K_i)$, the normal-direction term is
+\begin{equation}
+    \mathcal{L}_{N}^{e}=
+    \frac{\sum_{i,\bm u}S_i(\bm u)
+    \left(1-langle
+    \widetilde{\bm N}_i(\bm u),
+    \bm N_i^{*}(\bm u)\rangle\right)}
+    {\sum_{i,\bm u}S_i(\bm u)+\epsilon}.
+    \label{eq:event_normal_direction_loss}
+\end{equation}
+The local normal-variation term is
+\begin{equation}
+    \mathcal{L}_{\nabla N}^{e}=
+    \frac{\sum_{i,\bm u}S_i^{\nabla}(\bm u)
+    \sum_{d\in\{x,y\}}
+    \left\|
+    \nabla_d\widetilde{\bm N}_i(\bm u)-
+    \nabla_d\bm N_i^{*}(\bm u)
+    \right\|_1}
+    {\sum_{i,\bm u}S_i^{\nabla}(\bm u)+\epsilon},
+    \label{eq:event_normal_derivative_loss}
+\end{equation}
+where
+\begin{equation}
+    S_i^{\nabla}(\bm u)=
+    S_i(\bm u)S_i(\bm u+\bm e_x)S_i(\bm u+\bm e_y).
+    \label{eq:normal_derivative_support}
+\end{equation}
+Thus, pixels and finite differences without event observations do not
+contribute to $\mathcal{L}_{N}^{e}$ or
+$\mathcal{L}_{\nabla N}^{e}$.
+
+
+\subsection{Normal-Guided Geometry Refinement}
+\label{sec:normal_guided_refinement}
+
+Depth is initialized by the RGB prediction,
+\begin{equation}
+    D_i^{(0)}=D_i^{c}.
+    \label{eq:depth_initialization}
+\end{equation}
+At refinement step $k$, its current normal is
+\begin{equation}
+    \bm N_i^{(k)}=\Pi(D_i^{(k)},\bm K_i).
+    \label{eq:iterative_current_normal}
+\end{equation}
+The shared refinement module predicts a bounded log-depth update,
+\begin{equation}
+    \delta_i^{(k)}=
+    s\tanh\!\left(
+    \frac{1}{s}\mathcal{H}_{D}
+    ([\bm F_i^{e},\log D_i^{(k)},\log D_i^{c},
+      \bm N_i^{(k)},\widetilde{\bm N}_i,Q_i^{N}])
+    \right),
+    \label{eq:iterative_depth_update}
+\end{equation}
+followed by
+\begin{equation}
+    \ell_i^{(k+1)}=
+    \operatorname{clip}\!\left(
+    \log D_i^{(k)}+\delta_i^{(k)}-\log D_i^{c},
+    \log(1-r),\log(1+r)\right),
+    \label{eq:bounded_log_ratio}
+\end{equation}
+\begin{equation}
+    D_i^{(k+1)}=D_i^{c}\odot\exp(\ell_i^{(k+1)}),
+    \qquad k=0,\ldots,K-1.
+    \label{eq:depth_refinement_iteration}
+\end{equation}
+The final depth and normal are
+\begin{equation}
+    D_i=D_i^{(K)},
+    \qquad
+    \bm N_i=\Pi(D_i,\bm K_i).
+    \label{eq:final_depth_normal}
+\end{equation}
+The point-map branch uses the same reliability-weighted event features,
+\begin{equation}
+    \bm P_i=
+    \mathcal{H}_{P}([\bm Z_i,\bm F_i^{e},C_i]).
+    \label{eq:point_map_refinement}
+\end{equation}
+
+Depth--normal coupling is imposed by
+\begin{equation}
+    \mathcal{L}_{DN}=
+    \frac{\sum_{i,\bm u}M_i(\bm u)Q_i^{N}(\bm u)
+    \left(1-\left\langle
+    \Pi(D_i,\bm K_i)(\bm u),
+    \operatorname{sg}[\widetilde{\bm N}_i(\bm u)]
+    \right\rangle\right)}
+    {\sum_{i,\bm u}M_i(\bm u)Q_i^{N}(\bm u)+\epsilon}.
+    \label{eq:depth_normal_consistency}
+\end{equation}
+The dense depth update is supervised on the complete valid geometry mask
+$M_i$; $S_i$ is used only in the event-normal terms in
+Eqs.~\eqref{eq:event_normal_direction_loss}--
+\eqref{eq:event_normal_derivative_loss}.
+
+
+\subsection{Unified Objective}
+\label{sec:unified_objective}
+
+The valid finite-difference mask is
+\begin{equation}
+    M_i^{\nabla}(\bm u)=
+    M_i(\bm u)M_i(\bm u+\bm e_x)M_i(\bm u+\bm e_y).
+    \label{eq:geometry_stencil_mask}
+\end{equation}
+The reconstruction terms are
+\begin{equation}
+    \mathcal{L}_{\mathrm{geo}}=
+    \lambda_D\mathcal{L}_{D}+
+    \lambda_{\nabla D}\mathcal{L}_{\nabla D}+
+    \lambda_{N}\mathcal{L}_{N}+
+    \lambda_{P}\mathcal{L}_{P}+
+    \lambda_{T}\mathcal{L}_{T},
+    \label{eq:geometry_objective}
+\end{equation}
+with
+\begin{align}
+    \mathcal{L}_{D}
+    &=\frac{\sum_{i,\bm u}M_i(\bm u)
+    \rho(D_i(\bm u)-D_i^{*}(\bm u))}
+    {\sum_{i,\bm u}M_i(\bm u)+\epsilon},
+    \label{eq:depth_loss}\\
+    \mathcal{L}_{\nabla D}
+    &=\frac{\sum_{i,\bm u}M_i^{\nabla}(\bm u)
+    \sum_{d\in\{x,y\}}
+    \rho(\nabla_d\log D_i-\nabla_d\log D_i^{*})}
+    {\sum_{i,\bm u}M_i^{\nabla}(\bm u)+\epsilon},
+    \label{eq:depth_gradient_loss}\\
+    \mathcal{L}_{N}
+    &=\frac{\sum_{i,\bm u}M_i^{\nabla}(\bm u)
+    (1-\langle\bm N_i(\bm u),\bm N_i^{*}(\bm u)\rangle)}
+    {\sum_{i,\bm u}M_i^{\nabla}(\bm u)+\epsilon},
+    \label{eq:final_normal_loss}\\
+    \mathcal{L}_{P}
+    &=\frac{\sum_{i,\bm u}M_i(\bm u)
+    \|\bm P_i(\bm u)-\bm P_i^{*}(\bm u)\|_1}
+    {\sum_{i,\bm u}M_i(\bm u)+\epsilon}.
+    \label{eq:point_loss}\\
+    \mathcal{L}_{T}
+    &=\frac{1}{N}\sum_{i=1}^{N}
+    \rho(\bm T_i-\bm T_i^{*}).
+    \label{eq:pose_loss}
+\end{align}
+The complete objective is
+\begin{equation}
+    \boxed{
+    \mathcal{L}=
+    \mathcal{L}_{\mathrm{geo}}+
+    \mathcal{L}_{C}+
+    \lambda_{eN}\mathcal{L}_{N}^{e}+
+    \lambda_{e\nabla N}\mathcal{L}_{\nabla N}^{e}+
+    \lambda_{DN}\mathcal{L}_{DN}.}
+    \label{eq:complete_objective}
+\end{equation}
+
+Optimization uses geometry-controlled events to initialize the event geometry
+encoder, then learns $C_i$ from full events using
+Eq.~\eqref{eq:reliability_objective}, and finally optimizes the
+reliability-conditioned normal and geometry refinement using
+Eq.~\eqref{eq:complete_objective}. Controlled events, paired LDR observations,
+and ground-truth geometry are used only for training. Inference evaluates
+Eq.~\eqref{eq:unified_pipeline} from a single LDR multi-view sequence and its
+corresponding event streams.
