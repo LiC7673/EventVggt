@@ -60,6 +60,9 @@ def build_model(cfg, args, device):
 
 def configure_phase(model, phase, train_heads_a=False):
     derivative.configure_phase(model, phase, train_heads_a)
+    # Scheme A obtains scale analytically from GT coarse depth. The learned
+    # dataset scalar must not compete with or duplicate that scene scale.
+    model.depth_log_scale.requires_grad_(False)
     model.pixel_depth_refiner.requires_grad_(True)
     if not any(parameter.requires_grad for parameter in model.pixel_depth_refiner.parameters()):
         raise RuntimeError("pixel_depth_refiner is frozen")
@@ -107,11 +110,21 @@ class FinalRefinerObjective:
         ratio = torch.stack([item["depth_delta_ratio"] for item in output.ress], 1).float()
         recency = torch.stack([item["event_detail_recency"] for item in output.ress], 1).float()
         coupling = output.ress[0]["pixel_refiner_coupling"].float()
+        scene_scale = output.ress[0]["gt_scene_scale"].float()
+        coarse = torch.stack([item["depth_coarse"][..., 0] for item in output.ress], 1).float()
+        hdr_base = torch.stack([item["depth_hdr_base"][..., 0] for item in output.ress], 1).float()
+        gt = torch.stack([view["depthmap"] for view in views], 1).to(coarse).float()
+        valid = result.aux["valid_live"].bool()
+        denominator = valid.float().sum().clamp_min(1.0)
         result.details["pixel_refiner_update_abs"] = update.abs().mean()
         result.details["pixel_refiner_ratio_abs"] = ratio.abs().mean()
         result.details["pixel_refiner_ratio_p95"] = torch.quantile(ratio.detach().abs().flatten(), .95)
         result.details["event_recency_mean"] = recency.mean()
         result.details["pixel_refiner_coupling"] = coupling
+        result.details["gt_scene_scale_mean"] = scene_scale.mean()
+        result.details["gt_scene_scale_std"] = scene_scale.std(unbiased=False)
+        result.details["coarse_aligned_mae"] = ((coarse - gt).abs() * valid).sum() / denominator
+        result.details["hdr_base_aligned_mae"] = ((hdr_base - gt).abs() * valid).sum() / denominator
         result.details["loss"] = result.loss
         return result
 

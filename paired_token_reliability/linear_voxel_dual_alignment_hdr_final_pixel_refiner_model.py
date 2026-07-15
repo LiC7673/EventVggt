@@ -46,7 +46,7 @@ class EventGeometryPixelRefiner(nn.Module):
 
 
 class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
-    checkpoint_schema = "dual_hdr_split_signed_pixel_hf_event_geometry_refiner_final_v1"
+    checkpoint_schema = "dual_hdr_pixel_refiner_gt_scene_scale_aligned_final_v2"
 
     def __init__(self, *args, pixel_hidden=32, pixel_refiner_hidden=64,
                  pixel_refine_log_limit=.20, **kwargs):
@@ -85,8 +85,37 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         if feature is None:
             raise RuntimeError("HDR event path did not expose its full-resolution feature")
 
-        base = torch.stack([item["depth_hdr_base"][..., 0] for item in output.ress], 1)
-        coarse = torch.stack([item["depth_coarse"][..., 0] for item in output.ress], 1)
+        current_scale = self.metric_depth_scale
+        raw_coarse = torch.stack(
+            [item["depth_coarse_raw"][..., 0] for item in output.ress], 1
+        ).float()
+        gt_fields = [view.get("depthmap") for view in views]
+        if not all(torch.is_tensor(value) for value in gt_fields):
+            raise RuntimeError(
+                "GT scene-scale protocol requires depthmap for every view at train/val/test time"
+            )
+        gt_depth = torch.stack(gt_fields, dim=1).to(raw_coarse).float()
+        valid_scale = (
+            torch.isfinite(raw_coarse) & torch.isfinite(gt_depth)
+            & (raw_coarse > 1.0e-6) & (gt_depth > 1.0e-6)
+        )
+        weight = valid_scale.float()
+        reduce_dims = tuple(range(1, raw_coarse.ndim))
+        numerator = (weight * raw_coarse * gt_depth).sum(reduce_dims)
+        denominator = (weight * raw_coarse.square()).sum(reduce_dims)
+        scene_scale = (numerator / denominator.clamp_min(1.0e-6)).detach()
+        valid_count = weight.sum(reduce_dims)
+        if bool((valid_count <= 0).any()):
+            raise RuntimeError("GT scene-scale protocol found a sample with no valid depth pixels")
+        scale_view = scene_scale.view(-1, *([1] * (raw_coarse.ndim - 1)))
+        coarse = raw_coarse * scale_view
+
+        # The parent already applied its learned dataset scale. Remove it and
+        # apply the one GT-derived scene scale shared by coarse/base/final.
+        parent_base = torch.stack(
+            [item["depth_hdr_base"][..., 0] for item in output.ress], 1
+        ).float()
+        base = parent_base / current_scale.clamp_min(1.0e-6) * scale_view
         contribution = torch.stack([item["event_contribution"] for item in output.ress], 1)
         representation = torch.stack([item["signed_event"] for item in output.ress], 1)
         derivative = torch.stack(
@@ -106,7 +135,16 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         base_normal = depth_to_normals(base.float(), intrinsics)
         b, v, h, w = base.shape
         bv = b * v
-        log_base = torch.log(base.clamp_min(1.0e-6)).reshape(bv, 1, h, w)
+        log_base_scene = torch.log(base.clamp_min(1.0e-6))
+        valid_base = base > 1.0e-6
+        center_weight = valid_base.float()
+        center = (
+            (log_base_scene * center_weight).sum((1, 2, 3))
+            / center_weight.sum((1, 2, 3)).clamp_min(1.0)
+        ).detach().view(b, 1, 1, 1)
+        relative_log_base = log_base_scene - center
+        log_base = log_base_scene.reshape(bv, 1, h, w)
+        relative_log_ch = relative_log_base.reshape(bv, 1, h, w)
         normal_ch = base_normal.movedim(-1, 2).reshape(bv, 3, h, w)
         event_ch = feature.reshape(bv, feature.shape[2], h, w).float()
         derivative_ch = derivative.reshape(b, v, h, w, 6).movedim(-1, 2).reshape(bv, 6, h, w)
@@ -126,12 +164,12 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
             raw = torch.zeros_like(log_base) + zero
             bounded = torch.zeros_like(log_base) + zero
         else:
-            actual = torch.cat((event_ch, derivative_ch, log_base, normal_ch, c_ch), 1)
+            actual = torch.cat((event_ch, derivative_ch, relative_log_ch, normal_ch, c_ch), 1)
             # Same coarse geometry, but no event evidence. Subtraction makes
             # the update zero for absent events without a hard output mask.
             baseline = torch.cat((
                 torch.zeros_like(event_ch), torch.zeros_like(derivative_ch),
-                log_base, normal_ch, torch.zeros_like(c_ch),
+                relative_log_ch, normal_ch, torch.zeros_like(c_ch),
             ), 1)
             raw = self.pixel_depth_refiner(actual) - self.pixel_depth_refiner(baseline)
             limit = max(self.pixel_refine_log_limit, 1.0e-6)
@@ -151,10 +189,25 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         regularizer = ratio.abs().mean() + .25 * tv
 
         for index, item in enumerate(output.ress):
+            point_scale = (
+                scene_scale / current_scale.detach().clamp_min(1.0e-6)
+            ).view(b, 1, 1, 1)
+            coarse_points = item["pts3d_coarse"] * point_scale
+            hdr_points = item["pts3d_hdr_base"] * point_scale
+            item["pts3d_coarse"] = coarse_points
+            item["pts3d_hdr_base"] = hdr_points
+            item["pts3d_in_other_view"] = hdr_points
+            item["point_token_map_update"] = hdr_points - coarse_points
+            item["point_total_update"] = hdr_points - coarse_points
             item["event_normal_derivative"] = derivative[:, index]
             item["event_normal_derivative_full"] = derivative[:, index]
             item["event_normal_support"] = recent_support[:, index]
             item["event_detail_recency"] = recency[:, index]
+            item["depth_coarse"] = coarse[:, index].unsqueeze(-1)
+            item["depth_hdr_base"] = base[:, index].unsqueeze(-1)
+            item["gt_scene_scale"] = scene_scale
+            item["metric_depth_scale"] = scene_scale
+            item["learned_dataset_scale_diagnostic"] = current_scale
             item["depth"] = final[:, index].unsqueeze(-1)
             item["normal"] = final_normal[:, index]
             item["depth_geometry_update"] = pixel_update[:, index]
