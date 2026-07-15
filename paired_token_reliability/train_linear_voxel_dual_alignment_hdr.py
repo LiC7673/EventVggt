@@ -202,7 +202,6 @@ def build_model(cfg, args, device):
         hdr_warmup_steps=int(getattr(m, "hdr_warmup_steps", 1000)),
         normal_refine_iterations=int(getattr(m, "normal_refine_iterations", 3)),
         normal_refine_step_limit=float(getattr(m, "normal_refine_step_limit", .05)),
-        point_update_scale=float(getattr(m, "point_update_scale", .10)),
         event_hidden_dim=32, event_pyramid_channels=32, adapter_hidden_channels=64,
         contribution_channels=32, contribution_initial_value=.70,
     )
@@ -237,16 +236,14 @@ def configure_phase(model, phase, _train_heads_a=False):
     model.ldr_event_hdr_aligner.requires_grad_(True)
     model.token_fusion_gate.requires_grad_(True)
     model.normal_fusion_gate.requires_grad_(True)
-    model.point_fusion_gate.requires_grad_(True)
     model.normal_depth_refiner.requires_grad_(True)
-    model.point_refiner.requires_grad_(True)
     model.train()
     model.aggregator.eval(); model.camera_head.eval()
     model.depth_head.eval(); model.point_head.eval()
     print(
         "[dual alignment trainable] event_encoder+event_normal+event_aligner+ContributionNet+"
-        "event_token_projection+hdr_aligner+token_gate+normal_gate+point_gate+"
-        "normal_depth_refiner+point_refiner+depth_scale",
+        "event_token_projection+hdr_aligner+token_gate+normal_gate+"
+        "normal_depth_refiner+depth_scale; point=frozen HDR-token head only",
         flush=True,
     )
 
@@ -260,9 +257,7 @@ def optimizer_for(model, _phase, args):
             model.contribution_net,
             model.event_token_projection, model.ldr_event_hdr_aligner,
             model.token_fusion_gate, model.normal_fusion_gate,
-            model.point_fusion_gate,
             model.normal_depth_refiner,
-            model.point_refiner,
         ) for p in module.parameters()
     }
     regular, encoder, fast, scale = [], [], [], []

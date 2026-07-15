@@ -39,12 +39,13 @@ class LdrEventToHdrTokenAligner(nn.Module):
 
 
 class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel):
-    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_decoupled_gates_v10"
+    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_no_point_refiner_v10"
 
     def __init__(self, *args, pixel_hidden=32, hdr_token_bottleneck=256,
                  alignment_confidence_tau=.10, hdr_warmup_steps=1000,
                  normal_refine_iterations=3, normal_refine_step_limit=.05,
-                 point_update_scale=.10,
+                 require_geo_teacher=True, require_hdr_teacher=True,
+                 point_update_scale=None,  # legacy config compatibility; unused
                  **kwargs):
         super().__init__(*args, pixel_hidden=pixel_hidden, **kwargs)
         hidden = int(pixel_hidden)
@@ -68,10 +69,6 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
             nn.Conv2d(hidden + 6, hidden, 3, padding=1), nn.GELU(),
             nn.Conv2d(hidden, 1, 1), nn.Sigmoid(),
         )
-        self.point_fusion_gate = nn.Sequential(
-            nn.Conv2d(hidden + 6, hidden, 3, padding=1), nn.GELU(),
-            nn.Conv2d(hidden, 1, 1), nn.Sigmoid(),
-        )
         # aligned event feature + current/base log depth + current/target
         # normal + learned event confidence.  This head predicts an explicit
         # dense log-depth residual after token alignment.
@@ -82,32 +79,20 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         )
         nn.init.zeros_(self.normal_depth_refiner[-1].weight)
         nn.init.zeros_(self.normal_depth_refiner[-1].bias)
-        # event feature + coarse point direction/log-radius + token-induced
-        # point displacement + final normal + C.
-        # This operates after the frozen point decoder and predicts a dense
-        # explicit point-map residual.
-        self.point_refiner = nn.Sequential(
-            nn.Conv2d(hidden + 11, hidden, 3, padding=1), nn.GELU(),
-            nn.Conv2d(hidden, hidden, 3, padding=1), nn.GELU(),
-            nn.Conv2d(hidden, 3, 1),
-        )
-        nn.init.zeros_(self.point_refiner[-1].weight)
-        nn.init.zeros_(self.point_refiner[-1].bias)
         # Start new gates conservatively without forcing them to share C's
         # source-attribution scale.
         nn.init.zeros_(self.token_fusion_gate[-2].weight)
         nn.init.constant_(self.token_fusion_gate[-2].bias, -2.0)
         nn.init.zeros_(self.normal_fusion_gate[-2].weight)
         nn.init.constant_(self.normal_fusion_gate[-2].bias, -2.0)
-        nn.init.zeros_(self.point_fusion_gate[-2].weight)
-        nn.init.constant_(self.point_fusion_gate[-2].bias, -2.0)
         nn.init.xavier_uniform_(self.event_token_projection.weight)
         nn.init.zeros_(self.event_token_projection.bias)
         self.alignment_confidence_tau = max(float(alignment_confidence_tau), 1e-4)
         self.hdr_warmup_steps = max(0, int(hdr_warmup_steps))
         self.normal_refine_iterations = max(1, int(normal_refine_iterations))
         self.normal_refine_step_limit = max(float(normal_refine_step_limit), 1e-6)
-        self.point_update_scale = max(float(point_update_scale), 1e-6)
+        self.require_geo_teacher = bool(require_geo_teacher)
+        self.require_hdr_teacher = bool(require_hdr_teacher)
         self._dual_alignment_step = 0
 
     def _decode_event_normal(self, feature):
@@ -190,7 +175,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         )
         geo_fields = [view.get("geometry_event_voxel") for view in views]
         have_geo = all(torch.is_tensor(value) for value in geo_fields)
-        if self.training and not have_geo:
+        if self.training and self.require_geo_teacher and not have_geo:
             raise RuntimeError("dual alignment training requires geometry_event_voxel")
         if have_geo:
             geo_voxel = torch.stack(geo_fields, dim=1).to(full_voxel)
@@ -278,7 +263,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         # placed in the same key without changing this model.
         hdr_fields = [view.get("hdr_img") for view in views]
         have_hdr = all(torch.is_tensor(value) for value in hdr_fields)
-        if self.training and not have_hdr:
+        if self.training and self.require_hdr_teacher and not have_hdr:
             raise RuntimeError("dual alignment training requires hdr_img teacher")
         if have_hdr:
             hdr_images = torch.stack(hdr_fields, dim=1).to(images)
@@ -411,54 +396,11 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
             )
         final_normal = depth_to_normals(final.float(), intrinsics)
 
-        # Decoder-after-token alignment gives the HDR point base.  A separate
-        # dense point refiner then learns the residual under direct point-map
-        # supervision.  It receives confidence as a feature, never as a hard
-        # output mask, so corrections are not restricted to event pixels.
-        coarse_point_radius = coarse_points.float().norm(
-            dim=-1, keepdim=True
-        ).clamp_min(1e-4)
-        coarse_point_direction = coarse_points.float() / coarse_point_radius
+        # Point geometry is decoded only once from the HDR-like tokens.  V10
+        # no longer applies a separate pixel-space point gate/refiner.
         point_token_update = hdr_points - coarse_points
-        point_token_delta_ratio = point_token_update.float() / coarse_point_radius
-        point_radius = hdr_points.float().norm(dim=-1, keepdim=True).clamp_min(1e-4)
-        point_gate_input = torch.cat((
-            selected_feature.float(),
-            final_normal.movedim(-1, 2),
-            point_token_delta_ratio.movedim(-1, 2),
-        ), dim=2).reshape(b * v, -1, image_h, image_w)
-        learned_point_gate = self.point_fusion_gate(point_gate_input).reshape(
-            b, v, 1, image_h, image_w
-        )
-        point_input = torch.cat((
-            selected_feature.float(),
-            coarse_point_direction.movedim(-1, 2),
-            torch.log(coarse_point_radius).movedim(-1, 2),
-            point_token_delta_ratio.movedim(-1, 2),
-            final_normal.movedim(-1, 2),
-            learned_point_gate,
-        ), dim=2)
-        raw_point_ratio = self.point_refiner(
-            point_input.reshape(b * v, point_input.shape[2], image_h, image_w)
-        ).reshape(b, v, 3, image_h, image_w).movedim(2, -1)
-        bounded_point_ratio = self.point_update_scale * torch.tanh(
-            raw_point_ratio / self.point_update_scale
-        )
-        bounded_point_ratio = bounded_point_ratio * learned_point_gate.movedim(2, -1)
-        predicted_point_update = point_radius.detach() * bounded_point_ratio
-        if warmup:
-            point_zero = coarse_points.new_zeros(())
-            for parameter in self.point_refiner.parameters():
-                point_zero = point_zero + parameter.sum() * 0.0
-            for parameter in self.point_fusion_gate.parameters():
-                point_zero = point_zero + parameter.sum() * 0.0
-            points = coarse_points + point_zero
-            point_update = torch.zeros_like(coarse_points) + point_zero
-            applied_point_ratio = torch.zeros_like(raw_point_ratio) + point_zero
-        else:
-            points = hdr_points + predicted_point_update
-            point_update = predicted_point_update
-            applied_point_ratio = bounded_point_ratio
+        points = hdr_points
+        point_update = torch.zeros_like(hdr_points)
         point_total_update = points - coarse_points
 
         token_update = hdr_map - coarse
@@ -467,10 +409,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
             (geometry_ratio[..., :, 1:] - geometry_ratio[..., :, :-1]).abs().mean()
             + (geometry_ratio[..., 1:, :] - geometry_ratio[..., :-1, :]).abs().mean()
         )
-        point_dx = applied_point_ratio[..., :, 1:, :] - applied_point_ratio[..., :, :-1, :]
-        point_dy = applied_point_ratio[..., 1:, :, :] - applied_point_ratio[..., :-1, :, :]
-        point_tv = .5 * (point_dx.abs().mean() + point_dy.abs().mean())
-        geometry_regularizer = tv + point_tv
+        geometry_regularizer = tv
         results = []
         for index in range(v):
             results.append(dict(
@@ -479,11 +418,10 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 pts3d_coarse_conf=coarse_point_conf[:, index],
                 pts3d_hdr_base=hdr_points[:, index],
                 point_token_map_update=point_token_update[:, index],
-                point_token_delta_ratio=point_token_delta_ratio[:, index],
                 point_pixel_update=point_update[:, index],
                 point_total_update=point_total_update[:, index],
-                point_delta_ratio=applied_point_ratio[:, index],
-                point_update_tv=point_tv,
+                point_delta_ratio=torch.zeros_like(point_update[:, index]),
+                point_update_tv=tv.new_zeros(()),
                 depth=final[:, index].unsqueeze(-1), normal=final_normal[:, index],
                 depth_conf=hdr_conf[:, index], depth_coarse=coarse[:, index].unsqueeze(-1),
                 depth_coarse_raw=raw_depth[:, index], depth_coarse_conf=raw_conf[:, index],
@@ -537,7 +475,6 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 learned_normal_confidence=reliability[:, index],
                 normal_fusion_gate=learned_normal_gate[:, index],
                 effective_normal_gate=effective_normal_gate[:, index],
-                point_fusion_gate=learned_point_gate[:, index, 0],
                 normal_refine_target=normal_refine_target[:, index],
                 normal_refine_active=final.new_tensor(float(not warmup)),
                 **({"normal_refine_iteration_updates": iteration_updates[:, index]}

@@ -38,6 +38,5 @@ bash paired_token_reliability/run_linear_voxel_multiscale_12train_4test.sh \
   "model.normal_refine_iterations=1" \
   "model.normal_refine_step_limit=0.05" \
   "model.depth_update_scale=0.50" \
-  "model.point_update_scale=0.10" \
   "model.support_dilation_kernel=5" \
   "${RESUME_ARGS[@]}" "$@"
