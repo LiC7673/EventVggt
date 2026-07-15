@@ -74,12 +74,20 @@ def balanced_hf_loss(pred, target, valid, support, edge_threshold=.01):
     edge_loss = masked_mean(per_component, edge)
     flat_loss = masked_mean(per_component, flat)
 
+    pred_mag = pred.square().sum((-1, -2)).sqrt()
     pred_vec = pred.flatten(-2)
     target_vec = target.flatten(-2)
-    direction = 1.0 - F.cosine_similarity(pred_vec, target_vec, dim=-1, eps=1e-6)
-    direction_loss = (direction * edge.float()).sum() / edge.float().sum().clamp_min(1)
+    # Direction is undefined at zero magnitude. Do not expose a newly
+    # initialized derivative head to the 1/eps gradient of cosine similarity.
+    # Magnitude/vector losses first open the head; direction activates only
+    # where a non-trivial prediction already exists.
+    direction_mask = edge & (pred_mag.detach() > 1.0e-3)
+    direction = 1.0 - F.cosine_similarity(pred_vec, target_vec, dim=-1, eps=1.0e-3)
+    direction_loss = (
+        (direction * direction_mask.float()).sum()
+        / direction_mask.float().sum().clamp_min(1)
+    )
 
-    pred_mag = pred.square().sum((-1, -2)).sqrt()
     magnitude_loss = ((pred_mag - target_mag).abs() * edge.float()).sum() / edge.float().sum().clamp_min(1)
     # Edge and flat terms are normalized independently. Thin edges therefore
     # cannot disappear merely because flat pixels are more numerous.
@@ -100,6 +108,10 @@ class PixelHFObjective(derivative.DerivativeObjective):
         # Run only the common geometry objective here; replace V10 derivative
         # averaging with edge-balanced pixel and two-scale supervision.
         result = self.base(output, views, *args, **kwargs)
+        if not bool(torch.isfinite(result.loss.detach())):
+            raise FloatingPointError(
+                "non-finite base geometry loss before Pixel-HF terms; inspect HDR/depth/point outputs"
+            )
         full = torch.stack([x["event_normal_derivative_full"] for x in output.ress], 1).float()
         geo = torch.stack([x["event_normal_derivative_geo"] for x in output.ress], 1).float()
         gt_n = F.normalize(result.aux["normal_gt_live"].float().detach(), dim=-1, eps=1e-6)
@@ -163,6 +175,18 @@ class PixelHFObjective(derivative.DerivativeObjective):
         result.details["legacy_budget_disabled"] = result.details["budget"]
         result.details["budget"] = mass_loss
         result.aux["event_normal_local_support"] = local
+        if not bool(torch.isfinite(result.loss.detach())):
+            values = {
+                "full_hf": float(full_loss.detach()),
+                "geo_hf": float(geo_loss.detach()),
+                "scale2": float(scale2_loss.detach()),
+                "depth_hf": float(depth_loss.detach()),
+                "event_align": float(event_align.detach()),
+                "hdr_align": float(hdr_align.detach()),
+                "confidence": float(confidence.detach()),
+                "mass": float(mass_loss.detach()),
+            }
+            raise FloatingPointError(f"non-finite Pixel-HF objective: {values}")
         if (
             torch.is_grad_enabled()
             and train_step % 100 == 0

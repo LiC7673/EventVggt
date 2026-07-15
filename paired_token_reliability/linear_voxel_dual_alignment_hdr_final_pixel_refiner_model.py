@@ -114,20 +114,28 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         warmup = bool(float(output.ress[0]["contribution_warmup_active"].detach()))
         c_live = contribution.detach() if warmup else contribution
         c_ch = c_live.reshape(bv, 1, h, w)
-        actual = torch.cat((event_ch, derivative_ch, log_base, normal_ch, c_ch), 1)
-        # Same coarse geometry, but no event evidence. Subtraction makes the
-        # residual identically zero for an absent event without hard support
-        # masking the spatial output.
-        baseline = torch.cat((
-            torch.zeros_like(event_ch), torch.zeros_like(derivative_ch),
-            log_base, normal_ch, torch.zeros_like(c_ch),
-        ), 1)
-        raw = self.pixel_depth_refiner(actual) - self.pixel_depth_refiner(baseline)
-        limit = max(self.pixel_refine_log_limit, 1.0e-6)
-        bounded = limit * torch.tanh(raw / limit)
-
         step = int(float(output.ress[0]["pixel_hf_train_step"].detach()))
         coupling = max(0.0, min(1.0, (step - 1000) / 1000.0))
+        if coupling <= 0.0:
+            # Do not evaluate an inactive random refiner. Keep a zero-gradient
+            # dependency so DDP still regards every parameter as used.
+            zero = sum(
+                (parameter.sum() * 0.0 for parameter in self.pixel_depth_refiner.parameters()),
+                log_base.new_zeros(()),
+            )
+            raw = torch.zeros_like(log_base) + zero
+            bounded = torch.zeros_like(log_base) + zero
+        else:
+            actual = torch.cat((event_ch, derivative_ch, log_base, normal_ch, c_ch), 1)
+            # Same coarse geometry, but no event evidence. Subtraction makes
+            # the update zero for absent events without a hard output mask.
+            baseline = torch.cat((
+                torch.zeros_like(event_ch), torch.zeros_like(derivative_ch),
+                log_base, normal_ch, torch.zeros_like(c_ch),
+            ), 1)
+            raw = self.pixel_depth_refiner(actual) - self.pixel_depth_refiner(baseline)
+            limit = max(self.pixel_refine_log_limit, 1.0e-6)
+            bounded = limit * torch.tanh(raw / limit)
         delta_log = coupling * bounded
         refined = torch.exp(log_base + delta_log)[:, 0].reshape(b, v, h, w)
         # Do not turn invalid/background zero depth into a positive epsilon map.
