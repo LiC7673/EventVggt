@@ -122,12 +122,14 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
             [item["event_normal_derivative_full"] for item in output.ress], 1
         )
         recency = self._recency_gate(representation)
-        recent_support = recency > .10
+        # Recency determines whether a derivative target is trustworthy; it
+        # must not scale the predicted derivative magnitude. Multiplying a
+        # bounded prediction by recency made many GT edges unreachable.
+        recent_support = recency > .20
 
         # Suppress old-only trails only on the pixel-detail path. The complete
         # history remains untouched in full->geo and HDR-token alignment.
         feature = feature * recency.unsqueeze(2)
-        derivative = derivative * recency.unsqueeze(-1).unsqueeze(-1)
 
         intrinsics = torch.stack(
             [view["camera_intrinsics"].to(base) for view in views], dim=1
@@ -201,6 +203,7 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
             item["point_total_update"] = hdr_points - coarse_points
             item["event_normal_derivative"] = derivative[:, index]
             item["event_normal_derivative_full"] = derivative[:, index]
+            item["event_normal_derivative_raw"] = derivative[:, index]
             item["event_normal_support"] = recent_support[:, index]
             item["event_detail_recency"] = recency[:, index]
             item["depth_coarse"] = coarse[:, index].unsqueeze(-1)
