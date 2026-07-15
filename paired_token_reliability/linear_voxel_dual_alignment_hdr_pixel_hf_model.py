@@ -27,7 +27,11 @@ class PixelHighFrequencyDerivativeV10Model(EventNormalDerivativeV10Model):
             nn.GELU(),
             nn.Conv2d(hidden, 6, 1),
         )
-        nn.init.zeros_(self.event_normal_decoder[-1].weight)
+        # A strictly zero final layer blocks gradients to every preceding
+        # pixel convolution on the first update and makes the HF head open too
+        # slowly.  A tiny initialization keeps the initial prediction neutral
+        # while allowing end-to-end gradients from step one.
+        nn.init.normal_(self.event_normal_decoder[-1].weight, mean=0.0, std=1.0e-3)
         nn.init.zeros_(self.event_normal_decoder[-1].bias)
 
     def _decode_event_normal(self, feature):
@@ -41,3 +45,11 @@ class PixelHighFrequencyDerivativeV10Model(EventNormalDerivativeV10Model):
         proxy = derivative.new_zeros(b, v, height, width, 3)
         proxy[..., 2] = 1.0
         return proxy
+
+    def forward(self, views, *args, **kwargs):
+        output = super().forward(views, *args, **kwargs)
+        for item in output.ress:
+            item["pixel_hf_train_step"] = item["depth"].new_tensor(
+                float(self._dual_alignment_step)
+            )
+        return output

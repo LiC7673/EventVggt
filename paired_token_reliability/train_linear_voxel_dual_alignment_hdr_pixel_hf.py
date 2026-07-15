@@ -138,9 +138,15 @@ class PixelHFObjective(derivative.DerivativeObjective):
         ))
         source_weight = 2.0 if contribution_warmup else 1.0
 
+        # Stage 1 (0-1k): learn event derivatives only. Stage 2 (1k-2k):
+        # progressively transfer them to depth. Stage 3: full coupling.
+        train_step = int(float(output.ress[0]["pixel_hf_train_step"].detach()))
+        depth_coupling = max(0.0, min(1.0, (train_step - 1000) / 1000.0))
+        effective_depth_weight = self.args.depth_event_normal_weight * depth_coupling
+
         result.loss = result.loss + event_align + hdr_align + source_weight * confidence + 2.0 * mass_loss + self.args.event_normal_weight * (
             full_loss + geo_loss + .50 * scale2_loss + .10 * distill
-        ) + self.args.depth_event_normal_weight * depth_loss
+        ) + effective_depth_weight * depth_loss
         result.details.update({
             "event_normal": full_loss, "depth_event_normal": depth_loss,
             "geo_event_normal_derivative": geo_loss, "event_derivative_multiscale": scale2_loss,
@@ -149,6 +155,8 @@ class PixelHFObjective(derivative.DerivativeObjective):
             "event_mass_attribution": mass_loss,
             "predicted_event_mass_ratio": predicted_mass_ratio.mean(),
             "target_event_mass_ratio": target_mass_ratio.mean(),
+            "depth_event_coupling": result.loss.new_tensor(depth_coupling),
+            "effective_depth_event_weight": result.loss.new_tensor(effective_depth_weight),
             **stats, "loss": result.loss,
         })
         result.details["legacy_budget_disabled"] = result.details["budget"]
