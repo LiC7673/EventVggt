@@ -66,7 +66,10 @@ def masked_mean(value, mask):
 def balanced_hf_loss(pred, target, valid, support, edge_threshold=.01):
     # Only one-pixel dilation: do not turn sparse edges into broad flat regions.
     local = valid & support.bool()
-    target_mag = target.square().sum((-1, -2)).sqrt()
+    # sqrt(sum(x^2)) has an undefined 0/0 backward exactly at x=0.  Both the
+    # new derivative head and flat targets contain many exact zeros, so use a
+    # differentiable epsilon-norm instead.
+    target_mag = (target.square().sum((-1, -2)) + 1.0e-12).sqrt()
     edge = local & (target_mag > edge_threshold)
     flat = local & ~edge
 
@@ -74,7 +77,7 @@ def balanced_hf_loss(pred, target, valid, support, edge_threshold=.01):
     edge_loss = masked_mean(per_component, edge)
     flat_loss = masked_mean(per_component, flat)
 
-    pred_mag = pred.square().sum((-1, -2)).sqrt()
+    pred_mag = (pred.square().sum((-1, -2)) + 1.0e-12).sqrt()
     pred_vec = pred.flatten(-2)
     target_vec = target.flatten(-2)
     # Direction is undefined at zero magnitude. Do not expose a newly
@@ -109,8 +112,13 @@ class PixelHFObjective(derivative.DerivativeObjective):
         # averaging with edge-balanced pixel and two-scale supervision.
         result = self.base(output, views, *args, **kwargs)
         if not bool(torch.isfinite(result.loss.detach())):
+            bad = {
+                key: float(value.detach())
+                for key, value in result.details.items()
+                if torch.is_tensor(value) and value.numel() == 1
+            }
             raise FloatingPointError(
-                "non-finite base geometry loss before Pixel-HF terms; inspect HDR/depth/point outputs"
+                f"non-finite base geometry loss before Pixel-HF terms: {bad}"
             )
         full = torch.stack([x["event_normal_derivative_full"] for x in output.ress], 1).float()
         geo = torch.stack([x["event_normal_derivative_geo"] for x in output.ress], 1).float()
