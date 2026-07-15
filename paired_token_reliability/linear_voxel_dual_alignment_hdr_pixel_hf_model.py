@@ -10,7 +10,7 @@ from paired_token_reliability.linear_voxel_dual_alignment_hdr_derivative_model i
 
 
 class PixelHighFrequencyDerivativeV10Model(EventNormalDerivativeV10Model):
-    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_pixel_hf_derivative_v11"
+    checkpoint_schema = "split_signed_linear_voxel_dual_alignment_hdr_pixel_hf_derivative_v11"
 
     def __init__(self, *args, pixel_hidden=32, **kwargs):
         super().__init__(*args, pixel_hidden=pixel_hidden, **kwargs)
