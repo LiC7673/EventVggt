@@ -78,6 +78,10 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         soft = torch.sigmoid(8.0 * (ratio - .30))
         return torch.where(total > 0, soft, torch.zeros_like(soft))
 
+    def _refinement_contribution(self, output, fusion_contribution):
+        """Override point for a confidence map dedicated to pixel refinement."""
+        return fusion_contribution
+
     def forward(self, views, *args, **kwargs):
         self._aligned_event_feature_for_refiner = None
         output = super().forward(views, *args, **kwargs)
@@ -117,6 +121,7 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         ).float()
         base = parent_base / current_scale.clamp_min(1.0e-6) * scale_view
         contribution = torch.stack([item["event_contribution"] for item in output.ress], 1)
+        refinement_contribution = self._refinement_contribution(output, contribution)
         representation = torch.stack([item["signed_event"] for item in output.ress], 1)
         derivative = torch.stack(
             [item["event_normal_derivative_full"] for item in output.ress], 1
@@ -152,7 +157,7 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         derivative_ch = derivative.reshape(b, v, h, w, 6).movedim(-1, 2).reshape(bv, 6, h, w)
 
         warmup = bool(float(output.ress[0]["contribution_warmup_active"].detach()))
-        c_live = contribution.detach() if warmup else contribution
+        c_live = refinement_contribution.detach() if warmup else refinement_contribution
         c_ch = c_live.reshape(bv, 1, h, w)
         step = int(float(output.ress[0]["pixel_hf_train_step"].detach()))
         coupling = max(0.0, min(1.0, (step - 1000) / 1000.0))
