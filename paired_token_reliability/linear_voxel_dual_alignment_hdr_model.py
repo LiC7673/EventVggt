@@ -91,6 +91,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         self.require_hdr_teacher = bool(require_hdr_teacher)
         self._dual_alignment_step = 0
         self.decode_raw_full_normal = False
+        self.disable_normal_depth_refiner = False
 
     def _decode_event_normal(self, feature):
         b, v, channels, height, width = feature.shape
@@ -312,7 +313,12 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         if self.training:
             self._dual_alignment_step += 1
         warmup = self.training and self._dual_alignment_step <= self.hdr_warmup_steps
-        if warmup:
+        if self.disable_normal_depth_refiner:
+            final = hdr_map
+            geometry_ratio = torch.zeros_like(hdr_map)
+            geometry_update = torch.zeros_like(hdr_map)
+            iteration_updates = None
+        elif warmup:
             # Keep every student module in DDP while geometry is scale-only
             # and both alignment objectives learn a stable representation.
             zero = sum((value.sum() * 0.0 for value in hdr_residuals), coarse.new_zeros(()))
