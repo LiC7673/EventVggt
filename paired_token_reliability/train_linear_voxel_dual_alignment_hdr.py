@@ -56,6 +56,8 @@ def prepare_dual_alignment_pair(batch, device, args, _phase):
             )
         student_view["hdr_img"] = teacher_view["img"]
         student_view["hdr_ldr_event_id"] = "ev_0"
+        # This route consumes E_full; E_geo is a training-only reference.
+        student_view["event_source_label"] = "E_full"
     return target, reference, event, bridge
 
 
@@ -119,13 +121,15 @@ class DualAlignmentObjective:
             ).abs().mean(-1)
         normal_hf = _weighted_mean(.5 * hf_error, full_weight)
         event_align = _weighted_mean(feature_error, pair_weight)
-        # Empty-event valid pixels explicitly teach C=0.  Restricting this
-        # loss to event support would leave the sigmoid at 0.5 outside events
-        # and contaminate the normal residual target.
+        # Event pixels carry the main attribution supervision.  A weak global
+        # zero-event term suppresses unconstrained bright background without
+        # allowing the numerous empty pixels to dominate C.
+        event_support = full_support | geo_support
+        confidence_weight = event_support.float() + .05 * (~event_support).float()
         confidence = _weighted_mean(
             F.smooth_l1_loss(
                 reliability, reliability_target, beta=.05, reduction="none"
-            ), valid.float(),
+            ), confidence_weight,
         )
         hdr_align = hdr_error.mean()
         result.loss = result.loss + (
@@ -139,6 +143,12 @@ class DualAlignmentObjective:
         result.details["event_normal_distill"] = normal_distill
         result.details["event_normal_hf"] = normal_hf
         result.details["hdr_token_alignment"] = hdr_align
+        # The generic criterion still computes its legacy rho=1 budget for
+        # diagnostics even though this route sets budget_weight=0.  Preserve
+        # that raw value under an explicit name and report the effective loss
+        # as zero so the console does not suggest it participates in training.
+        result.details["legacy_budget_disabled"] = result.details["budget"]
+        result.details["budget"] = result.details["budget"] * 0.0
         self.calls += int(torch.is_grad_enabled())
         if torch.is_grad_enabled() and self.calls % 100 == 0 and int(os.environ.get("RANK", "0")) == 0:
             warmup = int(float(output.ress[0]["hdr_warmup_active"].detach()))
@@ -282,7 +292,7 @@ def save_visual(output_root, phase, epoch, batch_index, views, reference_views,
     target_available = bool(float(
         item["alignment_reliability_target_available"].detach().cpu()
     ))
-    target_title = "C target from full->geo error" if target_available else "C target unavailable (inference)"
+    target_title = "C target: |E_geo| / |E_full|" if target_available else "C target unavailable (inference)"
     error_title = "|C pred - C target|" if target_available else "C target error unavailable"
     confidence_error = (predicted_c - target_c).abs() if target_available else torch.zeros_like(predicted_c)
     panels = (

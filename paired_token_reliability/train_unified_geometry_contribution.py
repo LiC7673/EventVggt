@@ -520,7 +520,12 @@ def save_visual(
         )
         for bin_index in diagnostic_bins
     )
-    event_source_label = "E_geo" if phase.startswith("adapter") else "E_full"
+    event_source_label = views[0].get(
+        "event_source_label",
+        "E_geo" if phase.startswith("adapter") else "E_full",
+    )
+    if isinstance(event_source_label, (list, tuple)):
+        event_source_label = event_source_label[0]
     panels = (
         (rgb, "RGB", None),
         (reference_rgb, "reference RGB", None),

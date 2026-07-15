@@ -4,19 +4,19 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 mkdir -p exp/launcher_logs
 
-GPUS=1 EXPERIMENT=attribution_residual_full_gpu1 \
+GPUS=1 EXPERIMENT=attribution_residual_event_mass_v3_full_gpu1 \
 ABLATE_ATTRIBUTION=false ABLATE_RESIDUAL=false RESUME="${RESUME:-auto}" \
 bash paired_token_reliability/run_linear_voxel_attribution_residual_single.sh \
   > exp/launcher_logs/attribution_residual_full_gpu1.log 2>&1 &
 PID_FULL=$!
 
-GPUS=2 EXPERIMENT=attribution_residual_no_attribution_gpu2 \
+GPUS=2 EXPERIMENT=attribution_residual_event_mass_v3_no_attribution_gpu2 \
 ABLATE_ATTRIBUTION=true ABLATE_RESIDUAL=false RESUME="${RESUME:-auto}" \
 bash paired_token_reliability/run_linear_voxel_attribution_residual_single.sh \
   > exp/launcher_logs/attribution_residual_no_attribution_gpu2.log 2>&1 &
 PID_NO_C=$!
 
-GPUS=6 EXPERIMENT=attribution_residual_no_missing_residual_gpu6 \
+GPUS=6 EXPERIMENT=attribution_residual_event_mass_v3_no_missing_residual_gpu6 \
 ABLATE_ATTRIBUTION=false ABLATE_RESIDUAL=true RESUME="${RESUME:-auto}" \
 bash paired_token_reliability/run_linear_voxel_attribution_residual_single.sh \
   > exp/launcher_logs/attribution_residual_no_missing_residual_gpu6.log 2>&1 &

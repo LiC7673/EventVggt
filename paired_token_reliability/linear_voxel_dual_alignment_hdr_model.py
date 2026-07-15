@@ -39,7 +39,7 @@ class LdrEventToHdrTokenAligner(nn.Module):
 
 
 class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel):
-    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_predicted_c_v7"
+    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_event_mass_c_v8"
 
     def __init__(self, *args, pixel_hidden=32, hdr_token_bottleneck=256,
                  alignment_confidence_tau=.10, hdr_warmup_steps=1000,
@@ -152,7 +152,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
             geo_voxel = torch.stack(geo_fields, dim=1).to(full_voxel)
             _, _, geo_feature, geo_support = self._encode_event(views, geo_voxel)
         else:
-            geo_feature, geo_support = None, full_support
+            geo_voxel, geo_feature, geo_support = None, None, full_support
 
         flat_full = full_feature.reshape(b * v, full_feature.shape[2], image_h, image_w)
         aligned_flat, correction_flat, _ = self.full_geo_aligner(flat_full)
@@ -184,9 +184,17 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
             event_feature_error = F.smooth_l1_loss(
                 aligned_feature, geo_feature.detach(), beta=.05, reduction="none"
             ).mean(dim=2)
-            reliability_target = torch.exp(
-                -event_feature_error.detach() / self.alignment_confidence_tau
-            ).clamp(0, 1) * (full_support | geo_support).float()
+            # E_geo supervises source attribution.  The old
+            # exp(-alignment_error/tau) target could underflow before the
+            # aligner had learned and made C=0 a trivial solution.  Summing
+            # absolute polarity/bin mass avoids positive/negative cancellation.
+            full_mass = full_voxel.detach().float().abs().sum(dim=2)
+            geo_mass = geo_voxel.detach().float().abs().sum(dim=2)
+            reliability_target = torch.where(
+                full_mass > 1.0e-6,
+                (geo_mass / full_mass.clamp_min(1.0e-6)).clamp(0.0, 1.0),
+                torch.zeros_like(full_mass),
+            )
             reliability_target_available = True
         else:
             event_feature_error = reliability.new_zeros(reliability.shape)

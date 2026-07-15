@@ -73,7 +73,7 @@ class MissingGeometryResidualAdapter(nn.Module):
 
 
 class AttributionResidualLinearVoxelModel(DualAlignmentHDRLinearVoxelModel):
-    checkpoint_schema = "linear_voxel_attribution_missing_geometry_residual_v2"
+    checkpoint_schema = "linear_voxel_attribution_missing_geometry_residual_v3"
 
     def __init__(self, *args, geometry_projection_dim=256,
                  saturation_threshold=.98, ablate_event_attribution=False,
