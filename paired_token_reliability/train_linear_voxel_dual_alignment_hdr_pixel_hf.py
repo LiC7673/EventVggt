@@ -1,6 +1,7 @@
 """Pixel-balanced, multi-scale event normal-derivative training for V11."""
 from __future__ import annotations
 
+import os
 import torch
 import torch.nn.functional as F
 import finetune_event as fe
@@ -162,6 +163,29 @@ class PixelHFObjective(derivative.DerivativeObjective):
         result.details["legacy_budget_disabled"] = result.details["budget"]
         result.details["budget"] = mass_loss
         result.aux["event_normal_local_support"] = local
+        if (
+            torch.is_grad_enabled()
+            and train_step % 100 == 0
+            and int(os.environ.get("RANK", "0")) == 0
+        ):
+            pair_weight = (valid & (full_support | geo_support)).float()
+            c_mean = (reliability * pair_weight).sum() / pair_weight.sum().clamp_min(1)
+            ct_mean = (reliability_target * pair_weight).sum() / pair_weight.sum().clamp_min(1)
+            print(
+                f"[pixel-hf@{train_step:05d}] "
+                f"HDRalign={float(hdr_align.detach()):.5f} "
+                f"Ealign={float(event_align.detach()):.5f} "
+                f"C={float(c_mean.detach()):.4f} "
+                f"Ct={float(ct_mean.detach()):.4f} "
+                f"Cmass={float(predicted_mass_ratio.mean().detach()):.4f} "
+                f"Ctmass={float(target_mass_ratio.mean().detach()):.4f} "
+                f"HFedge={float(stats['hf_edge_loss']):.5f} "
+                f"HFpred={float(stats['hf_pred_magnitude']):.5f} "
+                f"HFgt={float(stats['hf_target_magnitude']):.5f} "
+                f"DNcouple={depth_coupling:.3f} "
+                f"DNweight={effective_depth_weight:.3f}",
+                flush=True,
+            )
         return result
 
 

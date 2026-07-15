@@ -17,8 +17,9 @@ class _ZeroNormalGate(nn.Module):
 class EventNormalDerivativeV10Model(DualAlignmentHDRLinearVoxelModel):
     checkpoint_schema = "split_signed_linear_voxel_dual_alignment_hdr_event_normal_derivative_v11"
 
-    def __init__(self, *args, pixel_hidden=32, **kwargs):
+    def __init__(self, *args, pixel_hidden=32, event_count_cmax=3.0, **kwargs):
         super().__init__(*args, pixel_hidden=pixel_hidden, **kwargs)
+        self.event_count_cmax = max(float(event_count_cmax), 1.0)
         hidden = int(pixel_hidden)
         self.event_normal_decoder = nn.Sequential(
             nn.Conv2d(hidden, hidden, 3, padding=1), nn.GELU(),
@@ -44,7 +45,9 @@ class EventNormalDerivativeV10Model(DualAlignmentHDRLinearVoxelModel):
             raise ValueError(
                 f"expected {2 * bins} polarity voxel channels, got {split_event.shape[2]}"
             )
-        mass = torch.log1p(split_event.float().abs())
+        ceiling = self.event_count_cmax
+        denominator = torch.log1p(split_event.new_tensor(ceiling, dtype=torch.float32))
+        mass = torch.log1p(split_event.float().abs().clamp_max(ceiling)) / denominator
         polarity = mass.new_ones(2 * bins)
         polarity[bins:] = -1.0
         voxel = mass * polarity.view(1, 1, 2 * bins, 1, 1)

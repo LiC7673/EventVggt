@@ -298,10 +298,21 @@ def criterion_for(args, _phase):
 
 def save_visual(output_root, phase, epoch, batch_index, views, reference_views,
                 event, bridge, output, aux):
-    visual_base.save_visual(
-        output_root, phase, epoch, batch_index, views, reference_views,
-        event, bridge, output, aux,
-    )
+    if "event_normal_derivative_full" in output.ress[0]:
+        # Direct-derivative variants store a compatibility-only constant
+        # ``event_normal``.  Running the legacy normal visualizer on that proxy
+        # produces a second, meaningless derivative image.  Keep the common
+        # reconstruction/temporal panels and let the derivative trainer save
+        # its real six-channel prediction separately.
+        visual_base.visual_base.save_visual(
+            output_root, phase, epoch, batch_index, views, reference_views,
+            event, bridge, output, aux,
+        )
+    else:
+        visual_base.save_visual(
+            output_root, phase, epoch, batch_index, views, reference_views,
+            event, bridge, output, aux,
+        )
     item = output.ress[0]
     token_error = item["hdr_token_alignment_error"][0].detach().float().cpu()
     count = token_error.numel()
