@@ -97,11 +97,23 @@ class DerivativeObjective:
         hdr_align = torch.stack([x["hdr_token_alignment_error"] for x in output.ress], 1).float().mean()
         reliability = torch.stack([x["event_contribution"] for x in output.ress], 1).float()
         reliability_target = torch.stack([x["alignment_reliability_target"] for x in output.ress], 1).float()
+        full_mass = torch.stack([x["full_event_mass"] for x in output.ress], 1).float().detach()
         c_weight = (full_support | geo_support).float() + .05 * (~(full_support | geo_support)).float()
         c_error = F.smooth_l1_loss(reliability, reliability_target, beta=.05, reduction="none")
         confidence = (c_error * c_weight).sum() / c_weight.sum().clamp_min(1)
 
-        result.loss = result.loss + event_align + hdr_align + confidence + (
+        # Preserve the V10 anti-collapse constraint.  Pixel-wise confidence
+        # alone is dominated by empty/low-ratio locations and allowed C -> 0.
+        mass_denominator = full_mass.flatten(1).sum(1).clamp_min(1.0e-6)
+        predicted_mass_ratio = (full_mass * reliability).flatten(1).sum(1) / mass_denominator
+        target_mass_ratio = (full_mass * reliability_target).flatten(1).sum(1) / mass_denominator
+        mass_loss = F.mse_loss(predicted_mass_ratio, target_mass_ratio)
+        contribution_warmup = bool(float(
+            output.ress[0]["contribution_warmup_active"].detach()
+        ))
+        source_weight = 2.0 if contribution_warmup else 1.0
+
+        result.loss = result.loss + event_align + hdr_align + source_weight * confidence + 2.0 * mass_loss + (
             self.args.event_normal_weight * (full_loss + geo_loss)
             + .10 * distill
             + self.args.depth_event_normal_weight * depth_loss
@@ -112,6 +124,11 @@ class DerivativeObjective:
         result.details["event_derivative_distill"] = distill
         result.details["event_feature_alignment"] = event_align
         result.details["event_alignment_confidence"] = confidence
+        result.details["event_mass_attribution"] = mass_loss
+        result.details["predicted_event_mass_ratio"] = predicted_mass_ratio.mean()
+        result.details["target_event_mass_ratio"] = target_mass_ratio.mean()
+        result.details["legacy_budget_disabled"] = result.details["budget"]
+        result.details["budget"] = mass_loss
         result.details["hdr_token_alignment"] = hdr_align
         result.details["loss"] = result.loss
         result.aux["event_normal_local_support"] = local
