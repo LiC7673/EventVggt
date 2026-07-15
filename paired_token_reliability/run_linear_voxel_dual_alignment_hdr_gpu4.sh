@@ -4,8 +4,8 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 
 export GPUS="${GPUS:-4}"
-# v9 adds dynamic anti-collapse mass supervision and exact C-gated identity.
-export OUTPUT="${OUTPUT:-exp/linear_voxel_dual_alignment_hdr_safe_gated_c_v9_gpu4}"
+# v10: C_source selects events; token/normal/point use independent gates.
+export OUTPUT="${OUTPUT:-exp/linear_voxel_dual_alignment_hdr_decoupled_gates_v10_gpu4}"
 export TRAIN_MODULE="paired_token_reliability.train_linear_voxel_dual_alignment_hdr"
 export RUN_EVAL=0
 export EPOCHS_A="${EPOCHS_A:-12}"
@@ -53,7 +53,7 @@ bash paired_token_reliability/run_linear_voxel_multiscale_12train_4test.sh \
   "model.alignment_confidence_tau=0.10" \
   "model.hdr_token_bottleneck=256" \
   "model.hdr_warmup_steps=1000" \
-  "model.normal_refine_iterations=3" \
+  "model.normal_refine_iterations=1" \
   "model.normal_refine_step_limit=0.05" \
   "model.depth_update_scale=0.50" \
   "model.point_update_scale=0.10" \
