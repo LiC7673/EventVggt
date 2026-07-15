@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT_DIR}"
 
 DSEC_ROOT="${DSEC_ROOT:-/data1/lzh/dataset/DESC/DSEC_EV_VGGT}"
 GPU="${GPU:-4}"
-V10_CHECKPOINT="${V10_CHECKPOINT:-exp/linear_voxel_dual_alignment_hdr_no_point_refiner_v10_gpu4/checkpoint-adapter-best.pth}"
+V10_CHECKPOINT="${V10_CHECKPOINT:-exp/linear_voxel_dual_alignment_hdr_event_conditioned_adapter_v10_gpu4/checkpoint-adapter-best.pth}"
 OUT="${OUT:-dsec_exp/results/v10_real_single_event_gpu${GPU}}"
 EPOCHS="${EPOCHS:-10}"
 

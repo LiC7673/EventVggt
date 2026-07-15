@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 
 export GPUS="${GPUS:-4}"
 # v10: C_source selects events; token/normal/point use independent gates.
-export OUTPUT="${OUTPUT:-exp/linear_voxel_dual_alignment_hdr_no_point_refiner_v10_gpu4}"
+export OUTPUT="${OUTPUT:-exp/linear_voxel_dual_alignment_hdr_event_conditioned_adapter_v10_gpu4}"
 export TRAIN_MODULE="paired_token_reliability.train_linear_voxel_dual_alignment_hdr"
 export RUN_EVAL=0
 export EPOCHS_A="${EPOCHS_A:-12}"

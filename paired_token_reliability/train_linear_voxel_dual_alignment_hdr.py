@@ -234,7 +234,6 @@ def configure_phase(model, phase, _train_heads_a=False):
     model.contribution_net.requires_grad_(True)
     model.event_token_projection.requires_grad_(True)
     model.ldr_event_hdr_aligner.requires_grad_(True)
-    model.token_fusion_gate.requires_grad_(True)
     model.normal_fusion_gate.requires_grad_(True)
     model.normal_depth_refiner.requires_grad_(True)
     model.train()
@@ -242,7 +241,7 @@ def configure_phase(model, phase, _train_heads_a=False):
     model.depth_head.eval(); model.point_head.eval()
     print(
         "[dual alignment trainable] event_encoder+event_normal+event_aligner+ContributionNet+"
-        "event_token_projection+hdr_aligner+token_gate+normal_gate+"
+        "event_token_projection+event-conditioned-hdr-adapter+normal_gate+"
         "normal_depth_refiner+depth_scale; point=frozen HDR-token head only",
         flush=True,
     )
@@ -256,7 +255,7 @@ def optimizer_for(model, _phase, args):
             model.event_normal_decoder, model.full_geo_aligner,
             model.contribution_net,
             model.event_token_projection, model.ldr_event_hdr_aligner,
-            model.token_fusion_gate, model.normal_fusion_gate,
+            model.normal_fusion_gate,
             model.normal_depth_refiner,
         ) for p in module.parameters()
     }

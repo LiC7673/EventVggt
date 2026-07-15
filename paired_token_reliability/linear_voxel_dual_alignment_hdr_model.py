@@ -17,29 +17,31 @@ from stage2_geometry_adapter.model import GeometryAdapterOutput, depth_to_normal
 
 
 class LdrEventToHdrTokenAligner(nn.Module):
-    """Residual token adapter; zero initialization preserves pretrained RGB."""
+    """Event-conditioned HDR adapter with an exact zero-event identity path."""
 
     def __init__(self, token_dim, bottleneck=256):
         super().__init__()
         token_dim, bottleneck = int(token_dim), int(bottleneck)
         self.rgb_norm = nn.LayerNorm(token_dim)
-        self.event_norm = nn.LayerNorm(token_dim)
-        self.fusion = nn.Sequential(
-            nn.Linear(2 * token_dim, bottleneck), nn.GELU(),
-            nn.Linear(bottleneck, token_dim),
-        )
-        nn.init.zeros_(self.fusion[-1].weight)
-        nn.init.zeros_(self.fusion[-1].bias)
+        # No affine parameters: an all-zero event token remains exactly zero.
+        self.event_norm = nn.LayerNorm(token_dim, elementwise_affine=False)
+        self.rgb_context = nn.Linear(token_dim, bottleneck)
+        self.event_modulation = nn.Linear(token_dim, bottleneck, bias=False)
+        self.output = nn.Linear(bottleneck, token_dim)
+        nn.init.zeros_(self.output.weight)
+        nn.init.zeros_(self.output.bias)
 
     def forward(self, ldr_token, event_token):
-        residual = self.fusion(torch.cat((
-            self.rgb_norm(ldr_token), self.event_norm(event_token),
-        ), dim=-1))
+        rgb = F.gelu(self.rgb_context(self.rgb_norm(ldr_token)))
+        event = torch.tanh(self.event_modulation(self.event_norm(event_token)))
+        # Multiplicative conditioning makes event_token==0 imply residual==0
+        # without a second zero-event forward or an external scalar G_token.
+        residual = self.output(rgb * event)
         return ldr_token + residual, residual
 
 
 class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel):
-    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_no_point_refiner_v10"
+    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_event_conditioned_adapter_v10"
 
     def __init__(self, *args, pixel_hidden=32, hdr_token_bottleneck=256,
                  alignment_confidence_tau=.10, hdr_warmup_steps=1000,
@@ -54,17 +56,14 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         # not the transformer's internal embed_dim itself.
         token_dim = 2 * int(kwargs.get("embed_dim"))
         self.full_geo_aligner = FullToGeoAlignment(hidden)
-        self.event_token_projection = nn.Conv2d(hidden, token_dim, 1)
+        # Bias-free projection preserves the exact C_source=0 -> event_token=0
+        # identity required by the event-conditioned HDR adapter.
+        self.event_token_projection = nn.Conv2d(hidden, token_dim, 1, bias=False)
         self.ldr_event_hdr_aligner = LdrEventToHdrTokenAligner(
             token_dim, hdr_token_bottleneck
         )
-        # C_source only selects event evidence.  Each output space owns a
-        # separate gate because token, normal and metric point residuals do
-        # not share a meaningful amplitude scale.
-        self.token_fusion_gate = nn.Sequential(
-            nn.Linear(2 * token_dim, hdr_token_bottleneck), nn.GELU(),
-            nn.Linear(hdr_token_bottleneck, 1), nn.Sigmoid(),
-        )
+        # C_source selects event evidence. Token-space fusion strength is now
+        # represented inside the event-conditioned HDR adapter itself.
         self.normal_fusion_gate = nn.Sequential(
             nn.Conv2d(hidden + 6, hidden, 3, padding=1), nn.GELU(),
             nn.Conv2d(hidden, 1, 1), nn.Sigmoid(),
@@ -81,12 +80,9 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         nn.init.zeros_(self.normal_depth_refiner[-1].bias)
         # Start new gates conservatively without forcing them to share C's
         # source-attribution scale.
-        nn.init.zeros_(self.token_fusion_gate[-2].weight)
-        nn.init.constant_(self.token_fusion_gate[-2].bias, -2.0)
         nn.init.zeros_(self.normal_fusion_gate[-2].weight)
         nn.init.constant_(self.normal_fusion_gate[-2].bias, -2.0)
         nn.init.xavier_uniform_(self.event_token_projection.weight)
-        nn.init.zeros_(self.event_token_projection.bias)
         self.alignment_confidence_tau = max(float(alignment_confidence_tau), 1e-4)
         self.hdr_warmup_steps = max(0, int(hdr_warmup_steps))
         self.normal_refine_iterations = max(1, int(normal_refine_iterations))
@@ -94,6 +90,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         self.require_geo_teacher = bool(require_geo_teacher)
         self.require_hdr_teacher = bool(require_hdr_teacher)
         self._dual_alignment_step = 0
+        self.decode_raw_full_normal = False
 
     def _decode_event_normal(self, feature):
         b, v, channels, height, width = feature.shape
@@ -142,27 +139,15 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         return token * reliability_patch, reliability_patch
 
     def _fuse_tokens(self, tokens_list, patch_start, event_token):
-        fused, residuals, gates = [], [], []
+        fused, residuals = [], []
         for tokens in tokens_list:
             special = tokens[:, :, :patch_start]
             patch = tokens[:, :, patch_start:]
             _, raw_residual = self.ldr_event_hdr_aligner(patch, event_token)
-            # Remove the RGB-only response explicitly.  Consequently an empty
-            # selected event token has an exact identity path without using C
-            # as the token-space amplitude gate.
-            _, rgb_only_residual = self.ldr_event_hdr_aligner(
-                patch, torch.zeros_like(event_token)
-            )
-            event_residual = raw_residual - rgb_only_residual
-            gate = self.token_fusion_gate(torch.cat((
-                self.ldr_event_hdr_aligner.rgb_norm(patch),
-                self.ldr_event_hdr_aligner.event_norm(event_token),
-            ), dim=-1))
-            residual = gate * event_residual
+            residual = raw_residual
             fused.append(torch.cat((special, patch + residual), dim=2))
             residuals.append(residual)
-            gates.append(gate)
-        return fused, residuals, gates
+        return fused, residuals
 
     def forward(self, views, query_points=None, **_kwargs):
         images, full_voxel, intrinsics = self._stack_inputs(views)
@@ -189,7 +174,10 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         correction = correction_flat.reshape_as(full_feature)
         # Direct-full ablation: decode the noisy full stream without the
         # full-to-geo alignment module.
-        raw_full_normal = self._decode_event_normal(full_feature)
+        raw_full_normal = (
+            self._decode_event_normal(full_feature)
+            if self.decode_raw_full_normal else None
+        )
         full_normal = self._decode_event_normal(aligned_feature)
         geo_normal = self._decode_geo_normal(geo_feature) if geo_feature is not None else None
 
@@ -254,7 +242,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         event_token, reliability_patch = self._event_patch_tokens(
             aligned_feature, deployed_reliability, patch_count, (image_h, image_w)
         )
-        hdr_pred_tokens, hdr_residuals, token_fusion_gates = self._fuse_tokens(
+        hdr_pred_tokens, hdr_residuals = self._fuse_tokens(
             ldr_tokens, patch_start, event_token
         )
 
@@ -430,7 +418,10 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 event_contribution_spatial=reliability[:, index],
                 event_normal=full_normal[:, index],
                 event_normal_full=full_normal[:, index],
-                event_normal_full_raw=raw_full_normal[:, index],
+                event_normal_full_raw=(
+                    raw_full_normal[:, index] if raw_full_normal is not None
+                    else full_normal[:, index]
+                ),
                 event_normal_geo=(geo_normal[:, index] if geo_normal is not None else full_normal[:, index].detach()),
                 event_normal_reliability=reliability[:, index],
                 event_normal_support=full_support[:, index],
@@ -449,7 +440,6 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 alignment_feature_correction=correction[:, index],
                 hdr_token_alignment_error=hdr_token_error[:, index],
                 hdr_token_reliability=reliability_patch[:, index, :, 0],
-                token_fusion_gate=token_fusion_gates[-1][:, index, :, 0],
                 hdr_token_update=hdr_residuals[-1][:, index],
                 hdr_warmup_active=final.new_tensor(float(warmup)),
                 contribution_warmup_active=final.new_tensor(

@@ -39,6 +39,7 @@ def build_model(checkpoint, device):
     compatible_schemas = {
         "linear_time_voxel_dual_alignment_hdr_decoupled_gates_v10",
         "linear_time_voxel_dual_alignment_hdr_no_point_refiner_v10",
+        "linear_time_voxel_dual_alignment_hdr_event_conditioned_adapter_v10",
     }
     if checkpoint.get("schema") not in compatible_schemas:
         raise RuntimeError(f"expected trained V10 checkpoint, got schema={checkpoint.get('schema')!r}")
@@ -61,9 +62,23 @@ def build_model(checkpoint, device):
         contribution_channels=32, contribution_initial_value=.70,
         require_geo_teacher=False, require_hdr_teacher=False,
     )
-    loaded = model.load_state_dict(checkpoint["model"], strict=False)
-    missing = [key for key in loaded.missing_keys if not key.startswith(("point_refiner.", "point_fusion_gate."))]
-    unexpected = [key for key in loaded.unexpected_keys if not key.startswith(("point_refiner.", "point_fusion_gate."))]
+    state = dict(checkpoint["model"])
+    old_prefix = "ldr_event_hdr_aligner.fusion."
+    new_prefix = "ldr_event_hdr_aligner."
+    if old_prefix + "0.weight" in state and new_prefix + "rgb_context.weight" not in state:
+        old = state[old_prefix + "0.weight"]
+        split = old.shape[1] // 2
+        state[new_prefix + "rgb_context.weight"] = old[:, :split]
+        state[new_prefix + "rgb_context.bias"] = state[old_prefix + "0.bias"]
+        state[new_prefix + "event_modulation.weight"] = old[:, split:]
+        state[new_prefix + "output.weight"] = state[old_prefix + "2.weight"]
+        state[new_prefix + "output.bias"] = state[old_prefix + "2.bias"]
+    loaded = model.load_state_dict(state, strict=False)
+    ignored = ("point_refiner.", "point_fusion_gate.", "token_fusion_gate.",
+               "ldr_event_hdr_aligner.fusion.", "ldr_event_hdr_aligner.event_norm.",
+               "event_token_projection.bias")
+    missing = [key for key in loaded.missing_keys if not key.startswith(ignored)]
+    unexpected = [key for key in loaded.unexpected_keys if not key.startswith(ignored)]
     if missing or unexpected:
         raise RuntimeError(f"incompatible V10 state: missing={missing[:8]} unexpected={unexpected[:8]}")
     model._dual_alignment_step = max(model.hdr_warmup_steps + 1, 1)
@@ -77,7 +92,7 @@ def configure_real_trainable(model):
     for module in (
         model.event_encoder, model.event_normal_decoder,
         model.event_token_projection, model.ldr_event_hdr_aligner,
-        model.token_fusion_gate, model.normal_fusion_gate,
+        model.normal_fusion_gate,
         model.normal_depth_refiner,
     ):
         module.requires_grad_(True)

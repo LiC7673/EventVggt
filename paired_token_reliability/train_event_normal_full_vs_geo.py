@@ -32,6 +32,7 @@ def configure_phase(model, phase, _train_heads_a=False):
         # Deliberately no aligner: noise in E_full is treated as valid evidence.
         model.event_encoder.requires_grad_(True)
         model.event_normal_decoder.requires_grad_(True)
+        model.decode_raw_full_normal = True
     else:
         model.geo_event_encoder.requires_grad_(True)
         model.geo_normal_decoder.requires_grad_(True)

@@ -11,7 +11,7 @@ from paired_token_reliability.signed_multiscale_model import signed_support
 
 
 class StagedGeoTeacherDualAlignmentModel(DualAlignmentHDRLinearVoxelModel):
-    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_staged_geo_teacher_no_point_refiner_v10"
+    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_staged_geo_teacher_event_conditioned_v10"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
