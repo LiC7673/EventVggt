@@ -119,11 +119,19 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
             b, v, 3, height, width
         ).movedim(2, -1)
 
+    def _decode_geo_normal(self, feature):
+        """Hook used by the staged route's frozen geometry teacher."""
+        return self._decode_event_normal(feature)
+
     def _encode_event(self, views, voxel):
         representation, decay = self._decayed_signed(views, voxel)
         feature = self.event_encoder(representation)
         support = signed_support(representation, self.support_dilation_kernel)[:, :, 0] > 0
         return representation, decay, feature, support
+
+    def _encode_geo_event(self, views, voxel):
+        """Hook used by the staged route's independent geometry encoder."""
+        return self._encode_event(views, voxel)
 
     def _event_patch_tokens(self, feature, reliability, patch_count, image_hw):
         b, v, channels, height, width = feature.shape
@@ -186,7 +194,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
             raise RuntimeError("dual alignment training requires geometry_event_voxel")
         if have_geo:
             geo_voxel = torch.stack(geo_fields, dim=1).to(full_voxel)
-            _, _, geo_feature, geo_support = self._encode_event(views, geo_voxel)
+            _, _, geo_feature, geo_support = self._encode_geo_event(views, geo_voxel)
         else:
             geo_voxel, geo_feature, geo_support = None, None, full_support
 
@@ -194,8 +202,11 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         aligned_flat, correction_flat, _ = self.full_geo_aligner(flat_full)
         aligned_feature = aligned_flat.reshape_as(full_feature)
         correction = correction_flat.reshape_as(full_feature)
+        # Direct-full ablation: decode the noisy full stream without the
+        # full-to-geo alignment module.
+        raw_full_normal = self._decode_event_normal(full_feature)
         full_normal = self._decode_event_normal(aligned_feature)
-        geo_normal = self._decode_event_normal(geo_feature) if geo_feature is not None else None
+        geo_normal = self._decode_geo_normal(geo_feature) if geo_feature is not None else None
 
         # C is always predicted from inference-available inputs.  E_geo is
         # never an input to this predictor: it is used below only to construct
@@ -481,6 +492,7 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 event_contribution_spatial=reliability[:, index],
                 event_normal=full_normal[:, index],
                 event_normal_full=full_normal[:, index],
+                event_normal_full_raw=raw_full_normal[:, index],
                 event_normal_geo=(geo_normal[:, index] if geo_normal is not None else full_normal[:, index].detach()),
                 event_normal_reliability=reliability[:, index],
                 event_normal_support=full_support[:, index],
