@@ -96,6 +96,9 @@ class DualAlignmentObjective:
         reliability_target = torch.stack(
             [x["alignment_reliability_target"] for x in output.ress], 1
         ).float()
+        full_mass = torch.stack(
+            [x["full_event_mass"] for x in output.ress], 1
+        ).float().detach()
         hdr_error = torch.stack(
             [x["hdr_token_alignment_error"] for x in output.ress], 1
         ).float()
@@ -131,24 +134,40 @@ class DualAlignmentObjective:
                 reliability, reliability_target, beta=.05, reduction="none"
             ), confidence_weight,
         )
+        # Match the selected event mass to the actual geo/full mass for each
+        # sample.  Unlike the legacy rho=1 budget, this never forces all full
+        # events to be trusted and gives C a strong anti-collapse gradient.
+        mass_denominator = full_mass.flatten(1).sum(1).clamp_min(1.0e-6)
+        predicted_mass_ratio = (
+            full_mass * reliability
+        ).flatten(1).sum(1) / mass_denominator
+        target_mass_ratio = (
+            full_mass * reliability_target
+        ).flatten(1).sum(1) / mass_denominator
+        mass_loss = F.mse_loss(predicted_mass_ratio, target_mass_ratio)
         hdr_align = hdr_error.mean()
+        contribution_warmup = bool(float(
+            output.ress[0]["contribution_warmup_active"].detach()
+        ))
+        source_weight = 2.0 if contribution_warmup else 1.0
         result.loss = result.loss + (
-            1.0 * event_align + .25 * confidence
-            + 1.0 * geo_normal + .5 * normal_distill + 1.0 * normal_hf
+            1.0 * event_align + source_weight * confidence + 2.0 * mass_loss
+            + 2.0 * geo_normal + .10 * normal_distill + 1.0 * normal_hf
             + 1.0 * hdr_align
         )
         result.details["event_feature_alignment"] = event_align
         result.details["event_alignment_confidence"] = confidence
+        result.details["event_mass_attribution"] = mass_loss
+        result.details["predicted_event_mass_ratio"] = predicted_mass_ratio.mean()
+        result.details["target_event_mass_ratio"] = target_mass_ratio.mean()
         result.details["geo_event_normal"] = geo_normal
         result.details["event_normal_distill"] = normal_distill
         result.details["event_normal_hf"] = normal_hf
         result.details["hdr_token_alignment"] = hdr_align
-        # The generic criterion still computes its legacy rho=1 budget for
-        # diagnostics even though this route sets budget_weight=0.  Preserve
-        # that raw value under an explicit name and report the effective loss
-        # as zero so the console does not suggest it participates in training.
+        # Replace the disabled legacy rho=1 diagnostic with the dynamic mass
+        # loss that actually participates in this route's objective.
         result.details["legacy_budget_disabled"] = result.details["budget"]
-        result.details["budget"] = result.details["budget"] * 0.0
+        result.details["budget"] = mass_loss
         self.calls += int(torch.is_grad_enabled())
         if torch.is_grad_enabled() and self.calls % 100 == 0 and int(os.environ.get("RANK", "0")) == 0:
             warmup = int(float(output.ress[0]["hdr_warmup_active"].detach()))
@@ -159,7 +178,10 @@ class DualAlignmentObjective:
                 f"Ngeo={float(geo_normal.detach()):.5f} "
                 f"Ndist={float(normal_distill.detach()):.5f} "
                 f"C={float(_weighted_mean(reliability, pair_weight).detach()):.4f} "
-                f"Ct={float(_weighted_mean(reliability_target, pair_weight).detach()):.4f}",
+                f"Ct={float(_weighted_mean(reliability_target, pair_weight).detach()):.4f} "
+                f"Cmass={float(predicted_mass_ratio.mean().detach()):.4f} "
+                f"Ctmass={float(target_mass_ratio.mean().detach()):.4f} "
+                f"Cwarm={int(contribution_warmup)}",
                 flush=True,
             )
         return result

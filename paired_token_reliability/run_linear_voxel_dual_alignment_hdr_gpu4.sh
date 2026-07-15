@@ -4,8 +4,8 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 
 export GPUS="${GPUS:-4}"
-# v8 changes C supervision to direct E_geo/E_full event-mass attribution.
-export OUTPUT="${OUTPUT:-exp/linear_voxel_dual_alignment_hdr_event_mass_c_v8_gpu4}"
+# v9 adds dynamic anti-collapse mass supervision and exact C-gated identity.
+export OUTPUT="${OUTPUT:-exp/linear_voxel_dual_alignment_hdr_safe_gated_c_v9_gpu4}"
 export TRAIN_MODULE="paired_token_reliability.train_linear_voxel_dual_alignment_hdr"
 export RUN_EVAL=0
 export EPOCHS_A="${EPOCHS_A:-12}"

@@ -39,7 +39,7 @@ class LdrEventToHdrTokenAligner(nn.Module):
 
 
 class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel):
-    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_event_mass_c_v8"
+    checkpoint_schema = "linear_time_voxel_dual_alignment_hdr_safe_gated_c_v9"
 
     def __init__(self, *args, pixel_hidden=32, hdr_token_bottleneck=256,
                  alignment_confidence_tau=.10, hdr_warmup_steps=1000,
@@ -125,13 +125,18 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         ).flatten(2).transpose(1, 2).reshape(b, v, patch_count, 1)
         return token * reliability_patch, reliability_patch
 
-    def _fuse_tokens(self, tokens_list, patch_start, event_token):
+    def _fuse_tokens(
+        self, tokens_list, patch_start, event_token, reliability_patch
+    ):
         fused, residuals = [], []
         for tokens in tokens_list:
             special = tokens[:, :, :patch_start]
             patch = tokens[:, :, patch_start:]
-            aligned, residual = self.ldr_event_hdr_aligner(patch, event_token)
-            fused.append(torch.cat((special, aligned), dim=2))
+            _, raw_residual = self.ldr_event_hdr_aligner(patch, event_token)
+            # The HDR adapter must have an exact RGB identity fallback.  Its
+            # MLP can otherwise learn an RGB-only residual even when C=0.
+            residual = raw_residual * reliability_patch
+            fused.append(torch.cat((special, patch + residual), dim=2))
             residuals.append(residual)
         return fused, residuals
 
@@ -204,13 +209,26 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
             reliability_target = reliability.new_zeros(reliability.shape)
             reliability_target_available = False
 
+        # During the attribution warm-up, only the direct C objectives may
+        # update ContributionNet.  Detaching the deployed copy prevents the
+        # much larger geometry/HDR objectives from finding the C=0 shortcut.
+        contribution_warmup = (
+            self.training and self._dual_alignment_step < self.hdr_warmup_steps
+        )
+        deployed_reliability = (
+            reliability.detach() if contribution_warmup else reliability
+        )
+        selected_feature = (
+            aligned_feature * deployed_reliability.unsqueeze(2)
+        )
+
         # Student LDR tokens, gated only by predicted C (never by E_geo).
         patch_count = ldr_tokens[-1].shape[2] - patch_start
         event_token, reliability_patch = self._event_patch_tokens(
-            aligned_feature, reliability, patch_count, (image_h, image_w)
+            aligned_feature, deployed_reliability, patch_count, (image_h, image_w)
         )
         hdr_pred_tokens, hdr_residuals = self._fuse_tokens(
-            ldr_tokens, patch_start, event_token
+            ldr_tokens, patch_start, event_token, reliability_patch
         )
 
         # Training-only teacher: the less saturated paired image is attached as
@@ -261,7 +279,8 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         # empty-event regions; there is no hard support multiplication here.
         event_normal_delta = full_normal - hdr_base_normal
         normal_refine_target = F.normalize(
-            hdr_base_normal + reliability.unsqueeze(-1) * event_normal_delta,
+            hdr_base_normal
+            + deployed_reliability.unsqueeze(-1) * event_normal_delta,
             dim=-1, eps=1e-6,
         )
         if self.training:
@@ -283,13 +302,15 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 bv, 1, image_h, image_w
             )
             log_depth = log_base.clone()
-            feature_flat = aligned_feature.reshape(
-                bv, aligned_feature.shape[2], image_h, image_w
+            feature_flat = selected_feature.reshape(
+                bv, selected_feature.shape[2], image_h, image_w
             ).float()
             target_flat = normal_refine_target.movedim(-1, 2).reshape(
                 bv, 3, image_h, image_w
             )
-            confidence_flat = reliability.reshape(bv, 1, image_h, image_w)
+            confidence_flat = deployed_reliability.reshape(
+                bv, 1, image_h, image_w
+            )
             intrinsics_flat = intrinsics.reshape(bv, 3, 3)
             steps = []
             for _ in range(self.normal_refine_iterations):
@@ -315,6 +336,8 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 step = self.normal_refine_step_limit * torch.tanh(
                     raw_step / self.normal_refine_step_limit
                 )
+                # Exact no-event/no-contribution identity: C=0 => step=0.
+                step = confidence_flat * step
                 log_depth = log_depth + step
                 steps.append(step)
 
@@ -345,18 +368,21 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
         point_token_delta_ratio = point_token_update.float() / coarse_point_radius
         point_radius = hdr_points.float().norm(dim=-1, keepdim=True).clamp_min(1e-4)
         point_input = torch.cat((
-            aligned_feature.float(),
+            selected_feature.float(),
             coarse_point_direction.movedim(-1, 2),
             torch.log(coarse_point_radius).movedim(-1, 2),
             point_token_delta_ratio.movedim(-1, 2),
             final_normal.movedim(-1, 2),
-            reliability.unsqueeze(2),
+            deployed_reliability.unsqueeze(2),
         ), dim=2)
         raw_point_ratio = self.point_refiner(
             point_input.reshape(b * v, point_input.shape[2], image_h, image_w)
         ).reshape(b, v, 3, image_h, image_w).movedim(2, -1)
         bounded_point_ratio = self.point_update_scale * torch.tanh(
             raw_point_ratio / self.point_update_scale
+        )
+        bounded_point_ratio = (
+            bounded_point_ratio * deployed_reliability.unsqueeze(-1)
         )
         predicted_point_update = point_radius.detach() * bounded_point_ratio
         if warmup:
@@ -410,6 +436,11 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 signed_event=full_repr[:, index], temporal_decay_weights=decay[:, index],
                 alignment_feature_error=event_feature_error[:, index],
                 alignment_reliability_target=reliability_target[:, index],
+                full_event_mass=full_voxel[:, index].detach().float().abs().sum(1),
+                geo_event_mass=(
+                    geo_voxel[:, index].detach().float().abs().sum(1)
+                    if geo_voxel is not None else torch.zeros_like(reliability[:, index])
+                ),
                 alignment_reliability_target_available=final.new_tensor(
                     float(reliability_target_available)
                 ),
@@ -418,6 +449,9 @@ class DualAlignmentHDRLinearVoxelModel(CalibratedLinearVoxelMultiscalePixelModel
                 hdr_token_reliability=reliability_patch[:, index, :, 0],
                 hdr_token_update=hdr_residuals[-1][:, index],
                 hdr_warmup_active=final.new_tensor(float(warmup)),
+                contribution_warmup_active=final.new_tensor(
+                    float(contribution_warmup)
+                ),
                 depth_hdr_base=hdr_map[:, index].unsqueeze(-1),
                 depth_token_map_update=token_update[:, index],
                 depth_geometry_update=geometry_update[:, index],
