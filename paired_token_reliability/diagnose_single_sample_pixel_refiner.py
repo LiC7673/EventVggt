@@ -153,7 +153,12 @@ def main():
         # A fresh copy of the randomly initialized refiner is used for every
         # input ablation. No experiment-trained refiner weights are involved.
         refiner = copy.deepcopy(model.pixel_depth_refiner).to(device).train()
-        optimizer = torch.optim.AdamW(refiner.parameters(), lr=args.lr, weight_decay=0.)
+        for parameter in refiner.parameters():
+            parameter.requires_grad_(True)
+        trainable = [parameter for parameter in refiner.parameters() if parameter.requires_grad]
+        if not trainable:
+            raise RuntimeError("diagnostic refiner has no trainable parameters")
+        optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.)
         x = configure_input(actual, mode, event_channels)
         limit = float(model.pixel_refine_log_limit)
         for step in range(args.steps + 1):
