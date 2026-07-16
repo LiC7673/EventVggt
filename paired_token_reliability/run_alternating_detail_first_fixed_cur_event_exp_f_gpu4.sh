@@ -15,7 +15,7 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" MKL_NUM_THREADS="${MKL_NUM_THREAD
 mkdir -p "${OUTPUT}/logs"
 
 python -m torch.distributed.run --nproc_per_node "${NPROC}" --master_port "${MASTER_PORT}" \
-  -m paired_token_reliability.train_linear_voxel_alternating_detail_first_fixed \
+  -m paired_token_reliability.train_linear_voxel_alternating_detail_first_fixed_cur_event \
   --pretrained "${PRETRAINED}" --output "${OUTPUT}" \
   --epochs-a 1 --epochs-b "${EPOCHS_B:-6}" --epochs-c 0 \
   --num-workers "${NUM_WORKERS}" \
