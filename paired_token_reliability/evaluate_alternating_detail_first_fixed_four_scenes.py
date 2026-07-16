@@ -56,10 +56,10 @@ def parse_args():
     p.add_argument("--event-resize-bins", type=int, default=5)
     p.add_argument(
         "--event-source-mode",
-        choices=("decomposition_full", "cur_best", "current"),
+        choices=("decomposition_full", "cur_event", "cur_best", "current"),
         default="decomposition_full",
-        help=("event file used as the model's inference event input; cur_best "
-              "strictly reads cur_best_event/events.h5"),
+        help=("event file used as the model's inference event input; cur_event "
+              "strictly reads cur_event/events.h5"),
     )
     p.add_argument("--device", default="cuda")
     p.add_argument("--amp", choices=("none", "fp16", "bf16"), default="none")

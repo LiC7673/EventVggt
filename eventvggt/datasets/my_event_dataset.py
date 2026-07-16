@@ -95,9 +95,12 @@ class MyEventDataset(BaseEventMultiViewDataset):
         self.event_voxel_cache_size = max(int(event_voxel_cache_size), 0)
         self._event_voxel_cache = OrderedDict()
         self.event_source_mode = str(event_source_mode).strip().lower()
-        if self.event_source_mode not in {"current", "cur_best", "decomposition_full"}:
+        if self.event_source_mode not in {
+            "current", "cur_event", "cur_best", "decomposition_full"
+        }:
             raise ValueError(
-                "event_source_mode must be current, cur_best, or decomposition_full, "
+                "event_source_mode must be current, cur_event, cur_best, or "
+                "decomposition_full, "
                 f"got {event_source_mode!r}"
             )
         self.decomposition_supervision = bool(decomposition_supervision)
@@ -209,6 +212,9 @@ class MyEventDataset(BaseEventMultiViewDataset):
                     "events.h5",
                 )
             ]
+        elif self.event_source_mode == "cur_event":
+            # Strict isolation: do not silently fall back to cur_best or ESIM.
+            event_candidates = [osp.join(scene_dir, "cur_event", "events.h5")]
         elif self.event_source_mode == "cur_best":
             # Strict isolation for the cur-best-as-full experiment.
             event_candidates = [osp.join(scene_dir, "cur_best_event", "events.h5")]
