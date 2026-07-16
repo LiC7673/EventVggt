@@ -16,10 +16,11 @@ import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 import finetune_event as fe
-import real_reliability_stage.evaluate_stage2_heldout as protocol
 from ablation.eag3r_metrics_eval import move_views_to_device, stack_output
 from paired_token_reliability import train_unified_geometry_contribution as pipeline
 from paired_token_reliability.train_linear_voxel_cur_event_hf_residual import build_model
+from paired_token_reliability.contribution_dataset import generate_ordered_pairs
+from paired_token_reliability.train_contribution_stage1 import make_loader
 
 
 def args_parser():
@@ -96,23 +97,33 @@ def main():
     model.set_confidence_stage("full")
     model.eval()
     OmegaConf.set_struct(cfg, False); OmegaConf.set_struct(cfg.data, False)
+    cfg.data.root = args.root
     cfg.data.event_source_mode = "cur_event"
     cfg.data.decomposition_supervision = True
-    ns = SimpleNamespace(
-        root=args.root, num_views=args.num_views, resolution=[518, 392],
-        scene_names=[args.scene], initial_scene_idx=0, active_scene_count=1,
-        test_frame_count=120, ldr_event_id=args.exposure,
-        event_resize_method="voxel_linear_time", event_resize_bins=5,
-        window_stride=1, batch_size=1, num_workers=0, pin_memory=False,
-        max_batches=1,
+    cfg.data.decomposition_event_root = "events_additive"
+    cfg.data.decomposition_geo_branch = "geometry_motion"
+    cfg.data.decomposition_full_branch = "full"
+    cfg.data.scene_names = [args.scene]
+    cfg.data.train_initial_scene_idx = 0
+    cfg.data.train_scene_count = 1
+    cfg.data.num_views = args.num_views
+    cfg.data.event_resize_method = "voxel_linear_time"
+    cfg.data.event_resize_bins = 5
+    requested = args.exposure.removeprefix("ev_")
+    # A Multi-LDR pair is required by the training collator. The diagnostic
+    # still consumes one fixed geometry-event sample after Phase-A selection.
+    companion = "5" if requested != "5" else "10"
+    ordered_exposures = tuple(sorted((requested, companion), key=float))
+    pairs = generate_ordered_pairs(ordered_exposures, mode="all")
+    dataset = pipeline.make_unified_dataset(cfg, "train", pairs)
+    loader = make_loader(dataset, batch_size=1, num_workers=0, train=False)
+    batch = next(iter(loader))
+    pair_args = SimpleNamespace(
+        bridge_saturation_mode="all_channels",
+        bridge_require_reference_gradient=False,
+        bridge_event_dilate_kernel=3,
     )
-    _, loader = protocol.build_loader(cfg, ns)
-    cpu_views = next(iter(loader))
-    views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
-    for view in views:
-        if "geometry_event_voxel" not in view:
-            raise RuntimeError("sample has no geometry_event_voxel; decomposition data is required")
-        view["event_voxel"] = view["geometry_event_voxel"]
+    views, _, _, _ = pipeline.prepare_pair(batch, device, pair_args, "adapter")
 
     for parameter in model.parameters():
         parameter.requires_grad_(False)
