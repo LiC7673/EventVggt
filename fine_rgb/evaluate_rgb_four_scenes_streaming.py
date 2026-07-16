@@ -7,6 +7,9 @@ import gc
 import json
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch
 
 import finetune_no_event as rgb
@@ -54,14 +57,58 @@ def parse_args():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--amp", choices=("none", "fp16", "bf16"), default="none")
     parser.add_argument("--print-freq", type=int, default=20)
+    parser.add_argument("--visualize-every", type=int, default=1)
+    parser.add_argument("--max-visuals-per-condition", type=int, default=0,
+                        help="0 saves every selected batch")
     return parser.parse_args()
 
 
+def _normal_rgb(normal, valid):
+    image = ((normal.detach().float().cpu() + 1.0) * .5).clamp(0, 1)
+    return image * valid.detach().float().cpu().unsqueeze(-1)
+
+
+def save_visual(output_root, experiment, scene, exposure, batch_index,
+                views, pred, target, intrinsics, valid):
+    p, g, mask = pred[0, 0].float(), target[0, 0].float(), valid[0, 0].bool()
+    pred_normal = rgb.depth_to_normals(pred.float(), intrinsics.float())[0, 0]
+    gt_normal = rgb.depth_to_normals(target.float(), intrinsics.float())[0, 0]
+    image = views[0]["img"][0].detach().float().permute(1, 2, 0).cpu().clamp(0, 1)
+    values = torch.cat((p[mask], g[mask]))
+    vmin, vmax = float(values.min()), float(values.max())
+    error = (p - g).abs() * mask
+    error_max = float(error.max().clamp_min(1e-6))
+    panels = (
+        (image, "RGB input", None, None, None),
+        (p.cpu() * mask.cpu(), "RGB predicted depth", "viridis", vmin, vmax),
+        (g.cpu() * mask.cpu(), "GT depth", "viridis", vmin, vmax),
+        (error.cpu(), "|RGB depth - GT depth|", "magma", 0, error_max),
+        (_normal_rgb(pred_normal, mask), "RGB depth-derived normal", None, None, None),
+        (_normal_rgb(gt_normal, mask), "GT depth-derived normal", None, None, None),
+    )
+    figure, axes = plt.subplots(2, 3, figsize=(15, 10)); axes = axes.reshape(-1)
+    for axis, (shown_value, title, cmap, lo, hi) in zip(axes, panels):
+        shown = axis.imshow(
+            shown_value.numpy() if torch.is_tensor(shown_value) else shown_value,
+            cmap=cmap, vmin=lo, vmax=hi,
+        )
+        axis.set_title(title); axis.axis("off")
+        if cmap is not None:
+            figure.colorbar(shown, ax=axis, fraction=.046, pad=.04)
+    figure.suptitle(f"{experiment} | scene={scene} | exposure={exposure}")
+    path = (Path(output_root) / "visualizations" / experiment / scene / exposure
+            / f"sample_{batch_index:05d}.png")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.tight_layout(); figure.savefig(path, dpi=130); plt.close(figure)
+
+
 @torch.inference_mode()
-def evaluate_loader(model, loader, device, args, bundles):
+def evaluate_loader(model, loader, device, args, bundles, *, experiment,
+                    scene, exposure):
     enabled = args.amp != "none" and device.type == "cuda"
     dtype = torch.bfloat16 if args.amp == "bf16" else torch.float16
     evaluated = 0
+    visuals = 0
     for batch_index, cpu_views in enumerate(loader):
         if args.max_batches is not None and batch_index >= args.max_batches:
             break
@@ -80,6 +127,13 @@ def evaluate_loader(model, loader, device, args, bundles):
                 bundle, "coarse_rgb", output, pred,
                 target, intrinsics, gt_pose, valid,
             )
+        visual_budget = (args.max_visuals_per_condition <= 0
+                         or visuals < args.max_visuals_per_condition)
+        if (args.visualize_every > 0 and batch_index % args.visualize_every == 0
+                and visual_budget):
+            save_visual(args.output_dir, experiment, scene, exposure, batch_index,
+                        views, pred, target, intrinsics, valid)
+            visuals += 1
         evaluated += 1
         if args.print_freq > 0 and evaluated % args.print_freq == 0:
             print(f"  [stream] batches={evaluated}/{len(loader)}", flush=True)
@@ -141,6 +195,7 @@ def evaluate_experiment(
             evaluated = evaluate_loader(
                 model, loader, device, args,
                 (local, per_exposure[exposure], overall),
+                experiment=name, scene=scene, exposure=exposure,
             )
             row = append_row(
                 rows, name, "scene", scene, exposure,

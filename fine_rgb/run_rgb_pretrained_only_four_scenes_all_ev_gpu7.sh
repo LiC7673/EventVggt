@@ -24,5 +24,7 @@ python -m fine_rgb.evaluate_rgb_four_scenes_streaming \
   --test-frame-count "${TEST_FRAME_COUNT:-120}" \
   --batch-size 1 --num-workers "${NUM_WORKERS:-0}" \
   --amp "${AMP:-none}" \
+  --visualize-every "${VISUALIZE_EVERY:-1}" \
+  --max-visuals-per-condition "${MAX_VISUALS_PER_CONDITION:-0}" \
   --output-dir "${OUTPUT}" \
   "$@" 2>&1 | tee "${OUTPUT}/logs/evaluate.log"
