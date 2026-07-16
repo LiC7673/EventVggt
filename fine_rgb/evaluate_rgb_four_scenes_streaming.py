@@ -102,6 +102,24 @@ def save_visual(output_root, experiment, scene, exposure, batch_index,
     figure.tight_layout(); figure.savefig(path, dpi=130); plt.close(figure)
 
 
+def align_depth_scheme_a(pred, target, valid):
+    """One GT least-squares scale shared by every view in each sample."""
+    mask = (
+        valid.bool() & torch.isfinite(pred) & torch.isfinite(target)
+        & (pred > 1e-6) & (target > 1e-6)
+    )
+    weight = mask.float()
+    reduce_dims = tuple(range(1, pred.ndim))
+    numerator = (weight * pred * target).sum(reduce_dims)
+    denominator = (weight * pred.square()).sum(reduce_dims)
+    count = weight.sum(reduce_dims)
+    if bool((count <= 0).any()):
+        raise RuntimeError("RGB Scheme-A alignment found a sample without valid depth")
+    scale = (numerator / denominator.clamp_min(1e-6)).detach()
+    aligned = pred * scale.view(-1, *([1] * (pred.ndim - 1)))
+    return aligned, scale
+
+
 @torch.inference_mode()
 def evaluate_loader(model, loader, device, args, bundles, *, experiment,
                     scene, exposure):
@@ -115,13 +133,14 @@ def evaluate_loader(model, loader, device, args, bundles, *, experiment,
         views = move_views(cpu_views, device)
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=enabled):
             output = model(views)
-        pred = torch.stack(
+        pred_raw = torch.stack(
             [item["depth"][..., 0] for item in output.ress], dim=1
         ).float()
         target = rgb.stack_view_field(views, "depthmap").float()
         intrinsics = rgb.stack_view_field(views, "camera_intrinsics").float()
         gt_pose = rgb.stack_view_field(views, "camera_pose").float()
         valid = rgb.build_valid_mask(views, target)
+        pred, scene_scale = align_depth_scheme_a(pred_raw, target, valid)
         for bundle in bundles:
             _update_condition(
                 bundle, "coarse_rgb", output, pred,
@@ -136,7 +155,10 @@ def evaluate_loader(model, loader, device, args, bundles, *, experiment,
             visuals += 1
         evaluated += 1
         if args.print_freq > 0 and evaluated % args.print_freq == 0:
-            print(f"  [stream] batches={evaluated}/{len(loader)}", flush=True)
+            print(
+                f"  [stream] batches={evaluated}/{len(loader)} "
+                f"GT-scale={float(scene_scale.mean()):.5f}", flush=True,
+            )
     return evaluated
 
 
@@ -150,7 +172,7 @@ def append_row(rows, experiment, scope, scene, exposure, checkpoint, batches, bu
         "scope": scope,
         "scene": scene,
         "ldr_event_id": exposure,
-        "condition": "rgb_only",
+        "condition": "rgb_only_gt_ls_scale_aligned",
         "checkpoint": str(checkpoint),
         "evaluated_batches": batches,
         **bundle.compute(),
@@ -276,6 +298,7 @@ def main():
 
     payload = {
         "streaming_unit": "one scene and one RGB exposure",
+        "depth_alignment": "per-sample one least-squares GT scale shared by all views",
         "scenes": list(args.scenes),
         "ldr_event_ids": exposures,
         "results": summary_results,
