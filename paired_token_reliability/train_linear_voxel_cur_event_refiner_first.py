@@ -14,6 +14,42 @@ from paired_token_reliability.linear_voxel_cur_event_hf_residual_model import Cu
 REFINER_FIRST_STEPS = 1000
 
 
+def prepare_pair(batch, device, args, phase):
+    """Use reference ev_0 RGB for clean-Geo refiner learning.
+
+    The former route changed only ``hdr_img`` while the frozen RGB backbone
+    continued to consume ``img`` from the degraded LDR member.  Consequently
+    the alleged fixed HDR base was neither high-HDR nor fixed across pairs.
+    """
+    target, reference, event, bridge = pipeline._ORIGINAL_PREPARE_PAIR(
+        batch, device, args, phase
+    )
+    if phase == "adapter":
+        ldr_a = [str(value).lower() for value in batch.get("ldr_a", ())]
+        if not ldr_a or any(value != "ev_0" for value in ldr_a):
+            raise RuntimeError(
+                "refiner-first Phase A requires anchor pairs with ldr_a=ev_0; "
+                f"received {ldr_a!r}. Use --pair-mode anchor and exposures starting at 0."
+            )
+        ev0_views = fe.maybe_denormalize_views(
+            pipeline.move_views_to_device(batch["views_a"], device)
+        )
+        for student, ev0 in zip(target, ev0_views):
+            # Phase A is a geometry-detail pretraining problem: construct its
+            # base exclusively from the best/reference RGB (ev_0 in the anchor
+            # protocol) and retain E_geo selected by the original preparer.
+            student["img"] = ev0["img"]
+            student["hdr_img"] = ev0["img"]
+            student["event_source_label"] = (
+                "E_geo + fixed reference RGB (ev_0 HDR base)"
+            )
+    else:
+        for student, teacher in zip(target, reference):
+            student["hdr_img"] = teacher["img"]
+            student["event_source_label"] = "E_cur + degraded LDR"
+    return target, reference, event, bridge
+
+
 def configure_phase(model, phase, _train_heads_a=False):
     model.requires_grad_(False)
     step = int(getattr(model, "_dual_alignment_step", 0))
@@ -93,7 +129,7 @@ def _force(argv):
 
 def main(argv=None):
     pipeline._ORIGINAL_PREPARE_PAIR = pipeline.prepare_pair
-    pipeline.prepare_pair = cur.prepare_pair
+    pipeline.prepare_pair = prepare_pair
     pipeline.build_alternating_phase_schedule = alternating.schedule
     pipeline.build_model = hf.build_model
     pipeline.configure_phase = configure_phase
