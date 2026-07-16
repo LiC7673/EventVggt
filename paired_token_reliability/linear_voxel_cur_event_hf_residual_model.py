@@ -7,7 +7,7 @@ from paired_token_reliability.linear_voxel_alternating_detail_first_fixed_model 
 
 
 class CurEventHFResidualModel(AlternatingDetailFirstFixedModel):
-    checkpoint_schema = "cur_event_explicit_hf_residual_final_derivative_v1"
+    checkpoint_schema = "cur_event_clean_hf_residual_final_derivative_v2"
 
     def forward(self, *args, **kwargs):
         # The parent pixel refiner normally ramps only after the global clock.

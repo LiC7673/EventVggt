@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
 export GPU="${GPU:-4}"
-export OUTPUT="${OUTPUT:-exp_f/cur_event_explicit_hf_residual_gpu4}"
+export OUTPUT="${OUTPUT:-exp_f/cur_event_clean_hf_residual_v2_gpu4}"
 
 # Reuse the strict cur_event launcher protocol, changing only the Python model
 # and objective entry. The explicit module remains the authoritative source.
