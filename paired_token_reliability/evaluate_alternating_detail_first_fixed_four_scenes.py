@@ -12,6 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
+from omegaconf import OmegaConf
 
 import finetune_event as fe
 from ablation.eag3r_metrics_eval import (
@@ -53,6 +54,13 @@ def parse_args():
     p.add_argument("--max-batches", type=int, default=None)
     p.add_argument("--event-resize-method", default="voxel_linear_time")
     p.add_argument("--event-resize-bins", type=int, default=5)
+    p.add_argument(
+        "--event-source-mode",
+        choices=("decomposition_full", "cur_best", "current"),
+        default="decomposition_full",
+        help=("event file used as the model's inference event input; cur_best "
+              "strictly reads cur_best_event/events.h5"),
+    )
     p.add_argument("--device", default="cuda")
     p.add_argument("--amp", choices=("none", "fp16", "bf16"), default="none")
     p.add_argument("--depth-scale", type=float, default=2.0,
@@ -108,7 +116,8 @@ def _normal_rgb(normal, valid):
     return image * valid.detach().float().cpu().unsqueeze(-1)
 
 
-def save_visual(root, scene, exposure, index, views, output, depth_gt, valid, intrinsics):
+def save_visual(root, scene, exposure, index, views, output, depth_gt, valid,
+                intrinsics, event_source_mode):
     coarse = stack_output(output, "depth_coarse")[0, 0].float()
     final = stack_output(output, "depth")[0, 0].float()
     gt = depth_gt[0, 0].float(); mask = valid[0, 0]
@@ -125,7 +134,7 @@ def save_visual(root, scene, exposure, index, views, output, depth_gt, valid, in
     error_max = float(final_error.max().clamp_min(1e-6))
     panels = (
         (rgb, "LDR RGB", None, None, None),
-        (event, "full event", "gray", None, None),
+        (event, f"event input ({event_source_mode})", "gray", None, None),
         (coarse.cpu() * mask.cpu(), "HDR-like coarse depth", "viridis", vmin, vmax),
         (final.cpu() * mask.cpu(), "event-refined final depth", "viridis", vmin, vmax),
         (gt.cpu() * mask.cpu(), "GT depth", "viridis", vmin, vmax),
@@ -174,7 +183,7 @@ def evaluate_loader(model, loader, cfg, args, device, accumulators, scene, expos
         if (args.visualize_every > 0 and batch_index % args.visualize_every == 0
                 and visual_budget):
             save_visual(out, scene, exposure, batch_index, views, output,
-                        depth_gt, valid, intrinsics)
+                        depth_gt, valid, intrinsics, args.event_source_mode)
             visuals += 1
         count += 1
     return count
@@ -194,6 +203,7 @@ def write_progress(out, checkpoint, args, exposures, nested, aggregates,
     payload = dict(
         checkpoint=str(checkpoint), scenes=list(args.scene_names),
         exposures=exposures, results=nested,
+        event_source_mode=args.event_source_mode,
         depth_alignment=f"fixed scale={args.depth_scale}; no test-GT alignment",
         all_scenes_pixel_weighted=aggregates,
         overall_pixel_weighted=overall_metrics,
@@ -216,6 +226,13 @@ def main():
     out = Path(args.output_dir); out.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
     model, cfg = build_model(checkpoint, device, args.depth_scale)
+    # Evaluation input selection must not silently inherit the training source
+    # from the checkpoint.  In particular, cur_best is a strict isolated path
+    # and never falls back to events_additive/full.
+    OmegaConf.set_struct(cfg, False)
+    OmegaConf.set_struct(cfg.data, False)
+    cfg.data.event_source_mode = args.event_source_mode
+    print(f"[test protocol] event_source_mode={args.event_source_mode}", flush=True)
     exposures = [f"ev_{x.strip().removeprefix('ev_')}" for x in args.exposures.split(",") if x.strip()]
     totals = {e: {n: ConditionAccumulator() for n in CONDITIONS} for e in exposures}
     overall = {n: ConditionAccumulator() for n in CONDITIONS}; rows=[]; nested={}

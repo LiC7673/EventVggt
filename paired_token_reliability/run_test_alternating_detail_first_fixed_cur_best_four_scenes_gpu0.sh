@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
+# Evaluate the latest fixed model with cur_best_event as its inference event.
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
-CHECKPOINT="${CHECKPOINT:-exp_f/alternating_geo_detail_first_dual_c_fixed_gpu4/checkpoint-best.pth}"
-OUTPUT_DIR="${OUTPUT_DIR:-exp_f/alternating_geo_detail_first_dual_c_fixed_gpu4/test_four_scenes_all_ev}"
+
+CHECKPOINT="${CHECKPOINT:-exp_f/alternating_geo_detail_first_dual_c_fixed_gpu4/checkpoint-adapter-last.pth}"
+OUTPUT_DIR="${OUTPUT_DIR:-exp_f/alternating_geo_detail_first_dual_c_fixed_gpu4/test_cur_best_four_scenes_all_ev}"
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
 
 CUDA_VISIBLE_DEVICES="${GPU:-0}" python -m \
   paired_token_reliability.evaluate_alternating_detail_first_fixed_four_scenes \
   --checkpoint "${CHECKPOINT}" --output-dir "${OUTPUT_DIR}" \
-  --event-source-mode "${EVENT_SOURCE_MODE:-decomposition_full}" \
+  --event-source-mode cur_best \
   --scene-names \
     "Centaur_Anodized_Red" \
     "Child_with_goose_Industrial_Plastic_Grey" \
