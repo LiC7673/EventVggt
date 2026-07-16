@@ -15,7 +15,7 @@ CUDA_VISIBLE_DEVICES="${GPU:-0}" python -m \
     "Cupid as Shepherd_100MB_Old_Copper" \
   --exposures "${EXPOSURES:-0,1,2,5,10}" \
   --test-frame-count "${TEST_FRAME_COUNT:-120}" \
-  --num-views 1 --batch-size 1 --num-workers "${NUM_WORKERS:-0}" \
+  --num-views "${NUM_VIEWS:-4}" --batch-size 1 --num-workers "${NUM_WORKERS:-0}" \
   --event-resize-method voxel_linear_time --event-resize-bins 5 \
-  --visualize-every "${VISUALIZE_EVERY:-24}" \
-  --max-visuals-per-condition "${MAX_VISUALS_PER_CONDITION:-5}" "$@"
+  --visualize-every "${VISUALIZE_EVERY:-1}" \
+  --max-visuals-per-condition "${MAX_VISUALS_PER_CONDITION:-0}" "$@"

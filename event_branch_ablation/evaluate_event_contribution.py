@@ -77,6 +77,25 @@ DEFAULT_CONDITIONS = [
 ]
 
 
+def _interior_normal_mask(
+    valid_mask: torch.Tensor,
+    pred_depth: torch.Tensor,
+    gt_depth: torch.Tensor,
+) -> torch.Tensor:
+    """Keep normals only where the complete 3x3 depth stencil is valid."""
+    base = (
+        valid_mask.bool()
+        & torch.isfinite(pred_depth) & torch.isfinite(gt_depth)
+        & (pred_depth > EPS) & (gt_depth > EPS)
+    )
+    shape = base.shape
+    flat = base.float().reshape(-1, 1, shape[-2], shape[-1])
+    # Average equals one iff all nine mask values are valid. This removes the
+    # object silhouette where depth finite differences would touch background.
+    interior = F.avg_pool2d(flat, kernel_size=3, stride=1, padding=1) >= (1.0 - 1e-6)
+    return interior.reshape(shape)
+
+
 def _nanmean(values: Iterable[float]) -> float:
     array = np.asarray(list(values), dtype=np.float64)
     array = array[np.isfinite(array)]
@@ -107,11 +126,9 @@ class NormalMetrics:
     ) -> None:
         pred_normal = fe.depth_to_normals(pred_depth, intrinsics)
         gt_normal = fe.depth_to_normals(gt_depth, intrinsics)
-        mask = valid_mask.bool().clone()
-        mask[..., 0, :] = False
-        mask[..., -1, :] = False
-        mask[..., :, 0] = False
-        mask[..., :, -1] = False
+        mask = _interior_normal_mask(
+            valid_mask, pred_depth, gt_depth
+        )
         pred_normal = F.normalize(pred_normal.float(), dim=-1, eps=1e-6)
         gt_normal = F.normalize(gt_normal.float(), dim=-1, eps=1e-6)
         cosine = (pred_normal * gt_normal).sum(dim=-1).clamp(-1.0, 1.0)
@@ -314,11 +331,7 @@ def _sample_metrics(
 
     pred_normal = F.normalize(fe.depth_to_normals(pred, intrinsics).float(), dim=-1, eps=1e-6)
     gt_normal = F.normalize(fe.depth_to_normals(gt, intrinsics).float(), dim=-1, eps=1e-6)
-    normal_mask = valid.clone()
-    normal_mask[..., 0, :] = False
-    normal_mask[..., -1, :] = False
-    normal_mask[..., :, 0] = False
-    normal_mask[..., :, -1] = False
+    normal_mask = _interior_normal_mask(valid, pred, gt)
     angle = torch.rad2deg(torch.acos((pred_normal * gt_normal).sum(dim=-1).clamp(-1.0, 1.0)))
     normal_mask &= torch.isfinite(angle)
     normal_mean = angle[normal_mask].mean() if normal_mask.any() else angle.new_tensor(float("nan"))

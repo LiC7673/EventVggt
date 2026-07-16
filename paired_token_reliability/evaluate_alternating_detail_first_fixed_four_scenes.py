@@ -45,7 +45,7 @@ def parse_args():
     p.add_argument("--scene-names", nargs="+", default=list(SCENES))
     p.add_argument("--exposures", default="0,1,2,5,10")
     p.add_argument("--test-frame-count", type=int, default=120)
-    p.add_argument("--num-views", type=int, default=1)
+    p.add_argument("--num-views", type=int, default=4)
     p.add_argument("--resolution", type=int, nargs=2, default=[518, 392])
     p.add_argument("--window-stride", type=int, default=1)
     p.add_argument("--batch-size", type=int, default=1)
@@ -55,8 +55,9 @@ def parse_args():
     p.add_argument("--event-resize-bins", type=int, default=5)
     p.add_argument("--device", default="cuda")
     p.add_argument("--amp", choices=("none", "fp16", "bf16"), default="none")
-    p.add_argument("--visualize-every", type=int, default=24)
-    p.add_argument("--max-visuals-per-condition", type=int, default=5)
+    p.add_argument("--visualize-every", type=int, default=1)
+    p.add_argument("--max-visuals-per-condition", type=int, default=0,
+                   help="0 means save every selected batch without a cap")
     return p.parse_args()
 
 
@@ -117,15 +118,15 @@ def save_visual(root, scene, exposure, index, views, output, depth_gt, valid, in
     c_refine = output.ress[0]["normal_fusion_gate"][0].detach().float().cpu()
     valid_values = torch.cat((coarse[mask], final[mask], gt[mask]))
     vmin, vmax = float(valid_values.min()), float(valid_values.max())
-    improvement = ((final - gt).abs() - (coarse - gt).abs()) * mask
-    limit = float(improvement.abs().max().clamp_min(1e-6))
+    final_error = (final - gt).abs() * mask
+    error_max = float(final_error.max().clamp_min(1e-6))
     panels = (
         (rgb, "LDR RGB", None, None, None),
         (event, "full event", "gray", None, None),
         (coarse.cpu() * mask.cpu(), "HDR-like coarse depth", "viridis", vmin, vmax),
         (final.cpu() * mask.cpu(), "event-refined final depth", "viridis", vmin, vmax),
         (gt.cpu() * mask.cpu(), "GT depth", "viridis", vmin, vmax),
-        (improvement.cpu(), "|final-GT|-|coarse-GT|", "coolwarm", -limit, limit),
+        (final_error.cpu(), "|final depth - GT depth|", "magma", 0, error_max),
         (_normal_rgb(coarse_n, mask), "coarse normal", None, None, None),
         (_normal_rgb(final_n, mask), "final normal", None, None, None),
         (_normal_rgb(gt_n, mask), "GT normal", None, None, None),
@@ -165,8 +166,10 @@ def evaluate_loader(model, loader, cfg, args, device, accumulators, scene, expos
             for accumulator in accumulators[name]:
                 _update_condition(accumulator, name, output, depth, depth_gt,
                                   intrinsics, poses, valid)
+        visual_budget = (args.max_visuals_per_condition <= 0
+                         or visuals < args.max_visuals_per_condition)
         if (args.visualize_every > 0 and batch_index % args.visualize_every == 0
-                and visuals < args.max_visuals_per_condition):
+                and visual_budget):
             save_visual(out, scene, exposure, batch_index, views, output,
                         depth_gt, valid, intrinsics)
             visuals += 1
@@ -181,6 +184,26 @@ def rows_for(scope, scene, exposure, values, batches):
         rows.append(dict(scope=scope, scene=scene, exposure=exposure,
                          condition=name, evaluated_batches=batches, **metric))
     return rows, computed
+
+
+def write_progress(out, checkpoint, args, exposures, nested, aggregates,
+                   overall_metrics, rows, complete=False):
+    payload = dict(
+        checkpoint=str(checkpoint), scenes=list(args.scene_names),
+        exposures=exposures, results=nested,
+        all_scenes_pixel_weighted=aggregates,
+        overall_pixel_weighted=overall_metrics,
+        complete=bool(complete),
+    )
+    (out / "summary.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    if rows:
+        with (out / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle, fieldnames=list(rows[0].keys()), extrasaction="ignore"
+            )
+            writer.writeheader(); writer.writerows(rows)
 
 
 def main():
@@ -215,6 +238,12 @@ def main():
             current_rows, metrics = rows_for("scene", scene, exposure, local, batches)
             rows += current_rows; nested[scene][exposure] = metrics
             exposure_batches[exposure] += batches; all_batches += batches
+            # Persist after every scene/exposure. Long all-frame evaluation is
+            # inspectable while running and remains usable after interruption.
+            write_progress(
+                out, checkpoint, args, exposures, nested, {}, {}, rows,
+                complete=False,
+            )
             print(f"  final MAE={metrics['final_event_refined']['mae']:.6f} "
                   f"AbsRel={metrics['final_event_refined']['abs_rel']:.6f} "
                   f"Nmean={metrics['final_event_refined']['normal_mean_deg']:.3f}", flush=True)
@@ -227,13 +256,10 @@ def main():
         rows += new_rows; aggregates[exposure] = metrics
     new_rows, all_metrics = rows_for("all_pixel_weighted", "ALL", "ALL", overall, all_batches)
     rows += new_rows
-    summary = dict(checkpoint=str(checkpoint), scenes=list(args.scene_names), exposures=exposures,
-                   results=nested, all_scenes_pixel_weighted=aggregates,
-                   overall_pixel_weighted=all_metrics)
-    (out / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
-    with (out / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer=csv.DictWriter(handle, fieldnames=list(rows[0].keys()), extrasaction="ignore")
-        writer.writeheader(); writer.writerows(rows)
+    write_progress(
+        out, checkpoint, args, exposures, nested, aggregates, all_metrics, rows,
+        complete=True,
+    )
     print(f"Saved metrics and visualizations to {out.resolve()}", flush=True)
 
 
