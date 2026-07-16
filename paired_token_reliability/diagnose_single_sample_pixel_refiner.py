@@ -18,12 +18,15 @@ from omegaconf import OmegaConf
 import finetune_event as fe
 import real_reliability_stage.evaluate_stage2_heldout as protocol
 from ablation.eag3r_metrics_eval import move_views_to_device, stack_output
-from paired_token_reliability.evaluate_cur_event_hf_residual_four_scenes import build_model
+from paired_token_reliability import train_unified_geometry_contribution as pipeline
+from paired_token_reliability.train_linear_voxel_cur_event_hf_residual import build_model
 
 
 def args_parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--config", default="config/finetune_event.yaml")
+    p.add_argument("--pretrained", default="ckpt/model.pt",
+                   help="Base VGGT weights only; experiment checkpoints are rejected")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--root", required=True)
     p.add_argument("--scene", default="Bearded Man_Ceramic_Glazed_White")
@@ -77,7 +80,21 @@ def save_panel(path, base, gt, target, pred, final, valid, title):
 def main():
     args = args_parser(); out = Path(args.output_dir); out.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    model, cfg = build_model(args.checkpoint, device, args.depth_scale)
+    pretrained = Path(args.pretrained)
+    if "checkpoint-" in pretrained.name or "exp_f" in pretrained.parts:
+        raise ValueError(
+            "single-sample from-scratch diagnostic accepts only the base VGGT "
+            "pretrained file, not an experiment checkpoint"
+        )
+    cfg = pipeline.load_cfg(args.config, [])
+    # The training builder loads only compatible frozen VGGT weights. Event
+    # modules and the pixel refiner remain freshly initialized.
+    model_args = SimpleNamespace(pretrained=str(pretrained))
+    model = build_model(cfg, model_args, device)
+    model.fixed_eval_depth_scale = float(args.depth_scale)
+    model._dual_alignment_step = 2500
+    model.set_confidence_stage("full")
+    model.eval()
     OmegaConf.set_struct(cfg, False); OmegaConf.set_struct(cfg.data, False)
     cfg.data.event_source_mode = "cur_event"
     cfg.data.decomposition_supervision = True
@@ -97,6 +114,8 @@ def main():
             raise RuntimeError("sample has no geometry_event_voxel; decomposition data is required")
         view["event_voxel"] = view["geometry_event_voxel"]
 
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
     model.capture_pixel_refiner_inputs = True
     with torch.no_grad():
         output = model(views)
@@ -120,6 +139,8 @@ def main():
     event_channels = model.pixel_depth_refiner.stem[0].in_channels - 11
     rows = []
     for mode in ("all", "derivative_geometry", "event_geometry"):
+        # A fresh copy of the randomly initialized refiner is used for every
+        # input ablation. No experiment-trained refiner weights are involved.
         refiner = copy.deepcopy(model.pixel_depth_refiner).to(device).train()
         optimizer = torch.optim.AdamW(refiner.parameters(), lr=args.lr, weight_decay=0.)
         x = configure_input(actual, mode, event_channels)
