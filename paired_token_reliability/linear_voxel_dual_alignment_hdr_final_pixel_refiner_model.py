@@ -56,6 +56,12 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         )
         self.pixel_refine_log_limit = float(pixel_refine_log_limit)
         self._aligned_event_feature_for_refiner = None
+        # Populated only for an explicit single-sample refiner diagnostic.
+        # Keeping this opt-in avoids retaining full-resolution graphs in normal
+        # training/evaluation.
+        self.capture_pixel_refiner_inputs = False
+        self._captured_pixel_refiner_actual = None
+        self._captured_pixel_refiner_baseline = None
         # Evaluation may set a dataset-calibrated constant. Training keeps the
         # historical GT-scale protocol unless a later training route changes it.
         self.fixed_eval_depth_scale = None
@@ -187,6 +193,9 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
                 torch.zeros_like(event_ch), torch.zeros_like(derivative_ch),
                 relative_log_ch, normal_ch, torch.zeros_like(c_ch),
             ), 1)
+            if self.capture_pixel_refiner_inputs:
+                self._captured_pixel_refiner_actual = actual.detach()
+                self._captured_pixel_refiner_baseline = baseline.detach()
             raw = self.pixel_depth_refiner(actual) - self.pixel_depth_refiner(baseline)
             limit = max(self.pixel_refine_log_limit, 1.0e-6)
             bounded = limit * torch.tanh(raw / limit)
