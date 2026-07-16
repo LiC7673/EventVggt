@@ -56,6 +56,8 @@ def parse_args():
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--amp", choices=("none", "fp16", "bf16"), default="none")
+    parser.add_argument("--depth-scale", type=float, default=2.0,
+                        help="fixed prediction scale; never estimated from test GT")
     parser.add_argument("--print-freq", type=int, default=20)
     parser.add_argument("--visualize-every", type=int, default=1)
     parser.add_argument("--max-visuals-per-condition", type=int, default=0,
@@ -102,22 +104,10 @@ def save_visual(output_root, experiment, scene, exposure, batch_index,
     figure.tight_layout(); figure.savefig(path, dpi=130); plt.close(figure)
 
 
-def align_depth_scheme_a(pred, target, valid):
-    """One GT least-squares scale shared by every view in each sample."""
-    mask = (
-        valid.bool() & torch.isfinite(pred) & torch.isfinite(target)
-        & (pred > 1e-6) & (target > 1e-6)
-    )
-    weight = mask.float()
-    reduce_dims = tuple(range(1, pred.ndim))
-    numerator = (weight * pred * target).sum(reduce_dims)
-    denominator = (weight * pred.square()).sum(reduce_dims)
-    count = weight.sum(reduce_dims)
-    if bool((count <= 0).any()):
-        raise RuntimeError("RGB Scheme-A alignment found a sample without valid depth")
-    scale = (numerator / denominator.clamp_min(1e-6)).detach()
-    aligned = pred * scale.view(-1, *([1] * (pred.ndim - 1)))
-    return aligned, scale
+def apply_fixed_depth_scale(pred, scale):
+    """Apply a calibration constant without consulting test ground truth."""
+    value = pred.new_full((pred.shape[0],), float(scale))
+    return pred * float(scale), value
 
 
 @torch.inference_mode()
@@ -140,7 +130,7 @@ def evaluate_loader(model, loader, device, args, bundles, *, experiment,
         intrinsics = rgb.stack_view_field(views, "camera_intrinsics").float()
         gt_pose = rgb.stack_view_field(views, "camera_pose").float()
         valid = rgb.build_valid_mask(views, target)
-        pred, scene_scale = align_depth_scheme_a(pred_raw, target, valid)
+        pred, scene_scale = apply_fixed_depth_scale(pred_raw, args.depth_scale)
         for bundle in bundles:
             _update_condition(
                 bundle, "coarse_rgb", output, pred,
@@ -172,7 +162,7 @@ def append_row(rows, experiment, scope, scene, exposure, checkpoint, batches, bu
         "scope": scope,
         "scene": scene,
         "ldr_event_id": exposure,
-        "condition": "rgb_only_gt_ls_scale_aligned",
+        "condition": "rgb_only_fixed_scale",
         "checkpoint": str(checkpoint),
         "evaluated_batches": batches,
         **bundle.compute(),
@@ -298,7 +288,7 @@ def main():
 
     payload = {
         "streaming_unit": "one scene and one RGB exposure",
-        "depth_alignment": "per-sample one least-squares GT scale shared by all views",
+        "depth_alignment": f"fixed scale={args.depth_scale}; no test-GT alignment",
         "scenes": list(args.scenes),
         "ldr_event_ids": exposures,
         "results": summary_results,

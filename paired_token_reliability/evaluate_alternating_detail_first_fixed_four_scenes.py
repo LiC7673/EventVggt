@@ -55,13 +55,15 @@ def parse_args():
     p.add_argument("--event-resize-bins", type=int, default=5)
     p.add_argument("--device", default="cuda")
     p.add_argument("--amp", choices=("none", "fp16", "bf16"), default="none")
+    p.add_argument("--depth-scale", type=float, default=2.0,
+                   help="fixed prediction scale; never estimated from test GT")
     p.add_argument("--visualize-every", type=int, default=1)
     p.add_argument("--max-visuals-per-condition", type=int, default=0,
                    help="0 means save every selected batch without a cap")
     return p.parse_args()
 
 
-def build_model(checkpoint, device):
+def build_model(checkpoint, device, depth_scale):
     raw = torch_load(checkpoint)
     expected = AlternatingDetailFirstFixedModel.checkpoint_schema
     if raw.get("schema") != expected:
@@ -97,6 +99,7 @@ def build_model(checkpoint, device):
         )
         model._dual_alignment_step = 1500
     model.set_confidence_stage("full")
+    model.fixed_eval_depth_scale = float(depth_scale)
     return model.to(device).eval(), cfg
 
 
@@ -191,6 +194,7 @@ def write_progress(out, checkpoint, args, exposures, nested, aggregates,
     payload = dict(
         checkpoint=str(checkpoint), scenes=list(args.scene_names),
         exposures=exposures, results=nested,
+        depth_alignment=f"fixed scale={args.depth_scale}; no test-GT alignment",
         all_scenes_pixel_weighted=aggregates,
         overall_pixel_weighted=overall_metrics,
         complete=bool(complete),
@@ -211,7 +215,7 @@ def main():
     if not checkpoint.is_absolute(): checkpoint = ROOT / checkpoint
     out = Path(args.output_dir); out.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
-    model, cfg = build_model(checkpoint, device)
+    model, cfg = build_model(checkpoint, device, args.depth_scale)
     exposures = [f"ev_{x.strip().removeprefix('ev_')}" for x in args.exposures.split(",") if x.strip()]
     totals = {e: {n: ConditionAccumulator() for n in CONDITIONS} for e in exposures}
     overall = {n: ConditionAccumulator() for n in CONDITIONS}; rows=[]; nested={}

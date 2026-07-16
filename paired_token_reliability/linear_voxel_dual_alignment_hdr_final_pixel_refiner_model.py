@@ -56,6 +56,9 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         )
         self.pixel_refine_log_limit = float(pixel_refine_log_limit)
         self._aligned_event_feature_for_refiner = None
+        # Evaluation may set a dataset-calibrated constant. Training keeps the
+        # historical GT-scale protocol unless a later training route changes it.
+        self.fixed_eval_depth_scale = None
 
     def _event_patch_tokens(self, feature, reliability, patch_count, image_hw):
         # ``feature`` is the aligned full-resolution event feature immediately
@@ -93,29 +96,35 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         raw_coarse = torch.stack(
             [item["depth_coarse_raw"][..., 0] for item in output.ress], 1
         ).float()
-        gt_fields = [view.get("depthmap") for view in views]
-        if not all(torch.is_tensor(value) for value in gt_fields):
-            raise RuntimeError(
-                "GT scene-scale protocol requires depthmap for every view at train/val/test time"
+        if not self.training and self.fixed_eval_depth_scale is not None:
+            # Paper evaluation: fixed calibration, with no GT read in the
+            # scale path whatsoever.
+            scene_scale = raw_coarse.new_full(
+                (raw_coarse.shape[0],), float(self.fixed_eval_depth_scale)
             )
-        gt_depth = torch.stack(gt_fields, dim=1).to(raw_coarse).float()
-        valid_scale = (
-            torch.isfinite(raw_coarse) & torch.isfinite(gt_depth)
-            & (raw_coarse > 1.0e-6) & (gt_depth > 1.0e-6)
-        )
-        weight = valid_scale.float()
-        reduce_dims = tuple(range(1, raw_coarse.ndim))
-        numerator = (weight * raw_coarse * gt_depth).sum(reduce_dims)
-        denominator = (weight * raw_coarse.square()).sum(reduce_dims)
-        scene_scale = (numerator / denominator.clamp_min(1.0e-6)).detach()
-        valid_count = weight.sum(reduce_dims)
-        if bool((valid_count <= 0).any()):
-            raise RuntimeError("GT scene-scale protocol found a sample with no valid depth pixels")
+        else:
+            gt_fields = [view.get("depthmap") for view in views]
+            if not all(torch.is_tensor(value) for value in gt_fields):
+                raise RuntimeError(
+                    "training GT-scale protocol requires depthmap for every view"
+                )
+            gt_depth = torch.stack(gt_fields, dim=1).to(raw_coarse).float()
+            valid_scale = (
+                torch.isfinite(raw_coarse) & torch.isfinite(gt_depth)
+                & (raw_coarse > 1.0e-6) & (gt_depth > 1.0e-6)
+            )
+            weight = valid_scale.float()
+            reduce_dims = tuple(range(1, raw_coarse.ndim))
+            numerator = (weight * raw_coarse * gt_depth).sum(reduce_dims)
+            denominator = (weight * raw_coarse.square()).sum(reduce_dims)
+            scene_scale = (numerator / denominator.clamp_min(1.0e-6)).detach()
+            if bool((weight.sum(reduce_dims) <= 0).any()):
+                raise RuntimeError("GT scene-scale protocol found no valid depth pixels")
         scale_view = scene_scale.view(-1, *([1] * (raw_coarse.ndim - 1)))
         coarse = raw_coarse * scale_view
 
         # The parent already applied its learned dataset scale. Remove it and
-        # apply the one GT-derived scene scale shared by coarse/base/final.
+        # apply the one shared scene scale to coarse/base/final.
         parent_base = torch.stack(
             [item["depth_hdr_base"][..., 0] for item in output.ress], 1
         ).float()
