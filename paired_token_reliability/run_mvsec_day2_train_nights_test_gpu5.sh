@@ -10,7 +10,11 @@ if [[ ! -f "${CHECKPOINT}" ]]; then
   echo "Run with CHECKPOINT=/absolute/path/to/your/best.pth" >&2
   exit 2
 fi
-if [[ ! -f "${H5_ROOT}/outdoor_day2_data.hdf5" ]]; then
+need_convert=0
+for sequence in outdoor_day2 outdoor_night1 outdoor_night2 outdoor_night3; do
+  [[ -s "${H5_ROOT}/${sequence}_data.hdf5" && -s "${H5_ROOT}/${sequence}_gt.hdf5" ]] || need_convert=1
+done
+if [[ "${need_convert}" == 1 ]]; then
   echo "Converting raw MVSEC ROS bags to ${H5_ROOT} ..."
   python -m paired_token_reliability.convert_mvsec_rosbag_to_hdf5 --root "${RAW_ROOT}" --output "${H5_ROOT}"
 fi
