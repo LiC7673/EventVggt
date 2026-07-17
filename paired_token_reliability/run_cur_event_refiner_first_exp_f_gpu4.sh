@@ -12,6 +12,7 @@ python -m torch.distributed.run --nproc_per_node "${n}" --master_port "${port}" 
  -m paired_token_reliability.train_linear_voxel_cur_event_refiner_first \
  --pretrained "${PRETRAINED:-ckpt/model.pt}" --output "${OUTPUT}" \
  --epochs-a 1 --epochs-b "${EPOCHS_B:-6}" --epochs-c 0 \
+ --first-adapter-max-batches "${REFINER_WARMUP_STEPS:-1000}" \
  --lr "${LR:-0.0001}" --num-workers "${NUM_WORKERS:-2}" \
  --point-weight 0 --pair-weight 0 --decomposition-weight 0 \
  --event-normal-weight 1 --depth-event-normal-weight .5 --update-weight 0 --no-budget \

@@ -126,6 +126,11 @@ def parser():
     value.add_argument("--no-geometry-prior", action="store_true")
     value.add_argument("--train-geometry-heads-a", action="store_true")
     value.add_argument("--max-train-batches", type=int, default=0)
+    value.add_argument(
+        "--first-adapter-max-batches", type=int, default=0,
+        help=("Limit only the first Phase-A epoch. Later A/B epochs keep the "
+              "full loader; useful for an exact step-count refiner warm-up."),
+    )
     value.add_argument("--max-val-batches", type=int, default=50)
     value.add_argument("--visualize-every-batches", type=int, default=40)
     value.add_argument("--visualize-val-every-batches", type=int, default=20)
@@ -1012,10 +1017,25 @@ def main(argv=None):
         if train_sampler is not None:
             train_sampler.set_epoch(global_epoch)
         start = time.time()
+        regular_train_limit = args.max_train_batches
+        first_adapter_limit = (
+            int(args.first_adapter_max_batches)
+            if phase == "adapter" and phase_epochs["adapter"] == 0
+            else 0
+        )
+        if first_adapter_limit > 0:
+            args.max_train_batches = first_adapter_limit
+            if rank == 0:
+                print(
+                    f"[first-adapter cutoff] exactly at most {first_adapter_limit} "
+                    "training batches, then switch to the next scheduled phase",
+                    flush=True,
+                )
         train_metrics = run_epoch(
             train_model, model, train_loader, optimizer, criterion, device, args,
             phase, epoch, epochs, True, distributed, rank,
         )
+        args.max_train_batches = regular_train_limit
         val_metrics = run_epoch(
             train_model, model, val_loader, optimizer, criterion, device, args,
             phase, epoch, epochs, False, distributed, rank,
