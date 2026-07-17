@@ -44,3 +44,11 @@ run_one noisy_event_only 0 "$base"
 run_one multi_ldr_only 1 "$((base+1))"
 run_one without_refiner_normal 2 "$((base+2))"
 wait
+
+if [[ "${AUTO_TEST:-1}" == "1" ]]; then
+  echo "[auto-test] training completed; launching variant-correct four-scene/all-EV tests"
+  ABLATION_ROOT="${ABLATION_ROOT}" \
+    bash paired_token_reliability/run_test_latest_three_ablations_gpu012.sh
+else
+  echo "[auto-test] disabled (AUTO_TEST=${AUTO_TEST:-0})"
+fi
