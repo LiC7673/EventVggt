@@ -65,6 +65,7 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         # Evaluation may set a dataset-calibrated constant. Training keeps the
         # historical GT-scale protocol unless a later training route changes it.
         self.fixed_eval_depth_scale = None
+        self.disable_pixel_refiner = False
 
     def _event_patch_tokens(self, feature, reliability, patch_count, image_hw):
         # ``feature`` is the aligned full-resolution event feature immediately
@@ -176,7 +177,7 @@ class FinalEventGeometryPixelRefinerModel(PixelHighFrequencyDerivativeV10Model):
         c_ch = c_live.reshape(bv, 1, h, w)
         step = int(float(output.ress[0]["pixel_hf_train_step"].detach()))
         coupling = max(0.0, min(1.0, (step - 1000) / 1000.0))
-        if coupling <= 0.0:
+        if self.disable_pixel_refiner or coupling <= 0.0:
             # Do not evaluate an inactive random refiner. Keep a zero-gradient
             # dependency so DDP still regards every parameter as used.
             zero = sum(

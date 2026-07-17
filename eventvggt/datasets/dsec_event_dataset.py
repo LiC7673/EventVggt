@@ -796,7 +796,13 @@ def get_dsec_dataset(
     sequence_names=None,
     **kwargs,
 ):
-    dsec_split = "val" if split in {"train", "val"} else "test"
+    # Prefer the explicitly requested on-disk split.  Older official DSEC
+    # layouts used ``val`` as the supervised training source, whereas the
+    # converted DSEC_EV_VGGT layout has real ``train`` and ``test`` folders.
+    requested = Path(root) / str(split)
+    dsec_split = str(split) if requested.is_dir() else (
+        "val" if split in {"train", "val"} else "test"
+    )
     return DSECEventDataset(
         ROOT=root,
         dsec_split=dsec_split,
