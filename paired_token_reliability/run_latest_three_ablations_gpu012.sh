@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
-mkdir -p exp_f/latest_three_strategy_ablation/launcher_logs
+ABLATION_ROOT="${ABLATION_ROOT:-exp_f/latest_three_strategy_ablation_3epoch}"
+mkdir -p "${ABLATION_ROOT}/launcher_logs"
+# Total budget is 1 + 2 * EPOCHS_B.  The paper ablations default to exactly
+# three epochs: A->B->A for the full-minus component variant, and three
+# adapter epochs for the single-strategy variants.
+EPOCHS_B="${EPOCHS_B:-1}"
+if [[ "${EPOCHS_B}" -ne 1 ]]; then
+  echo "[warning] EPOCHS_B=${EPOCHS_B}; total epochs will be $((1 + 2 * EPOCHS_B)), not 3" >&2
+else
+  echo "[ablation budget] exactly 3 epochs per experiment"
+fi
 
 run_one() {
   local variant="$1" gpu="$2" port="$3"
@@ -9,8 +19,8 @@ run_one() {
   python -m torch.distributed.run --nproc_per_node 1 --master_port "$port" \
    -m paired_token_reliability.train_latest_strategy_ablation \
    --pretrained "${PRETRAINED:-ckpt/model.pt}" \
-   --output "exp_f/latest_three_strategy_ablation/${variant}" \
-   --epochs-a 1 --epochs-b "${EPOCHS_B:-6}" --epochs-c 0 \
+   --output "${ABLATION_ROOT}/${variant}" \
+   --epochs-a 1 --epochs-b "${EPOCHS_B}" --epochs-c 0 \
    --lr "${LR:-0.0001}" --num-workers "${NUM_WORKERS:-2}" \
    --point-weight 0 --pair-weight 0 --decomposition-weight 0 --no-budget \
    --event-normal-weight 1 --depth-event-normal-weight .5 --update-weight 0 \
@@ -25,7 +35,7 @@ run_one() {
    "model.head_frames_chunk_size=${HEAD_CHUNK:-1}" \
    "model.pixel_refiner_delay=0" "model.pixel_refine_log_limit=0.30" \
    "model.c_delay_steps=1000" "model.c_transition_steps=1000" \
-   > "exp_f/latest_three_strategy_ablation/launcher_logs/${variant}.log" 2>&1 &
+   > "${ABLATION_ROOT}/launcher_logs/${variant}.log" 2>&1 &
   echo "$! $variant GPU=$gpu"
 }
 
