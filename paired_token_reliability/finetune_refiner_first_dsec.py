@@ -48,7 +48,13 @@ def load_model(args, device):
         raise RuntimeError(f"checkpoint mismatch: {loaded}")
     runtime = (raw.get("trainer_state") or {}).get("runtime_state", {})
     model._dual_alignment_step = max(int(runtime.get("dual_alignment_step", 0)), 2500)
-    model.set_confidence_stage("geo")  # DSEC has no reliability teacher: C=1.
+    # DSEC supplies only the inference-time event stream.  Keep the pretrained
+    # Full->Geo aligner and frozen learned C, but disable teacher-only checks.
+    # Using stage="geo" here is incorrect: it means a clean E_geo training
+    # epoch, bypasses the aligner, and requires geometry_event_voxel.
+    model.require_geo_teacher = False
+    model.require_hdr_teacher = False
+    model.set_confidence_stage("full")
     model.requires_grad_(False)
     for module in (model.event_encoder, model.event_normal_decoder, model.pixel_depth_refiner):
         module.requires_grad_(True)
@@ -98,7 +104,6 @@ def run(model, data, device, optimizer=None, max_batches=0):
     for index, cpu_views in enumerate(data):
         if max_batches > 0 and index >= max_batches: break
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
-        for view in views: view["hdr_img"] = view["img"]
         with torch.set_grad_enabled(training):
             output = model(views); loss, details = objective(output, views)
             if training:

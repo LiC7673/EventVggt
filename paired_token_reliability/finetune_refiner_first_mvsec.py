@@ -45,7 +45,12 @@ def load_model(a, device):
     model = build_model(cfg, argparse.Namespace(pretrained=pretrained), device)
     mismatch = model.load_state_dict(strip_module_prefix(fe.unwrap_state_dict(state)), strict=True)
     if mismatch.missing_keys or mismatch.unexpected_keys: raise RuntimeError(f"checkpoint mismatch: {mismatch}")
-    model.set_confidence_stage("geo")  # MVSEC has no full/geo teacher pair: do not relearn C.
+    # MVSEC has no paired E_geo/HDR teachers.  Its single real event stream is
+    # an inference-time Full stream, so retain the pretrained aligner and
+    # frozen learned C while disabling only the teacher requirements.
+    model.require_geo_teacher = False
+    model.require_hdr_teacher = False
+    model.set_confidence_stage("full")
     model.requires_grad_(False)
     for module in (model.event_encoder, model.event_normal_decoder, model.pixel_depth_refiner):
         module.requires_grad_(True)
@@ -104,7 +109,6 @@ def run(model, loader, device, max_depth, optimizer=None, max_steps=0):
     for i, cpu_views in enumerate(loader):
         if max_steps and i >= max_steps: break
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
-        for view in views: view["hdr_img"] = view["img"]
         with torch.set_grad_enabled(train):
             output = model(views); loss, metrics = losses_and_metrics(output, views, max_depth)
             if train:
