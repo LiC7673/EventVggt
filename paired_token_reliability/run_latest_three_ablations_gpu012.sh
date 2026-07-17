@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
-ABLATION_ROOT="${ABLATION_ROOT:-exp_f/latest_three_strategy_ablation_3epoch}"
+ABLATION_ROOT="${ABLATION_ROOT:-exp_f/latest_three_strategy_ablation_3epoch_v2_rgb_routes}"
 mkdir -p "${ABLATION_ROOT}/launcher_logs"
 # Total budget is 1 + 2 * EPOCHS_B.  The paper ablations default to exactly
 # three epochs: A->B->A for the full-minus component variant, and three

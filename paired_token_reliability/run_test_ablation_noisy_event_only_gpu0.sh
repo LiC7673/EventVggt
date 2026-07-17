@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-ROOT="${ABLATION_ROOT:-exp_f/latest_three_strategy_ablation_3epoch}"
+ROOT="${ABLATION_ROOT:-exp_f/latest_three_strategy_ablation_3epoch_v2_rgb_routes}"
 CHECKPOINT="${CHECKPOINT:-${ROOT}/noisy_event_only/checkpoint-adapter-last.pth}"
 OUTPUT="${OUTPUT:-${ROOT}/noisy_event_only/test_four_scenes_all_ev}"
 python -m paired_token_reliability.evaluate_latest_strategy_ablation \

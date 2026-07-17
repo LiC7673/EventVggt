@@ -28,13 +28,6 @@ def repeated_adapter_schedule(warmup, cycles, joint=0):
     return ["adapter"] * (int(warmup) + 2 * int(cycles))
 
 
-def _ev0_views(batch, device):
-    labels = [str(x).lower() for x in batch.get("ldr_a", ())]
-    if not labels or any(x != "ev_0" for x in labels):
-        raise RuntimeError(f"anchor ev_0 must be views_a, got {labels}")
-    return fe.maybe_denormalize_views(pipeline.move_views_to_device(batch["views_a"], device))
-
-
 def prepare_pair(batch, device, args, phase):
     if VARIANT in {"noisy_event_only", "multi_ldr_only"}:
         # Ask the original preparer for the real cur_event, never its Phase-A
@@ -43,17 +36,34 @@ def prepare_pair(batch, device, args, phase):
             batch, device, args, "contribution"
         )
         if VARIANT == "noisy_event_only":
-            # Remove Multi-LDR: both RGB inputs are the fixed clean ev_0 image;
-            # only the noisy event stream can explain residual geometry.
-            for student, ev0 in zip(target, _ev0_views(batch, device)):
-                student["img"] = ev0["img"]; student["hdr_img"] = ev0["img"]
-                student["event_source_label"] = "noisy cur_event only"
+            # Keep the genuinely degraded LDR selected by the common protocol.
+            # Remove Multi-LDR by making the HDR target identical to that LDR;
+            # ev_0 is never read by the model/loss in this ablation.
+            for student in target:
+                student["hdr_img"] = student["img"]
+                student["event_source_label"] = "degraded LDR + noisy cur_event; no ev0 teacher"
         else:
             # Preserve the true degraded LDR input and use ev_0 solely as the
             # detached HDR target.
             for student, teacher in zip(target, reference):
                 student["hdr_img"] = teacher["img"]
                 student["event_source_label"] = "Multi-LDR only: LDR+cur_event->ev0"
+        if not getattr(prepare_pair, "_printed", False):
+            difference = torch.stack([
+                (student["img"].float() - student["hdr_img"].float()).abs().mean()
+                for student in target
+            ]).mean()
+            print(
+                f"[ABLATION RGB ROUTE] {VARIANT}: "
+                f"mean|model_img-hdr_target|={float(difference):.6f}; "
+                + (
+                    "expected 0 (no ev0 teacher)"
+                    if VARIANT == "noisy_event_only"
+                    else "expected >0 (LDR input, ev0 target)"
+                ),
+                flush=True,
+            )
+            prepare_pair._printed = True
         return target, reference, event, bridge
     return full.prepare_pair(batch, device, args, phase)
 

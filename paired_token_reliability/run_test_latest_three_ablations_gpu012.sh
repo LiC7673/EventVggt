@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "${ROOT}"
-LOG_ROOT="${ABLATION_ROOT:-exp_f/latest_three_strategy_ablation_3epoch}/test_launcher_logs"
+LOG_ROOT="${ABLATION_ROOT:-exp_f/latest_three_strategy_ablation_3epoch_v2_rgb_routes}/test_launcher_logs"
 mkdir -p "${LOG_ROOT}"
 
 CUDA_VISIBLE_DEVICES=0 bash paired_token_reliability/run_test_ablation_noisy_event_only_gpu0.sh \
