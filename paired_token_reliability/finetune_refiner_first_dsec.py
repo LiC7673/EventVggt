@@ -99,6 +99,8 @@ def objective(output, views):
     rmse_log = torch.sqrt((signed_log_error.square() * valid).sum() / pixels)
     ratio = torch.maximum(pred / gt.clamp_min(1e-6), gt / pred.clamp_min(1e-6))
     delta1 = ((ratio < 1.25) & valid).sum().float() / pixels
+    delta2 = ((ratio < 1.25 ** 2) & valid).sum().float() / pixels
+    delta3 = ((ratio < 1.25 ** 3) & valid).sum().float() / pixels
     pn = F.normalize(fe.depth_to_normals(pred, k), dim=-1, eps=1e-6)
     gn = F.normalize(fe.depth_to_normals(gt, k), dim=-1, eps=1e-6)
     cosine = (pn * gn).sum(-1).clamp(-1, 1)
@@ -116,7 +118,8 @@ def objective(output, views):
     return depth + .2 * normal + hf, dict(
         depth=float(depth.detach()), normal=float(normal.detach()), hf=float(hf.detach()),
         MAE=float(mae.detach()), AbsRel=float(abs_rel.detach()), RMSElog=float(rmse_log.detach()),
-        delta1=float(delta1.detach()), Nmean=float(normal_mean.detach()), pixels=float(pixels.detach()),
+        delta1=float(delta1.detach()), delta2=float(delta2.detach()), delta3=float(delta3.detach()),
+        Nmean=float(normal_mean.detach()), pixels=float(pixels.detach()),
     )
 
 
@@ -167,7 +170,7 @@ def run(model, data, device, optimizer=None, max_batches=0, visual_dir=None,
         visualize_every=10, max_visualizations=30):
     training = optimizer is not None; model.train(training)
     model.aggregator.eval(); model.camera_head.eval(); model.depth_head.eval(); model.point_head.eval()
-    metric_keys = ("depth", "normal", "hf", "MAE", "AbsRel", "RMSElog", "delta1", "Nmean")
+    metric_keys = ("depth", "normal", "hf", "MAE", "AbsRel", "RMSElog", "delta1", "delta2", "delta3", "Nmean")
     totals = {key: 0. for key in metric_keys}; loss_total = pixel_total = 0.; count = 0
     visual_count = 0
     for index, cpu_views in enumerate(data):

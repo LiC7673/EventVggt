@@ -64,7 +64,15 @@ def make_loader(args):
 
 
 def evaluate_batch(output, views, scale):
-    pred = output["depth"][..., 0].float() * scale
+    # This repository's VGGT returns per-view predictions through
+    # VGGTOutput.ress rather than exposing ``depth`` at the top level.
+    if getattr(output, "ress", None) is not None:
+        pred = torch.stack([res["depth"][..., 0] for res in output.ress], dim=1).float()
+    elif isinstance(output, dict) and "depth" in output:
+        pred = output["depth"][..., 0].float()
+    else:
+        raise RuntimeError(f"VGGT output contains no depth prediction: {type(output)!r}")
+    pred = pred * scale
     gt = fe.stack_view_field(views, "depthmap").float()
     intrinsics = fe.stack_view_field(views, "camera_intrinsics").float()
     valid = torch.isfinite(gt) & torch.isfinite(pred) & (gt > .1) & (gt < 80.) & (pred > 1e-6)
@@ -77,6 +85,8 @@ def evaluate_batch(output, views, scale):
     rmse_log = torch.sqrt((signed_log_error.square() * valid).sum() / pixels)
     ratio = torch.maximum(pred / gt.clamp_min(1e-6), gt / pred.clamp_min(1e-6))
     delta1 = ((ratio < 1.25) & valid).sum().float() / pixels
+    delta2 = ((ratio < 1.25 ** 2) & valid).sum().float() / pixels
+    delta3 = ((ratio < 1.25 ** 3) & valid).sum().float() / pixels
     pred_normal = F.normalize(fe.depth_to_normals(pred, intrinsics), dim=-1, eps=1e-6)
     gt_normal = F.normalize(fe.depth_to_normals(gt, intrinsics), dim=-1, eps=1e-6)
     cosine = (pred_normal * gt_normal).sum(-1).clamp(-1, 1)
@@ -85,7 +95,8 @@ def evaluate_batch(output, views, scale):
     angle = torch.rad2deg(torch.acos(cosine.clamp(-1 + 1e-6, 1 - 1e-6)))
     metrics = dict(
         MAE=float(mae), AbsRel=float(abs_rel), RMSE=float(rmse), RMSElog=float(rmse_log),
-        delta1=float(delta1), Nmean=float((angle * normal_valid).sum() / normal_pixels),
+        delta1=float(delta1), delta2=float(delta2), delta3=float(delta3),
+        Nmean=float((angle * normal_valid).sum() / normal_pixels),
         Nmedian=float(angle[normal_valid].median()) if normal_valid.any() else 0.0,
         N11_25=float(((angle < 11.25) & normal_valid).sum() / normal_pixels),
         N22_5=float(((angle < 22.5) & normal_valid).sum() / normal_pixels),
@@ -140,7 +151,7 @@ def main():
     output_dir = Path(args.output); output_dir.mkdir(parents=True, exist_ok=True)
     model = load_model(args.checkpoint, device)
     loader = make_loader(args)
-    depth_keys = ("MAE", "AbsRel", "RMSE", "RMSElog", "delta1")
+    depth_keys = ("MAE", "AbsRel", "RMSE", "RMSElog", "delta1", "delta2", "delta3")
     normal_keys = ("Nmean", "N11_25", "N22_5", "N30")
     sums = {key: 0.0 for key in depth_keys + normal_keys}
     depth_pixels = normal_pixels = 0.0
@@ -169,6 +180,9 @@ def main():
     result["Nmedian_batch_mean"] = float(np.mean(medians)) if medians else 0.0
     result.update(batches=batches, pixels=int(depth_pixels), normal_pixels=int(normal_pixels),
                   depth_scale=args.depth_scale, scale_protocol="fixed_no_test_gt_alignment")
+    result["delta_lt_1.25"] = result["delta1"]
+    result["delta_lt_1.25^2"] = result["delta2"]
+    result["delta_lt_1.25^3"] = result["delta3"]
     payload = {"experiment": "DSEC RGB pretrained without finetuning",
                "checkpoint": args.checkpoint, "test_root": args.root, "metrics": result}
     (output_dir / "metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
