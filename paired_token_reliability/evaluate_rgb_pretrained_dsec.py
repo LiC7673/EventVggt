@@ -31,6 +31,11 @@ def parse_args():
     p.add_argument("--device", default="cuda")
     p.add_argument("--depth-scale", type=float, default=1.0,
                    help="fixed scale applied to every prediction; never estimated from test GT")
+    p.add_argument("--calibrate-scale", action="store_true",
+                   help="estimate one fixed scale from one training scene, then freeze it for test")
+    p.add_argument("--calibration-scene", default="",
+                   help="training scene used for scale calibration; empty selects the first scene")
+    p.add_argument("--max-calibration-batches", type=int, default=20)
     p.add_argument("--visualize-every", type=int, default=10)
     p.add_argument("--max-visualizations", type=int, default=40,
                    help="maximum saved view figures; 0 means unlimited")
@@ -51,16 +56,53 @@ def load_model(checkpoint, device):
     return model.to(device).eval().requires_grad_(False)
 
 
-def make_loader(args):
+def make_loader(args, split="test", sequence_names=None):
     dataset = get_dsec_dataset(
-        args.root, split="test", num_views=args.num_views, resolution=(518, 392),
+        args.root, split=split, num_views=args.num_views, resolution=(518, 392),
         seed=0, event_window_ms=50.0, event_resize_bins=5, clip_stride=4,
         allow_unaligned_rgb=False, depth_scale=1.0, max_depth=80.0,
+        sequence_names=sequence_names,
     )
-    print(f"[DSEC RGB] test: {dataset.get_stats()}", flush=True)
-    return DataLoader(dataset, batch_size=args.batch_size, shuffle=False,
+    print(f"[DSEC RGB] {split}: {dataset.get_stats()}", flush=True)
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False,
                       num_workers=args.num_workers, pin_memory=True,
                       collate_fn=event_multiview_collate, drop_last=False)
+    return dataset, loader
+
+
+def calibrate_scene_scale(model, args, device):
+    # Discover names first, then recreate a dataset restricted to one scene so
+    # scale calibration cannot accidentally mix training and test sequences.
+    discovery, _ = make_loader(args, "train")
+    available = discovery.get_active_scenes()
+    if not available:
+        raise RuntimeError("DSEC training split contains no scene for scale calibration")
+    scene = args.calibration_scene or available[0]
+    if scene not in available:
+        raise ValueError(f"calibration scene {scene!r} not found; available train scenes={available}")
+    _, loader = make_loader(args, "train", [scene])
+    ratios = []
+    with torch.inference_mode():
+        for index, cpu_views in enumerate(loader):
+            if args.max_calibration_batches > 0 and index >= args.max_calibration_batches:
+                break
+            views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
+            output = model(views)
+            pred = torch.stack([res["depth"][..., 0] for res in output.ress], dim=1).float()
+            gt = fe.stack_view_field(views, "depthmap").float()
+            valid = torch.isfinite(gt) & torch.isfinite(pred) & (gt > .1) & (gt < 80.) & (pred > 1e-6)
+            ratio = (gt[valid] / pred[valid]).detach().cpu()
+            # A deterministic cap prevents a dense scene from consuming large RAM.
+            if ratio.numel() > 100000:
+                ids = torch.linspace(0, ratio.numel() - 1, 100000).long()
+                ratio = ratio[ids]
+            ratios.append(ratio)
+    if not ratios or sum(x.numel() for x in ratios) == 0:
+        raise RuntimeError(f"no valid depth pixels found in calibration scene {scene!r}")
+    values = torch.cat(ratios)
+    scale = float(values.median())
+    print(f"[DSEC RGB scale] scene={scene} samples={values.numel()} median(GT/pred)={scale:.8f}", flush=True)
+    return scale, scene, int(values.numel())
 
 
 def evaluate_batch(output, views, scale):
@@ -150,7 +192,17 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     output_dir = Path(args.output); output_dir.mkdir(parents=True, exist_ok=True)
     model = load_model(args.checkpoint, device)
-    loader = make_loader(args)
+    calibration_scene = None; calibration_samples = 0
+    if args.calibrate_scale:
+        scale, calibration_scene, calibration_samples = calibrate_scene_scale(model, args, device)
+        # An explicitly supplied depth scale remains useful as a unit conversion
+        # and is composed with, rather than silently replacing, calibration.
+        eval_scale = args.depth_scale * scale
+        scale_protocol = "single_train_scene_median_gt_over_pred_fixed_for_test"
+    else:
+        eval_scale = args.depth_scale
+        scale_protocol = "fixed_no_test_gt_alignment"
+    _, loader = make_loader(args, "test")
     depth_keys = ("MAE", "AbsRel", "RMSE", "RMSElog", "delta1", "delta2", "delta3")
     normal_keys = ("Nmean", "N11_25", "N22_5", "N30")
     sums = {key: 0.0 for key in depth_keys + normal_keys}
@@ -162,7 +214,7 @@ def main():
                 break
             views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
             output = model(views)
-            metrics, tensors = evaluate_batch(output, views, args.depth_scale)
+            metrics, tensors = evaluate_batch(output, views, eval_scale)
             for key in depth_keys: sums[key] += metrics[key] * metrics["pixels"]
             for key in normal_keys: sums[key] += metrics[key] * metrics["normal_pixels"]
             depth_pixels += metrics["pixels"]; normal_pixels += metrics["normal_pixels"]
@@ -179,7 +231,8 @@ def main():
     result.update({key: sums[key] / max(normal_pixels, 1.) for key in normal_keys})
     result["Nmedian_batch_mean"] = float(np.mean(medians)) if medians else 0.0
     result.update(batches=batches, pixels=int(depth_pixels), normal_pixels=int(normal_pixels),
-                  depth_scale=args.depth_scale, scale_protocol="fixed_no_test_gt_alignment")
+                  depth_scale=eval_scale, scale_protocol=scale_protocol,
+                  calibration_scene=calibration_scene, calibration_samples=calibration_samples)
     result["delta_lt_1.25"] = result["delta1"]
     result["delta_lt_1.25^2"] = result["delta2"]
     result["delta_lt_1.25^3"] = result["delta3"]
