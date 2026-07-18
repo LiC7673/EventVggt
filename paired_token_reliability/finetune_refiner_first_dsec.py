@@ -5,6 +5,10 @@ import argparse
 import json
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -30,6 +34,9 @@ def parse_args():
     p.add_argument("--max-train-steps", type=int, default=2000)
     p.add_argument("--max-test-batches", type=int, default=0)
     p.add_argument("--device", default="cuda")
+    p.add_argument("--visualize-every", type=int, default=10)
+    p.add_argument("--max-visualizations", type=int, default=30,
+                   help="maximum final-test figures; 0 means unlimited")
     return p.parse_args()
 
 
@@ -82,25 +89,87 @@ def objective(output, views):
     gt = fe.stack_view_field(views, "depthmap").float()
     k = fe.stack_view_field(views, "camera_intrinsics").float()
     valid = torch.isfinite(gt) & torch.isfinite(pred) & (gt > .1) & (gt < 80.) & (pred > 1e-6)
-    log_error = (torch.log(pred.clamp_min(1e-6)) - torch.log(gt.clamp_min(1e-6))).abs()
-    depth = (log_error * valid).sum() / valid.sum().clamp_min(1)
+    pixels = valid.sum().clamp_min(1)
+    signed_log_error = torch.log(pred.clamp_min(1e-6)) - torch.log(gt.clamp_min(1e-6))
+    log_error = signed_log_error.abs()
+    depth = (log_error * valid).sum() / pixels
+    difference = (pred - gt).abs()
+    mae = (difference * valid).sum() / pixels
+    abs_rel = ((difference / gt.clamp_min(1e-6)) * valid).sum() / pixels
+    rmse_log = torch.sqrt((signed_log_error.square() * valid).sum() / pixels)
+    ratio = torch.maximum(pred / gt.clamp_min(1e-6), gt / pred.clamp_min(1e-6))
+    delta1 = ((ratio < 1.25) & valid).sum().float() / pixels
     pn = F.normalize(fe.depth_to_normals(pred, k), dim=-1, eps=1e-6)
     gn = F.normalize(fe.depth_to_normals(gt, k), dim=-1, eps=1e-6)
-    normal = ((1. - (pn * gn).sum(-1).clamp(-1, 1)) * valid).sum() / valid.sum().clamp_min(1)
+    cosine = (pn * gn).sum(-1).clamp(-1, 1)
+    normal_valid = fe.normal_stencil_valid_mask(valid, pred, eps=1e-6)
+    normal_pixels = normal_valid.sum().clamp_min(1)
+    normal = ((1. - cosine) * normal_valid).sum() / normal_pixels
+    normal_mean = (torch.rad2deg(torch.acos(cosine.clamp(-1 + 1e-6, 1 - 1e-6))) * normal_valid).sum() / normal_pixels
     residual = torch.log(gt.clamp_min(1e-6)) - torch.log(base.clamp_min(1e-6))
     bv = residual.flatten(0, 1).unsqueeze(1); vv = valid.flatten(0, 1).unsqueeze(1).float()
     weight = F.avg_pool2d(vv, 9, 1, 4)
     low = F.avg_pool2d(bv * vv, 9, 1, 4) / weight.clamp_min(1e-6)
     target = (bv - low).reshape_as(residual).detach()
     update = torch.stack([x["pixel_refiner_bounded_update"] for x in output.ress], 1).float()
-    hf = (F.smooth_l1_loss(update, target, beta=.01, reduction="none") * valid).sum() / valid.sum().clamp_min(1)
-    return depth + .2 * normal + hf, dict(depth=float(depth.detach()), normal=float(normal.detach()), hf=float(hf.detach()))
+    hf = (F.smooth_l1_loss(update, target, beta=.01, reduction="none") * valid).sum() / pixels
+    return depth + .2 * normal + hf, dict(
+        depth=float(depth.detach()), normal=float(normal.detach()), hf=float(hf.detach()),
+        MAE=float(mae.detach()), AbsRel=float(abs_rel.detach()), RMSElog=float(rmse_log.detach()),
+        delta1=float(delta1.detach()), Nmean=float(normal_mean.detach()), pixels=float(pixels.detach()),
+    )
 
 
-def run(model, data, device, optimizer=None, max_batches=0):
+def _normal_image(normal, mask):
+    image = ((normal.detach().float().cpu() + 1.) * .5).clamp(0, 1)
+    return image * mask.detach().float().cpu().unsqueeze(-1)
+
+
+def save_test_visuals(root, index, views, output):
+    root.mkdir(parents=True, exist_ok=True)
+    pred = torch.stack([x["depth"][..., 0] for x in output.ress], 1).float()
+    gt = fe.stack_view_field(views, "depthmap").float()
+    intrinsics = fe.stack_view_field(views, "camera_intrinsics").float()
+    valid = torch.isfinite(gt) & torch.isfinite(pred) & (gt > .1) & (gt < 80.) & (pred > 1e-6)
+    pred_normal = F.normalize(fe.depth_to_normals(pred, intrinsics), dim=-1, eps=1e-6)
+    gt_normal = F.normalize(fe.depth_to_normals(gt, intrinsics), dim=-1, eps=1e-6)
+    normal_valid = fe.normal_stencil_valid_mask(valid, gt, eps=1e-6)
+    contribution = torch.stack([x["event_contribution"] for x in output.ress], 1).float()
+    for view_index, view in enumerate(views):
+        mask = valid[0, view_index]; values = torch.cat((pred[0, view_index][mask], gt[0, view_index][mask]))
+        if values.numel() == 0: continue
+        vmin, vmax = float(values.min()), float(values.max())
+        rgb = view["img"][0].detach().float().permute(1, 2, 0).cpu().clamp(0, 1)
+        event = view["event_voxel"][0].detach().float().abs().sum(0).cpu()
+        error = ((pred[0, view_index] - gt[0, view_index]).abs() * mask).detach().cpu()
+        panels = (
+            (rgb, "input RGB", None, None, None),
+            (event, "event voxel |sum|", "gray", 0, float(torch.quantile(event.flatten(), .995).clamp_min(1e-6))),
+            (pred[0, view_index].detach().cpu() * mask.cpu(), "pred depth", "viridis", vmin, vmax),
+            (gt[0, view_index].detach().cpu() * mask.cpu(), "GT depth", "viridis", vmin, vmax),
+            (error, "|pred-GT| depth", "magma", 0, float(torch.quantile(error.flatten(), .995).clamp_min(1e-6))),
+            (_normal_image(pred_normal[0, view_index], normal_valid[0, view_index]), "pred normal", None, None, None),
+            (_normal_image(gt_normal[0, view_index], normal_valid[0, view_index]), "GT normal", None, None, None),
+            (contribution[0, view_index].detach().cpu(), "predicted contribution C", "magma", 0, 1),
+        )
+        fig, axes = plt.subplots(2, 4, figsize=(20, 10)); axes = axes.reshape(-1)
+        for axis, (image, title, cmap, lo, hi) in zip(axes, panels):
+            shown = axis.imshow(np.asarray(image), cmap=cmap, vmin=lo, vmax=hi)
+            axis.set_title(title); axis.axis("off")
+            if cmap is not None: fig.colorbar(shown, ax=axis, fraction=.046, pad=.04)
+        raw = view.get("instance", [f"batch_{index:06d}"])[0]
+        safe = str(raw).replace("/", "_").replace("\\", "_").replace(" ", "_")
+        fig.suptitle(f"DSEC final test: {safe}, view={view_index}")
+        fig.tight_layout(); fig.savefig(root / f"batch_{index:06d}_view_{view_index:02d}_{safe}.png", dpi=130); plt.close(fig)
+
+
+def run(model, data, device, optimizer=None, max_batches=0, visual_dir=None,
+        visualize_every=10, max_visualizations=30):
     training = optimizer is not None; model.train(training)
     model.aggregator.eval(); model.camera_head.eval(); model.depth_head.eval(); model.point_head.eval()
-    totals = dict(loss=0., depth=0., normal=0., hf=0.); count = 0
+    metric_keys = ("depth", "normal", "hf", "MAE", "AbsRel", "RMSElog", "delta1", "Nmean")
+    totals = {key: 0. for key in metric_keys}; loss_total = pixel_total = 0.; count = 0
+    visual_count = 0
     for index, cpu_views in enumerate(data):
         if max_batches > 0 and index >= max_batches: break
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
@@ -110,11 +179,22 @@ def run(model, data, device, optimizer=None, max_batches=0):
                 optimizer.zero_grad(set_to_none=True); loss.backward()
                 torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.)
                 optimizer.step()
-        totals["loss"] += float(loss.detach())
-        for key, value in details.items(): totals[key] += value
+        if (visual_dir is not None and visualize_every > 0 and index % visualize_every == 0
+                and (max_visualizations <= 0 or visual_count < max_visualizations)):
+            save_test_visuals(Path(visual_dir), index, views, output)
+            visual_count += len(views)
+        weight = details["pixels"]; loss_total += float(loss.detach())
+        for key in metric_keys: totals[key] += details[key] * weight
+        pixel_total += weight
         count += 1
-        if training and index % 20 == 0: print(f"[DSEC train] step={index:05d} loss={float(loss):.5f} {details}", flush=True)
-    return {k: v / max(count, 1) for k, v in totals.items()}
+        if index % 20 == 0:
+            phase = "train" if training else "test"
+            print(f"[DSEC {phase}] step={index:05d}/{len(data):05d} loss={float(loss):.5f} "
+                  f"MAE={details['MAE']:.5f} AbsRel={details['AbsRel']:.5f} "
+                  f"RMSElog={details['RMSElog']:.5f} Nmean={details['Nmean']:.3f}", flush=True)
+    result = {key: value / max(pixel_total, 1.) for key, value in totals.items()}
+    result.update(loss=loss_total / max(count, 1), batches=count, pixels=int(pixel_total))
+    return result
 
 
 def main():
@@ -141,6 +221,15 @@ def main():
                     "source_checkpoint": args.checkpoint, "history": history}, out / "checkpoint-last.pth")
         (out / "metrics.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
         if args.max_train_steps > 0 and global_steps >= args.max_train_steps: break
+    print("[DSEC final-test] running complete held-out test after fine-tuning", flush=True)
+    final_test = run(model, test, device, None, args.max_test_batches,
+                     visual_dir=out / "final_test_visualizations",
+                     visualize_every=args.visualize_every,
+                     max_visualizations=args.max_visualizations)
+    payload = {"checkpoint": str(out / "checkpoint-last.pth"), "source_checkpoint": args.checkpoint,
+               "test_split": "DSEC_EV_VGGT/test", "metrics": final_test}
+    (out / "final_test_metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"[DSEC final-test] {json.dumps(final_test, ensure_ascii=False)}", flush=True)
 
 
 if __name__ == "__main__": main()

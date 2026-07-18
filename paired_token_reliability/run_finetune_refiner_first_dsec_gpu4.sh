@@ -11,4 +11,6 @@ python -m paired_token_reliability.finetune_refiner_first_dsec \
  --max-train-steps "${MAX_TRAIN_STEPS:-2000}" \
  --max-test-batches "${MAX_TEST_BATCHES:-0}" \
  --lr "${LR:-0.00002}" --num-workers "${NUM_WORKERS:-2}" \
- --num-views "${NUM_VIEWS:-4}" "$@"
+ --num-views "${NUM_VIEWS:-4}" \
+ --visualize-every "${VISUALIZE_EVERY:-10}" \
+ --max-visualizations "${MAX_VISUALIZATIONS:-30}" "$@"
