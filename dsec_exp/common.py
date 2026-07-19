@@ -50,7 +50,7 @@ def build_dsec_loader(cfg, split="train", *, rgb_only=False):
         collate_fn=collate,
     )
     print(
-        f"DSEC {split}: root={data.root}/{('val' if split == 'train' else 'test')} "
+        f"DSEC {split}: root={data.root}/{dataset.dsec_split} "
         f"scenes={dataset.get_active_scenes()} clips={len(dataset)} rgb_only={rgb_only}"
     )
     return loader

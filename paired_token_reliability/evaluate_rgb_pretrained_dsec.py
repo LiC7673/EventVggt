@@ -226,6 +226,7 @@ def main():
             if index % 20 == 0:
                 print(f"[DSEC RGB test] {index:05d}/{len(loader):05d} MAE={metrics['MAE']:.5f} "
                       f"AbsRel={metrics['AbsRel']:.5f} RMSE={metrics['RMSE']:.5f} "
+                      f"RMSElog={metrics['RMSElog']:.5f} delta1={metrics['delta1']:.4f} "
                       f"Nmean={metrics['Nmean']:.3f}", flush=True)
     result = {key: sums[key] / max(depth_pixels, 1.) for key in depth_keys}
     result.update({key: sums[key] / max(normal_pixels, 1.) for key in normal_keys})

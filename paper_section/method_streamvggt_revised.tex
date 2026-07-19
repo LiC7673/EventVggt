@@ -1,0 +1,321 @@
+% Draft method section matching the current implementation.
+% Suggested packages: amsmath, amssymb, bm, mathtools, graphicx
+
+\section{Method}
+\label{sec:method_revised}
+
+\subsection{Overview and Problem Formulation}
+\label{sec:overview_problem}
+
+Given $N$ synchronized views, our input consists of an LDR image and an
+event stream for each view,
+\begin{equation}
+    \mathcal{X}=\{(\bm I_i^{e_i},\mathcal E_i,\bm K_i)\}_{i=1}^{N},
+    \qquad
+    \mathcal E_i=\{(\bm u_m,t_m,p_m)\}_{m=1}^{M_i},
+\end{equation}
+where $e_i$ is the exposure level, $\bm K_i$ is the camera intrinsic matrix,
+and $p_m\in\{-1,+1\}$ is the event polarity. The objective is to recover
+multi-view geometry, principally the depth maps $\{D_i\}_{i=1}^{N}$ and their
+depth-derived surface normals $\{\bm N_i\}_{i=1}^{N}$. At inference time, the
+method requires only the observed LDR images and complete event streams; the
+reference exposure and controlled event decomposition described below are
+used only during training.
+
+We build on StreamVGGT, which retains the pretrained multi-view RGB
+aggregator and geometry heads of VGGT. This backbone provides a strong global
+shape prior but loses local evidence when the input is saturated. Our method
+adds an event pathway without concatenating raw events with RGB pixels. The
+RGB pathway estimates global multi-view structure and absolute depth, whereas
+the event pathway supplies exposure-robust temporal evidence and local
+differential geometry. Figure~\ref{fig:method_overview} summarizes the complete
+architecture.
+
+\subsubsection{Architecture}
+\label{sec:architecture}
+
+The RGB images are first processed by the frozen StreamVGGT aggregator,
+\begin{equation}
+    \{\bm Z_i^{L}\}_{i=1}^{N}
+    =\mathcal G_{\mathrm{rgb}}(\{\bm I_i^{e_i}\}_{i=1}^{N}),
+\end{equation}
+where $\bm Z_i^{L}$ denotes the LDR multi-view tokens. Independently, we
+convert every event interval into a polarity-preserving voxel grid with $B$
+temporal bins,
+\begin{equation}
+ V_{i,b}^{p}(\bm u)=
+ \sum_m \mathbf 1[\bm u_m=\bm u]\mathbf 1[p_m=p]
+ \max(0,1-|b-\bar t_m|),
+ \quad
+ \bar t_m=(B-1)\frac{t_m-t_0}{t_1-t_0},
+\end{equation}
+and stack the positive and negative channels as
+$\bm V_i\in\mathbb R^{2B\times H\times W}$. Thus, opposite polarities are not
+cancelled before encoding. A shared event encoder $\mathcal G_E$ produces a
+dense feature $\bm F_i^E$.
+
+The network then performs two complementary operations. First, a
+token-domain HDR adapter uses reliable event evidence to complete the geometry
+missing from the LDR tokens,
+\begin{equation}
+    \bm Z_i^{H}=\bm Z_i^{L}
+    +\mathcal A_H(\bm Z_i^{L},\bm T_i^E),
+\end{equation}
+where $\bm T_i^E$ is obtained by projecting and pooling the selected dense
+event feature. A frozen geometry head decodes $\bm Z^H$ into the HDR-like base
+depth $D_i^{b}$. Second, a full-resolution event refiner predicts a bounded
+log-depth correction $\Delta_i$ from event and coarse-geometry cues,
+\begin{equation}
+    D_i^{f}=D_i^{b}\exp(\Delta_i),
+    \qquad
+    \Delta_i=\ell_{\max}\tanh(\mathcal R_D(\cdot)).
+\end{equation}
+The token path restores global geometry, while the pixel path preserves local
+boundaries and surface details that would be removed by patch pooling.
+
+\subsubsection{Observation: Geometry Is a Structured Subset of Events}
+\label{sec:event_observation}
+
+An event is triggered by a change of log intensity. Under the standard event
+generation model,
+\begin{equation}
+    \Delta\log I(\bm u,t)\simeq pC_e,
+\end{equation}
+where $C_e$ is the contrast threshold. For motion-induced changes, the local
+brightness variation approximately satisfies
+\begin{equation}
+    \partial_t\log I(\bm u,t)
+    \simeq-\nabla_{\bm u}\log I(\bm u,t)^{\top}\bm v(\bm u,t).
+\end{equation}
+The image velocity $\bm v$ is coupled to camera motion, depth, surface
+orientation, and occlusion boundaries. Consequently, geometry-related events
+concentrate around depth discontinuities and normal variations. However, the
+complete stream also contains responses caused by reflections, illumination
+changes, rendering effects, and sensor noise. Event presence alone is
+therefore not equivalent to geometric relevance.
+
+We formalize the complete event stream as a mixture,
+\begin{equation}
+    \bm V^{\mathrm{full}}
+    =\bm V^{\mathrm{geo}}+\bm V^{\mathrm{app}}+\bm V^{\mathrm{noise}},
+\end{equation}
+where only $\bm V^{\mathrm{full}}$ is available at inference. During training,
+controlled event generation additionally provides
+$\bm V^{\mathrm{geo}}$, which contains the responses induced by geometric
+motion. We do not use this controlled stream as an inference input. Instead,
+it defines (i) a geometry-event feature space into which the complete stream
+is mapped and (ii) a target for learning spatial event relevance.
+
+This decomposition also clarifies the RGB--event relationship. RGB is not
+replaced by events: the RGB backbone supplies global correspondence, camera
+context, and absolute-depth structure. Events do not independently regress
+the complete scene depth. They first compensate missing LDR token evidence and
+then constrain local differential geometry. This division prevents the sparse
+event stream from absorbing global scale while allowing it to restore details
+that are absent from saturated RGB.
+
+\subsection{Network}
+\label{sec:network}
+
+\subsubsection{RGB Path: Multi-LDR Geometry Consistency}
+\label{sec:multi_ldr}
+
+For the same scene, view, and event interval, we sample a degraded exposure
+$\bm I_i^{L}$ and the best available reference exposure $\bm I_i^{0}$. Their
+appearance differs, but their underlying geometry is identical. The frozen RGB
+aggregator extracts
+\begin{equation}
+    \bm Z_i^{L}=\mathcal G_{\mathrm{rgb}}(\bm I_i^{L}),
+    \qquad
+    \bm Z_i^{0}=\operatorname{sg}
+    [\mathcal G_{\mathrm{rgb}}(\bm I_i^{0})],
+\end{equation}
+where $\operatorname{sg}$ denotes stop-gradient. The event-conditioned HDR
+adapter predicts a residual rather than replacing the RGB token,
+\begin{align}
+    \bm T_i^E
+    &=\mathcal P_E(C_i^{\mathrm{fus}}\odot\bm F_i^{E\rightarrow G}),\\
+    \widehat{\bm Z}_i^{H}
+    &=\bm Z_i^{L}+\mathcal A_H(\bm Z_i^{L},\bm T_i^E).
+\end{align}
+In the implementation, $\mathcal A_H$ multiplicatively modulates an LDR-token
+context with an event-token context. Its zero-event path is exactly the
+identity, so the adapter cannot modify RGB tokens without event evidence.
+
+We supervise the recovered representation with a multi-layer token loss,
+\begin{equation}
+    \mathcal L_{\mathrm{HDR}}
+    =\sum_{l\in\mathcal S}\omega_l
+    \rho\!\left(widehat{\bm Z}_{i,l}^{H}
+    -\operatorname{sg}(\bm Z_{i,l}^{0})\right),
+\end{equation}
+where $\rho$ is the smooth-$L_1$ penalty and $\mathcal S$ denotes the selected
+aggregator layers. Unlike direct feature copying, the residual is conditioned
+on the LDR token and selected event evidence. It estimates what is missing
+under the current exposure.
+
+The frozen depth head decodes the completed tokens,
+\begin{equation}
+    D_i^{b}=\mathcal H_D(\widehat{\bm Z}_i^{H}),
+    \qquad
+    \bm N_i^{b}=\Pi(D_i^{b},\bm K_i),
+\end{equation}
+where $\Pi$ is the differentiable depth-to-normal operator. We refer to
+$D_i^{b}$ as the HDR-like base or coarse result. Its supervision combines a
+depth loss and a geometry-preserving gradient term,
+\begin{equation}
+    \mathcal L_{\mathrm{base}}
+    =\mathcal L_D(D_i^{b},D_i^{\mathrm{gt}})
+    +\lambda_g\mathcal L_{\nabla D}(D_i^{b},D_i^{\mathrm{gt}}).
+\end{equation}
+
+\subsubsection{Event Path: Geometry-Relevant Cue Learning}
+\label{sec:event_path}
+
+The event pathway answers two distinct questions: which responses in the
+complete stream originate from geometric motion, and how those selected
+responses should modify the reconstructed geometry. We address the first with
+controlled source attribution and Full-to-Geo transfer, and the second with a
+differential-normal guided pixel refiner.
+
+\paragraph{Controlled Geometry Attribution and Full-to-Geo Transfer.}
+\label{sec:controlled_event_attribution}
+
+We use the same event encoder for both streams,
+\begin{equation}
+    \bm F_i^{G}=\mathcal G_E(\bm V_i^{\mathrm{geo}}),
+    \qquad
+    \bm F_i^{F}=\mathcal G_E(\bm V_i^{\mathrm{full}}).
+\end{equation}
+The controlled geometry stream first trains the encoder to represent local
+geometric variation. We then learn a Full-to-Geo aligner $\mathcal A_G$ only
+on the complete-stream route,
+\begin{equation}
+    \widehat{\bm F}_i^{G}=\mathcal A_G(\bm F_i^{F}),
+\end{equation}
+with the stopped geometry feature as its target,
+\begin{equation}
+    \mathcal L_{F\rightarrow G}
+    =\rho\!\left(\widehat{\bm F}_i^{G}
+    -\operatorname{sg}(\bm F_i^{G})\right).
+\end{equation}
+Separating the two routes is important. Passing
+$\bm V^{\mathrm{geo}}$ directly through the aligner would allow the mapping to
+learn an identity shortcut, whereas applying the same correction to both
+streams would move the teacher space together with the student.
+
+Feature alignment alone may still learn average denoising or noise
+compensation. We therefore explicitly predict pixel-level source relevance
+from inference-available quantities,
+\begin{equation}
+    C_i^{\mathrm{fus}}
+    =\mathcal Q_F(\bm V_i^{\mathrm{full}},\bm I_i^{L},
+                  D_i^{L},\bm N_i^{L})\in[0,1]^{H\times W}.
+\end{equation}
+The controlled event decomposition supplies the attribution target
+\begin{equation}
+    C_i^{\mathrm{gt}}(\bm u)=
+    \operatorname{clip}\left(
+    \frac{\sum_c|V_{i,c}^{\mathrm{geo}}(\bm u)|}
+         {\sum_c|V_{i,c}^{\mathrm{full}}(\bm u)|+\epsilon},0,1\right),
+\end{equation}
+and
+\begin{equation}
+    \mathcal L_C=\rho(C_i^{\mathrm{fus}}-C_i^{\mathrm{gt}}).
+\end{equation}
+A second confidence $C_i^{\mathrm{ref}}$ controls the full-resolution detail
+path. This separation is necessary because token fusion and pixel refinement
+operate in different spaces and need not share the same numerical gate.
+
+Training follows a geometry-first alternating strategy. We first train the
+shared event encoder and detail predictor using $\bm V^{\mathrm{geo}}$ while
+both confidence maps are fixed. We then alternate between (i) complete-event
+attribution, which learns $\mathcal A_G$, $C^{\mathrm{fus}}$, and
+$C^{\mathrm{ref}}$, and (ii) Multi-LDR geometry completion, which learns
+$\bm I^{L}+\bm V^{\mathrm{geo}}\rightarrow\bm Z^{0}$. At inference,
+$\bm V^{\mathrm{geo}}$ is removed and
+$\widehat{\bm F}^{G}=\mathcal A_G(\mathcal G_E(\bm V^{\mathrm{full}}))$ is used.
+
+\paragraph{Differential-Normal Guided Depth Refinement.}
+\label{sec:event_normal_depth}
+
+Events primarily reveal changes and boundaries rather than absolute surface
+orientation. Predicting a complete normal map from sparse events encourages
+the event branch to hallucinate smooth regions. We instead predict the spatial
+normal derivative
+\begin{equation}
+    \widehat{\bm G}_i^{N}
+    =\mathcal H_{\nabla N}(\widehat{\bm F}_i^{G})
+    \in\mathbb R^{H\times W\times 2\times3},
+\end{equation}
+corresponding to the horizontal and vertical derivatives of a three-channel
+normal. Its target is derived from GT depth,
+\begin{equation}
+    \bm N_i^{\mathrm{gt}}=\Pi(D_i^{\mathrm{gt}},\bm K_i),
+    \qquad
+    \bm G_i^{N,\mathrm{gt}}=\nabla\bm N_i^{\mathrm{gt}}.
+\end{equation}
+The derivative loss emphasizes high-normal-gradient pixels and ignores
+unsupported regions,
+\begin{equation}
+    \mathcal L_{\nabla N}^{E}
+    =\frac{\sum_{\bm u}W_i(\bm u)
+    \rho(\widehat{\bm G}_i^{N}(\bm u)-
+         \bm G_i^{N,\mathrm{gt}}(\bm u))}
+    {\sum_{\bm u}W_i(\bm u)+\epsilon},
+\end{equation}
+where $W_i$ combines valid geometry, genuine event support, recency, and a
+larger weight for strong derivative targets. This prevents the numerous
+zero-gradient pixels from making an all-zero prediction optimal.
+
+The pixel refiner receives no raw RGB pixels or RGB tokens. Its inputs are the
+aligned full-resolution event feature, predicted normal derivative, base log
+depth, base normal, and refinement confidence:
+\begin{equation}
+    \Delta_i=\ell_{\max}\tanh\!\left[
+    \mathcal R_D(\widehat{\bm F}_i^{G},
+                 \widehat{\bm G}_i^{N},
+                 \log D_i^{b},\bm N_i^{b},C_i^{\mathrm{ref}})
+    \right].
+\end{equation}
+The final normal is always recomputed from final depth,
+\begin{equation}
+    D_i^{f}=D_i^{b}\exp(\Delta_i),
+    \qquad
+    \bm N_i^{f}=\Pi(D_i^{f},\bm K_i).
+\end{equation}
+We couple the event derivative to the reconstructed geometry through
+\begin{equation}
+    \mathcal L_{DN}
+    =\frac{\sum_{\bm u}W_i(\bm u)
+      \rho(\nabla\bm N_i^{f}(\bm u)-
+           \operatorname{sg}(\widehat{\bm G}_i^{N}(\bm u)))}
+     {\sum_{\bm u}W_i(\bm u)+\epsilon}.
+\end{equation}
+An explicit high-frequency residual target further prevents the refiner from
+collapsing to a smooth scale correction. Let
+\begin{equation}
+    R_i^{\mathrm{gt}}=\log D_i^{\mathrm{gt}}-\log D_i^{b},
+    \qquad
+    R_i^{\mathrm{HF}}=R_i^{\mathrm{gt}}-
+    \operatorname{LP}(R_i^{\mathrm{gt}}),
+\end{equation}
+where $\operatorname{LP}$ is a local low-pass operator. We use
+\begin{equation}
+    \mathcal L_{\mathrm{HF}}
+    =\rho(\Delta_i-R_i^{\mathrm{HF}})
+\end{equation}
+inside the valid geometry mask. The complete training objective is
+\begin{equation}
+\begin{split}
+    \mathcal L={}&
+    \lambda_D\mathcal L_D(D^f,D^{\mathrm{gt}})
+    +\lambda_N\mathcal L_N(\bm N^f,\bm N^{\mathrm{gt}})
+    +\lambda_{\mathrm{HDR}}\mathcal L_{\mathrm{HDR}}
+    +\lambda_{F\rightarrow G}\mathcal L_{F\rightarrow G}\\
+    &+\lambda_C\mathcal L_C
+    +\lambda_E\mathcal L_{\nabla N}^{E}
+    +\lambda_{DN}\mathcal L_{DN}
+    +\lambda_{\mathrm{HF}}\mathcal L_{\mathrm{HF}}.
+\end{split}
+\end{equation}

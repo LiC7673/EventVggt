@@ -1,4 +1,4 @@
-"""Fine-tune RGB-only or image-guided event EventVGGT on DSEC val scenes."""
+"""Fine-tune RGB-only or image-guided EventVGGT on DSEC train scenes."""
 
 from pathlib import Path
 
@@ -57,7 +57,7 @@ def _run_rgb(cfg):
     nf.build_rgb_loader = lambda local_cfg, split="train": build_dsec_loader(
         local_cfg, "train" if split == "train" else "val", rgb_only=True
     )
-    print("DSEC approach=rgb: pure VGGT RGB baseline; val scenes train, test scenes evaluate.")
+    print("DSEC approach=rgb: pure VGGT RGB baseline; train scenes train, test scenes evaluate.")
     nf.train(cfg)
 
 

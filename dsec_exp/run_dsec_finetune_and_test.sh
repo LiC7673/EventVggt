@@ -17,7 +17,7 @@ AUTO_PREPARE_ALIGN="${AUTO_PREPARE_ALIGN:-1}"
 mkdir -p "${OUT}"
 
 alignment_missing=()
-for split in val test; do
+for split in train test; do
   [[ -d "${DSEC_ROOT}/${split}" ]] || continue
   while IFS= read -r -d '' scene; do
     aligned_dir="${scene}/images/event_aligned"

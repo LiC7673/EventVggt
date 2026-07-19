@@ -13,6 +13,7 @@ from paired_token_reliability.linear_voxel_cur_event_hf_residual_model import Cu
 
 
 REFINER_FIRST_STEPS = 1000
+_REFINER_FIRST_ACTIVE = True
 
 
 def prepare_pair(batch, device, args, phase):
@@ -25,7 +26,7 @@ def prepare_pair(batch, device, args, phase):
     target, reference, event, bridge = pipeline._ORIGINAL_PREPARE_PAIR(
         batch, device, args, phase
     )
-    if phase == "adapter":
+    if phase == "adapter" and _REFINER_FIRST_ACTIVE:
         ldr_a = [str(value).lower() for value in batch.get("ldr_a", ())]
         if not ldr_a or any(value != "ev_0" for value in ldr_a):
             raise RuntimeError(
@@ -46,15 +47,24 @@ def prepare_pair(batch, device, args, phase):
             )
     else:
         for student, teacher in zip(target, reference):
+            # After the refiner-only warm-up, retain the degraded Multi-LDR
+            # image already selected by the original pair preparer.  Only the
+            # teacher target is ev_0/HDR.  This is the actual
+            # LDR + event -> HDR-token training route.
             student["hdr_img"] = teacher["img"]
-            student["event_source_label"] = "E_cur + degraded LDR"
+            student["event_source_label"] = (
+                "E_cur + degraded Multi-LDR -> ev_0/HDR teacher"
+                if phase == "adapter" else "E_cur Full/C learning + degraded Multi-LDR"
+            )
     return target, reference, event, bridge
 
 
 def configure_phase(model, phase, _train_heads_a=False):
+    global _REFINER_FIRST_ACTIVE
     model.requires_grad_(False)
     step = int(getattr(model, "_dual_alignment_step", 0))
     if phase == "adapter":
+        _REFINER_FIRST_ACTIVE = step < REFINER_FIRST_STEPS
         model.set_confidence_stage("geo")
         # Event representation and its differential geometry prediction must
         # learn together with the pixel refiner from the first batch.
@@ -66,20 +76,27 @@ def configure_phase(model, phase, _train_heads_a=False):
             # separate low-LR groups for these modules.
             model.event_token_projection.requires_grad_(True)
             model.ldr_event_hdr_aligner.requires_grad_(True)
-            label = "joint Geo refinement; HDR Adapter opened at low LR"
+            label = (
+                "Multi-LDR + E_geo -> ev_0/HDR teacher; pixel refiner + "
+                "HDR Adapter opened at low LR"
+            )
         else:
             label = (
                 f"refiner-first {step}/{REFINER_FIRST_STEPS}; "
                 "HDR projection/Adapter frozen; both C=1"
             )
     elif phase == "contribution":
+        _REFINER_FIRST_ACTIVE = False
         model.set_confidence_stage("full")
         # Full->Geo and both confidence maps only start after the initial Geo
         # epoch. Their deployment is already ramped by c_transition_steps.
         model.full_geo_aligner.learned.requires_grad_(True)
         model.contribution_net.learned.requires_grad_(True)
         model.normal_fusion_gate.learned.requires_grad_(True)
-        label = "cur_event Full->Geo + gradual C_fusion/C_refine, low LR"
+        label = (
+            "degraded Multi-LDR + E_cur; Full->Geo + gradual "
+            "C_fusion/C_refine, low LR"
+        )
     else:
         raise ValueError(phase)
     model.train(); model.aggregator.eval(); model.camera_head.eval()
