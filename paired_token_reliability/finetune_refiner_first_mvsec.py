@@ -6,6 +6,10 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -34,6 +38,9 @@ def arguments():
     p.add_argument("--max-depth", type=float, default=80.)
     p.add_argument("--intrinsics", nargs=4, type=float, default=None, metavar=("FX", "FY", "CX", "CY"))
     p.add_argument("--device", default="cuda")
+    p.add_argument("--max-test-batches", type=int, default=0)
+    p.add_argument("--visualize-every", type=int, default=10)
+    p.add_argument("--max-visualizations", type=int, default=30)
     return p.parse_args()
 
 
@@ -85,11 +92,16 @@ def losses_and_metrics(output, views, max_depth):
     rmselog = torch.sqrt((logdiff.square() * valid).sum() / n)
     ratio = torch.maximum(pred / gt.clamp_min(1e-6), gt / pred.clamp_min(1e-6))
     d1 = ((ratio < 1.25) & valid).sum() / n
+    d2 = ((ratio < 1.25 ** 2) & valid).sum() / n
+    d3 = ((ratio < 1.25 ** 3) & valid).sum() / n
     pn = F.normalize(fe.depth_to_normals(pred, k), dim=-1, eps=1e-6)
     gn = F.normalize(fe.depth_to_normals(gt, k), dim=-1, eps=1e-6)
-    angle = torch.rad2deg(torch.acos((pn * gn).sum(-1).clamp(-1 + 1e-6, 1 - 1e-6)))
-    nmean = (angle * valid).sum() / n
-    normal_loss = ((1 - (pn * gn).sum(-1).clamp(-1, 1)) * valid).sum() / n
+    cosine = (pn * gn).sum(-1).clamp(-1, 1)
+    normal_valid = fe.normal_stencil_valid_mask(valid, pred, eps=1e-6)
+    nn = normal_valid.sum().clamp_min(1)
+    angle = torch.rad2deg(torch.acos(cosine.clamp(-1 + 1e-6, 1 - 1e-6)))
+    nmean = (angle * normal_valid).sum() / nn
+    normal_loss = ((1 - cosine) * normal_valid).sum() / nn
     residual = torch.log(gt.clamp_min(1e-6)) - torch.log(base.clamp_min(1e-6))
     flat, mask = residual.flatten(0, 1).unsqueeze(1), valid.flatten(0, 1).unsqueeze(1).float()
     mass = F.avg_pool2d(mask, 9, 1, 4); low = F.avg_pool2d(flat * mask, 9, 1, 4) / mass.clamp_min(1e-6)
@@ -98,14 +110,63 @@ def losses_and_metrics(output, views, max_depth):
     hf = (F.smooth_l1_loss(update, hf_target, beta=.01, reduction="none") * valid).sum() / n
     objective = logdiff.abs().mul(valid).sum() / n + .2 * normal_loss + hf
     metrics = {"loss": objective, "MAE": mae, "AbsRel": absrel, "RMSElog": rmselog,
-               "d1": d1, "Nmean": nmean, "HF": hf, "pixels": valid.sum().float()}
+               "delta1": d1, "delta2": d2, "delta3": d3,
+               "Nmean": nmean, "HF": hf, "pixels": valid.sum().float()}
     return objective, metrics
 
 
-def run(model, loader, device, max_depth, optimizer=None, max_steps=0):
+def _normal_image(normal, mask):
+    image = ((normal.detach().float().cpu() + 1.) * .5).clamp(0, 1)
+    return image * mask.detach().float().cpu().unsqueeze(-1)
+
+
+def save_visuals(root, index, views, output, max_depth):
+    root.mkdir(parents=True, exist_ok=True)
+    pred = torch.stack([x["depth"][..., 0] for x in output.ress], 1).float()
+    coarse = torch.stack([x["depth_hdr_base"][..., 0] for x in output.ress], 1).float()
+    gt = fe.stack_view_field(views, "depthmap").float()
+    intrinsics = fe.stack_view_field(views, "camera_intrinsics").float()
+    valid = torch.isfinite(gt) & torch.isfinite(pred) & (gt > .1) & (gt < max_depth) & (pred > 1e-6)
+    pred_normal = F.normalize(fe.depth_to_normals(pred, intrinsics), dim=-1, eps=1e-6)
+    gt_normal = F.normalize(fe.depth_to_normals(gt, intrinsics), dim=-1, eps=1e-6)
+    normal_valid = fe.normal_stencil_valid_mask(valid, gt, eps=1e-6)
+    contribution = torch.stack([x["event_contribution"] for x in output.ress], 1).float()
+    for view_index, view in enumerate(views):
+        mask = valid[0, view_index]
+        values = torch.cat((coarse[0, view_index][mask], pred[0, view_index][mask], gt[0, view_index][mask]))
+        if values.numel() == 0: continue
+        vmin, vmax = float(values.min()), float(values.max())
+        rgb = view["img"][0].detach().float().permute(1, 2, 0).cpu().clamp(0, 1)
+        event = view["event_voxel"][0].detach().float().abs().sum(0).cpu()
+        error = ((pred[0, view_index] - gt[0, view_index]).abs() * mask).detach().cpu()
+        panels = (
+            (rgb, "input RGB", None, None, None),
+            (event, "event voxel |sum|", "gray", 0, float(torch.quantile(event.flatten(), .995).clamp_min(1e-6))),
+            (coarse[0, view_index].detach().cpu() * mask.cpu(), "coarse depth", "viridis", vmin, vmax),
+            (pred[0, view_index].detach().cpu() * mask.cpu(), "final depth", "viridis", vmin, vmax),
+            (gt[0, view_index].detach().cpu() * mask.cpu(), "GT depth", "viridis", vmin, vmax),
+            (error, "|final-GT|", "magma", 0, float(torch.quantile(error.flatten(), .995).clamp_min(1e-6))),
+            (_normal_image(pred_normal[0, view_index], normal_valid[0, view_index]), "final normal", None, None, None),
+            (_normal_image(gt_normal[0, view_index], normal_valid[0, view_index]), "GT normal", None, None, None),
+            (contribution[0, view_index].detach().cpu(), "contribution C [0,1]", "magma", 0, 1),
+        )
+        fig, axes = plt.subplots(3, 3, figsize=(18, 17)); axes = axes.reshape(-1)
+        for axis, (image, title, cmap, lo, hi) in zip(axes, panels):
+            shown = axis.imshow(np.asarray(image), cmap=cmap, vmin=lo, vmax=hi)
+            axis.set_title(title); axis.axis("off")
+            if cmap is not None: fig.colorbar(shown, ax=axis, fraction=.046, pad=.04)
+        raw = view.get("instance", [f"batch_{index:06d}"])[0]
+        safe = str(raw).replace("/", "_").replace("\\", "_").replace(" ", "_")
+        fig.suptitle(f"MVSEC outdoor_day2 held-out: {safe}, view={view_index}")
+        fig.tight_layout(); fig.savefig(root / f"batch_{index:06d}_view_{view_index:02d}_{safe}.png", dpi=130); plt.close(fig)
+
+
+def run(model, loader, device, max_depth, optimizer=None, max_steps=0,
+        visual_dir=None, visualize_every=10, max_visualizations=30):
     train = optimizer is not None; model.train(train)
     model.aggregator.eval(); model.camera_head.eval(); model.depth_head.eval(); model.point_head.eval()
     sums, batches, pixel_total = defaultdict(float), 0, 0.
+    visual_count = 0
     for i, cpu_views in enumerate(loader):
         if max_steps and i >= max_steps: break
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
@@ -115,12 +176,20 @@ def run(model, loader, device, max_depth, optimizer=None, max_steps=0):
                 optimizer.zero_grad(set_to_none=True); loss.backward()
                 torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.)
                 optimizer.step()
+        if (visual_dir is not None and visualize_every > 0 and i % visualize_every == 0
+                and (max_visualizations <= 0 or visual_count < max_visualizations)):
+            save_visuals(Path(visual_dir), i, views, output, max_depth)
+            visual_count += len(views)
         pixels = float(metrics["pixels"].detach())
         for key, value in metrics.items():
             if key != "pixels": sums[key] += float(value.detach()) * pixels
         pixel_total += pixels
         batches += 1
-        if train and i % 20 == 0: print(f"[MVSEC train] step={i:05d} loss={float(loss):.5f}", flush=True)
+        if i % 20 == 0:
+            phase = "train" if train else "test"
+            print(f"[MVSEC {phase}] step={i:05d}/{len(loader):05d} loss={float(loss):.5f} "
+                  f"MAE={float(metrics['MAE']):.5f} AbsRel={float(metrics['AbsRel']):.5f} "
+                  f"RMSElog={float(metrics['RMSElog']):.5f} Nmean={float(metrics['Nmean']):.3f}", flush=True)
     result = {k: v / max(pixel_total, 1.) for k, v in sums.items()}
     result.update(pixels=pixel_total, batches=batches)
     return result
@@ -144,13 +213,24 @@ def main():
         limit = max(a.max_train_steps - steps, 0) if a.max_train_steps else 0
         tr = run(model, train_loader, device, a.max_depth, optimizer, limit)
         steps += min(len(train_loader), limit) if limit else len(train_loader)
-        tests = {name: run(model, dl, device, a.max_depth) for name, dl in test_loaders.items()}
+        tests = {name: run(model, dl, device, a.max_depth, max_steps=a.max_test_batches) for name, dl in test_loaders.items()}
         row = {"epoch": epoch, "train_sequence": a.train_sequence, "train": tr, "test": tests}
         history.append(row); print(json.dumps(row, indent=2), flush=True)
         torch.save({"schema": "mvsec_refiner_first_day_to_night_v1", "model": model.state_dict(),
                     "source_checkpoint": a.checkpoint, "history": history}, out / "checkpoint-last.pth")
         (out / "metrics.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
         if a.max_train_steps and steps >= a.max_train_steps: break
+    final_tests = {}
+    for name, dl in test_loaders.items():
+        final_tests[name] = run(
+            model, dl, device, a.max_depth, max_steps=a.max_test_batches,
+            visual_dir=out / "final_test_visualizations" / name,
+            visualize_every=a.visualize_every, max_visualizations=a.max_visualizations,
+        )
+    payload = {"source_checkpoint": a.checkpoint, "train_sequence": a.train_sequence,
+               "test_sequences": a.test_sequences, "metrics": final_tests}
+    (out / "final_test_metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"[MVSEC final-test] {json.dumps(final_tests, ensure_ascii=False)}", flush=True)
 
 
 if __name__ == "__main__": main()

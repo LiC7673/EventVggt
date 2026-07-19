@@ -103,9 +103,13 @@ def convert(data_bag, gt_bag, output_dir):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__); p.add_argument("--root", required=True); p.add_argument("--output", required=True)
+    p.add_argument(
+        "--sequences", nargs="+",
+        default=["outdoor_day1", "outdoor_day2", "outdoor_night1", "outdoor_night2", "outdoor_night3"],
+        help="MVSEC sequence stems to convert (only the requested bags are required)",
+    )
     a = p.parse_args(); root = Path(a.root)
-    names = ["outdoor_day2", "outdoor_night1", "outdoor_night2", "outdoor_night3"]
-    for name in names:
+    for name in a.sequences:
         folder = root / ("outdoor_day" if "day" in name else "outdoor_night")
         data, gt = folder / f"{name}_data.bag", folder / f"{name}_gt.bag"
         if not data.is_file() or not gt.is_file(): raise FileNotFoundError(f"missing pair: {data}, {gt}")

@@ -1,7 +1,7 @@
-# DSEC train-to-test experiment
+# DSEC val-to-test experiment
 
 This integration follows the official DSEC event slicing, timestamp offset,
-rectification, and disparity encoding. It uses every scene under `train/` for
+rectification, and disparity encoding. It uses every scene under `val/` for
 training and every scene under `test/` only for final evaluation.
 
 ## Extract downloaded archives
