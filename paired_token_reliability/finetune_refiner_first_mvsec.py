@@ -80,6 +80,70 @@ def make_loader(a, sequences, shuffle):
                       pin_memory=True, collate_fn=event_multiview_collate, drop_last=False)
 
 
+def _similarity_align_poses(pred_c2w, gt_c2w):
+    """Align one predicted clip to GT with a single Umeyama Sim(3).
+
+    The same similarity is applied to every camera in the clip.  This avoids
+    the invalid (and overly optimistic) practice of aligning every frame
+    independently.
+    """
+    pred_c2w = pred_c2w.float()
+    gt_c2w = gt_c2w.float()
+    pred_t, gt_t = pred_c2w[..., :3, 3], gt_c2w[..., :3, 3]
+    pred_mean = pred_t.mean(dim=-2, keepdim=True)
+    gt_mean = gt_t.mean(dim=-2, keepdim=True)
+    x, y = pred_t - pred_mean, gt_t - gt_mean
+    covariance = torch.matmul(y.transpose(-1, -2), x) / max(pred_t.shape[-2], 1)
+    u, singular, vh = torch.linalg.svd(covariance)
+    correction = torch.eye(3, device=pred_c2w.device, dtype=pred_c2w.dtype)
+    correction = correction.expand(*covariance.shape[:-2], 3, 3).clone()
+    det = torch.linalg.det(torch.matmul(u, vh))
+    correction[..., -1, -1] = torch.where(det < 0, -1., 1.)
+    rotation = torch.matmul(torch.matmul(u, correction), vh)
+    variance = x.square().sum(dim=(-2, -1)) / max(pred_t.shape[-2], 1)
+    scale = (singular * torch.diagonal(correction, dim1=-2, dim2=-1)).sum(-1) / variance.clamp_min(1e-9)
+    translation = gt_mean.squeeze(-2) - scale[..., None] * torch.matmul(
+        rotation, pred_mean.squeeze(-2).unsqueeze(-1)
+    ).squeeze(-1)
+
+    aligned = pred_c2w.clone()
+    aligned[..., :3, :3] = torch.matmul(rotation.unsqueeze(-3), pred_c2w[..., :3, :3])
+    aligned[..., :3, 3] = scale[..., None, None] * torch.matmul(
+        rotation.unsqueeze(-3), pred_t.unsqueeze(-1)
+    ).squeeze(-1) + translation.unsqueeze(-2)
+    return aligned
+
+
+def pose_metrics(output, views, image_hw):
+    """Clip-level ATE and adjacent-frame RPE for valid MVSEC GT poses."""
+    gt = fe.stack_view_field(views, "camera_pose").float()
+    pose_encoding = torch.stack([item["camera_pose"] for item in output.ress], 1).float()
+    pred, _ = fe.pose_encoding_to_c2w(pose_encoding, image_size_hw=image_hw)
+    valid = torch.isfinite(gt).all(dim=(-2, -1)) & torch.isfinite(pred).all(dim=(-2, -1))
+    if pred.shape[1] < 2 or not bool(valid.all()):
+        zero = pred.new_zeros(())
+        return {"ATE_sq_sum": zero, "ATE_count": zero,
+                "RPE_trans_sum": zero, "RPE_rot_sum": zero, "RPE_count": zero}
+
+    pred = _similarity_align_poses(pred, gt)
+    translation_error = (pred[..., :3, 3] - gt[..., :3, 3]).norm(dim=-1)
+
+    pred_rel = torch.matmul(torch.linalg.inv(pred[:, :-1]), pred[:, 1:])
+    gt_rel = torch.matmul(torch.linalg.inv(gt[:, :-1]), gt[:, 1:])
+    relative_error = torch.matmul(torch.linalg.inv(gt_rel), pred_rel)
+    rpe_trans = relative_error[..., :3, 3].norm(dim=-1)
+    trace = torch.diagonal(relative_error[..., :3, :3], dim1=-2, dim2=-1).sum(-1)
+    cosine = ((trace - 1.) * .5).clamp(-1., 1.)
+    rpe_rot = torch.rad2deg(torch.acos(cosine))
+    return {
+        "ATE_sq_sum": translation_error.square().sum(),
+        "ATE_count": translation_error.new_tensor(float(translation_error.numel())),
+        "RPE_trans_sum": rpe_trans.sum(),
+        "RPE_rot_sum": rpe_rot.sum(),
+        "RPE_count": rpe_trans.new_tensor(float(rpe_trans.numel())),
+    }
+
+
 def losses_and_metrics(output, views, max_depth):
     pred = torch.stack([x["depth"][..., 0] for x in output.ress], 1).float()
     base = torch.stack([x["depth_hdr_base"][..., 0] for x in output.ress], 1).float()
@@ -112,6 +176,7 @@ def losses_and_metrics(output, views, max_depth):
     metrics = {"loss": objective, "MAE": mae, "AbsRel": absrel, "RMSElog": rmselog,
                "delta1": d1, "delta2": d2, "delta3": d3,
                "Nmean": nmean, "HF": hf, "pixels": valid.sum().float()}
+    metrics.update(pose_metrics(output, views, image_hw=gt.shape[-2:]))
     return objective, metrics
 
 
@@ -166,6 +231,7 @@ def run(model, loader, device, max_depth, optimizer=None, max_steps=0,
     train = optimizer is not None; model.train(train)
     model.aggregator.eval(); model.camera_head.eval(); model.depth_head.eval(); model.point_head.eval()
     sums, batches, pixel_total = defaultdict(float), 0, 0.
+    pose_sums = defaultdict(float)
     visual_count = 0
     for i, cpu_views in enumerate(loader):
         if max_steps and i >= max_steps: break
@@ -181,16 +247,35 @@ def run(model, loader, device, max_depth, optimizer=None, max_steps=0,
             save_visuals(Path(visual_dir), i, views, output, max_depth)
             visual_count += len(views)
         pixels = float(metrics["pixels"].detach())
+        pose_keys = {"ATE_sq_sum", "ATE_count", "RPE_trans_sum", "RPE_rot_sum", "RPE_count"}
         for key, value in metrics.items():
-            if key != "pixels": sums[key] += float(value.detach()) * pixels
+            if key in pose_keys:
+                pose_sums[key] += float(value.detach())
+            elif key != "pixels":
+                sums[key] += float(value.detach()) * pixels
         pixel_total += pixels
         batches += 1
         if i % 20 == 0:
             phase = "train" if train else "test"
+            ate = (pose_sums["ATE_sq_sum"] / max(pose_sums["ATE_count"], 1.)) ** .5
+            rpe_t = pose_sums["RPE_trans_sum"] / max(pose_sums["RPE_count"], 1.)
+            rpe_r = pose_sums["RPE_rot_sum"] / max(pose_sums["RPE_count"], 1.)
             print(f"[MVSEC {phase}] step={i:05d}/{len(loader):05d} loss={float(loss):.5f} "
                   f"MAE={float(metrics['MAE']):.5f} AbsRel={float(metrics['AbsRel']):.5f} "
-                  f"RMSElog={float(metrics['RMSElog']):.5f} Nmean={float(metrics['Nmean']):.3f}", flush=True)
+                  f"RMSElog={float(metrics['RMSElog']):.5f} Nmean={float(metrics['Nmean']):.3f} "
+                  f"ATE={ate:.5f} RPEt={rpe_t:.5f} RPEr={rpe_r:.3f}", flush=True)
     result = {k: v / max(pixel_total, 1.) for k, v in sums.items()}
+    if pose_sums["ATE_count"] > 0:
+        result["ATE"] = (pose_sums["ATE_sq_sum"] / pose_sums["ATE_count"]) ** .5
+        result["RPE_trans"] = pose_sums["RPE_trans_sum"] / max(pose_sums["RPE_count"], 1.)
+        result["RPE_rot_deg"] = pose_sums["RPE_rot_sum"] / max(pose_sums["RPE_count"], 1.)
+        result["pose_frames"] = int(pose_sums["ATE_count"])
+        result["pose_pairs"] = int(pose_sums["RPE_count"])
+        result["pose_alignment"] = "one Sim(3) per multi-view clip"
+    else:
+        result.update(ATE=None, RPE_trans=None, RPE_rot_deg=None,
+                      pose_frames=0, pose_pairs=0,
+                      pose_alignment="unavailable: invalid GT pose")
     result.update(pixels=pixel_total, batches=batches)
     return result
 

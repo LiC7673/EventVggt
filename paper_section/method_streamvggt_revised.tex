@@ -10,9 +10,9 @@
 Given $N$ synchronized views, our input consists of an LDR image and an
 event stream for each view,
 \begin{equation}
-    \mathcal{X}=\{(\bm I_i^{e_i},\mathcal E_i,\bm K_i)\}_{i=1}^{N},
+    \mathcal{X}=\{(\bm I_i^{e_i},E_i,\bm K_i)\}_{i=1}^{N},
     \qquad
-    \mathcal E_i=\{(\bm u_m,t_m,p_m)\}_{m=1}^{M_i},
+    E_i=\{(\bm u_m,t_m,p_m)\}_{m=1}^{M_i},
 \end{equation}
 where $e_i$ is the exposure level, $\bm K_i$ is the camera intrinsic matrix,
 and $p_m\in\{-1,+1\}$ is the event polarity. The objective is to recover
@@ -51,8 +51,8 @@ temporal bins,
 \end{equation}
 and stack the positive and negative channels as
 $\bm V_i\in\mathbb R^{2B\times H\times W}$. Thus, opposite polarities are not
-cancelled before encoding. A shared event encoder $\mathcal G_E$ produces a
-dense feature $\bm F_i^E$.
+cancelled before encoding. A shared event encoder $\mathcal E$ produces a
+dense feature $F_i^E$.
 
 The network then performs two complementary operations. First, a
 token-domain HDR adapter uses reliable event evidence to complete the geometry
@@ -117,26 +117,33 @@ that are absent from saturated RGB.
 \subsection{Network}
 \label{sec:network}
 
-\subsubsection{RGB Path: Multi-LDR Geometry Consistency}
+\subsubsection{RGB: Multi-LDR Geometry Consistency}
 \label{sec:multi_ldr}
 
-For the same scene, view, and event interval, we sample a degraded exposure
-$\bm I_i^{L}$ and the best available reference exposure $\bm I_i^{0}$. Their
+For the same scene, view, and event interval, we sample a severely degraded
+observation $I_i^{ev_l}$ and the best available reference exposure
+$I_i^{ev_0}$, together with their shared event interval $E_i$. Their
 appearance differs, but their underlying geometry is identical. The frozen RGB
 aggregator extracts
 \begin{equation}
-    \bm Z_i^{L}=\mathcal G_{\mathrm{rgb}}(\bm I_i^{L}),
-    \qquad
-    \bm Z_i^{0}=\operatorname{sg}
-    [\mathcal G_{\mathrm{rgb}}(\bm I_i^{0})],
+    Z_i^{ev_l}=\mathcal G_{\mathrm{rgb}}(I_i^{ev_l}),
+    \quad
+    Z_i^{ev_0}=\operatorname{sg}
+    [\mathcal G_{\mathrm{rgb}}(I_i^{ev_0})],
 \end{equation}
-where $\operatorname{sg}$ denotes stop-gradient. The event-conditioned HDR
-adapter predicts a residual rather than replacing the RGB token,
+where $\mathcal G_{\mathrm{rgb}}$ is the frozen StreamVGGT geometry encoder and
+$\operatorname{sg}$ denotes stop-gradient. In parallel, the event encoder
+extracts the complementary dense feature only once,
+\begin{equation}
+    F_i^E=\mathcal E(E_i).
+\end{equation}
+The event-conditioned HDR adapter predicts the missing geometry residual
+rather than replacing the LDR token,
 \begin{align}
-    \bm T_i^E
-    &=\mathcal P_E(C_i^{\mathrm{fus}}\odot\bm F_i^{E\rightarrow G}),\\
-    \widehat{\bm Z}_i^{H}
-    &=\bm Z_i^{L}+\mathcal A_H(\bm Z_i^{L},\bm T_i^E).
+    T_i^E
+    &=\mathcal P_E(C_i^{\mathrm{fus}}\odot F_i^{E\rightarrow G}),\\
+    \widehat Z_i^{H}
+    &=Z_i^{ev_l}+\mathcal A_H(Z_i^{ev_l},T_i^E).
 \end{align}
 In the implementation, $\mathcal A_H$ multiplicatively modulates an LDR-token
 context with an event-token context. Its zero-event path is exactly the
@@ -146,8 +153,8 @@ We supervise the recovered representation with a multi-layer token loss,
 \begin{equation}
     \mathcal L_{\mathrm{HDR}}
     =\sum_{l\in\mathcal S}\omega_l
-    \rho\!\left(widehat{\bm Z}_{i,l}^{H}
-    -\operatorname{sg}(\bm Z_{i,l}^{0})\right),
+    \rho\!\left(\widehat Z_{i,l}^{H}
+    -\operatorname{sg}(Z_{i,l}^{ev_0})\right),
 \end{equation}
 where $\rho$ is the smooth-$L_1$ penalty and $\mathcal S$ denotes the selected
 aggregator layers. Unlike direct feature copying, the residual is conditioned
@@ -156,7 +163,7 @@ under the current exposure.
 
 The frozen depth head decodes the completed tokens,
 \begin{equation}
-    D_i^{b}=\mathcal H_D(\widehat{\bm Z}_i^{H}),
+    D_i^{b}=\mathcal H_D(\widehat Z_i^{H}),
     \qquad
     \bm N_i^{b}=\Pi(D_i^{b},\bm K_i),
 \end{equation}
@@ -169,7 +176,7 @@ depth loss and a geometry-preserving gradient term,
     +\lambda_g\mathcal L_{\nabla D}(D_i^{b},D_i^{\mathrm{gt}}).
 \end{equation}
 
-\subsubsection{Event Path: Geometry-Relevant Cue Learning}
+\subsubsection{Event: Learning Geometry-Aware Event Cues}
 \label{sec:event_path}
 
 The event pathway answers two distinct questions: which responses in the
@@ -178,14 +185,14 @@ responses should modify the reconstructed geometry. We address the first with
 controlled source attribution and Full-to-Geo transfer, and the second with a
 differential-normal guided pixel refiner.
 
-\paragraph{Controlled Geometry Attribution and Full-to-Geo Transfer.}
+\paragraph{Geometry-First Source Attribution and Full-to-Geo Transfer.}
 \label{sec:controlled_event_attribution}
 
 We use the same event encoder for both streams,
 \begin{equation}
-    \bm F_i^{G}=\mathcal G_E(\bm V_i^{\mathrm{geo}}),
+    \bm F_i^{G}=\mathcal E(\bm V_i^{\mathrm{geo}}),
     \qquad
-    \bm F_i^{F}=\mathcal G_E(\bm V_i^{\mathrm{full}}).
+    \bm F_i^{F}=\mathcal E(\bm V_i^{\mathrm{full}}).
 \end{equation}
 The controlled geometry stream first trains the encoder to represent local
 geometric variation. We then learn a Full-to-Geo aligner $\mathcal A_G$ only
@@ -234,7 +241,7 @@ attribution, which learns $\mathcal A_G$, $C^{\mathrm{fus}}$, and
 $C^{\mathrm{ref}}$, and (ii) Multi-LDR geometry completion, which learns
 $\bm I^{L}+\bm V^{\mathrm{geo}}\rightarrow\bm Z^{0}$. At inference,
 $\bm V^{\mathrm{geo}}$ is removed and
-$\widehat{\bm F}^{G}=\mathcal A_G(\mathcal G_E(\bm V^{\mathrm{full}}))$ is used.
+$\widehat{\bm F}^{G}=\mathcal A_G(\mathcal E(\bm V^{\mathrm{full}}))$ is used.
 
 \paragraph{Differential-Normal Guided Depth Refinement.}
 \label{sec:event_normal_depth}
@@ -305,17 +312,91 @@ where $\operatorname{LP}$ is a local low-pass operator. We use
     \mathcal L_{\mathrm{HF}}
     =\rho(\Delta_i-R_i^{\mathrm{HF}})
 \end{equation}
-inside the valid geometry mask. The complete training objective is
+inside the valid geometry mask.
+
+\paragraph{Adjacent-View Differential-Normal Consistency.}
+Independent per-frame supervision does not guarantee that observations of the
+same surface produce compatible differential geometry. We therefore exploit
+the ordered multi-view input and construct the adjacent pair set
 \begin{equation}
-\begin{split}
-    \mathcal L={}&
-    \lambda_D\mathcal L_D(D^f,D^{\mathrm{gt}})
-    +\lambda_N\mathcal L_N(\bm N^f,\bm N^{\mathrm{gt}})
-    +\lambda_{\mathrm{HDR}}\mathcal L_{\mathrm{HDR}}
-    +\lambda_{F\rightarrow G}\mathcal L_{F\rightarrow G}\\
-    &+\lambda_C\mathcal L_C
-    +\lambda_E\mathcal L_{\nabla N}^{E}
-    +\lambda_{DN}\mathcal L_{DN}
-    +\lambda_{\mathrm{HF}}\mathcal L_{\mathrm{HF}}.
-\end{split}
+    \mathcal P=\{(i,i+1)\mid i=1,\ldots,N-1\}.
 \end{equation}
+For four input views, this gives the three pairs $(1,2)$, $(2,3)$, and
+$(3,4)$. Let $\mathcal W_{i\rightarrow j}$ denote reprojection from view $i$
+to view $j$, obtained from the stopped base depth $D_i^b$, camera intrinsics
+$K_i,K_j$, and stopped coarse poses. To reduce sensitivity to event sparsity
+and small pose errors, we aggregate derivative magnitude and depth within
+non-overlapping patches $P$,
+\begin{equation}
+    g_{i,P}=\operatorname{Avg}_{\bm u\in P}
+    \left\|\widehat{\bm G}_i^N(\bm u)\right\|_2,
+    \qquad
+    \widetilde g_{j\rightarrow i,P}
+    =\mathcal W_{j\rightarrow i}(g_{j,P}).
+\end{equation}
+We compare derivative magnitude rather than its image-axis components because
+the magnitude is insensitive to the change of local image axes. A robust
+pairwise calibration
+\begin{equation}
+    a_{ij}=\operatorname{median}_{P\in\Omega_{ij}}
+    \frac{\operatorname{sg}(\widetilde g_{j\rightarrow i,P})}
+         {\operatorname{sg}(g_{i,P})+\epsilon}
+\end{equation}
+absorbs the view-dependent derivative scale induced by perspective
+projection. The trusted overlap $\Omega_{ij}$ contains only patches with
+valid base geometry, event support in both views, in-frame reprojection, and
+consistent projected depth. A pair is omitted when either the number or ratio
+of overlapping patches is below a threshold. We then define
+\begin{equation}
+    \mathcal L_{\mathrm{MV}\nabla N}
+    =\frac{1}{|\mathcal P_{\mathrm{valid}}|}
+    \sum_{(i,j)\in\mathcal P_{\mathrm{valid}}}
+    \frac{\sum_{P\in\Omega_{ij}}q_{ij,P}
+    \rho\!\left(a_{ij}g_{i,P}-\widetilde g_{j\rightarrow i,P}\right)}
+    {\sum_{P\in\Omega_{ij}}q_{ij,P}+\epsilon},
+\end{equation}
+where
+$q_{ij,P}=\sqrt{C_{i,P}^{\mathrm{ref}}
+\widetilde C_{j\rightarrow i,P}^{\mathrm{ref}}}$.
+The confidence, reprojection depth, and pose are detached in this loss, so the
+constraint updates the event derivative branch rather than exploiting a
+confidence, depth, or pose shortcut.
+
+\paragraph{Stage-Conditioned Optimization.}
+The losses are not optimized as an unstructured parallel sum. They follow the
+dependency of the network: the geometry-event representation is learned
+first, complete-event attribution is learned second, and the selected event
+cues are subsequently used for exposure completion and depth refinement. We
+group the objectives as
+\begin{align}
+    \mathcal L_{\mathrm{geo}}
+    &=\mathcal L_{\nabla N}^{E}
+      +\lambda_{\mathrm{MV}}\mathcal L_{\mathrm{MV}\nabla N},\\
+    \mathcal L_{\mathrm{attr}}
+    &=\mathcal L_{F\rightarrow G}+\lambda_C\mathcal L_C,\\
+    \mathcal L_{\mathrm{comp}}
+    &=\mathcal L_{\mathrm{HDR}}+\lambda_b\mathcal L_{\mathrm{base}},\\
+    \mathcal L_{\mathrm{ref}}
+    &=\mathcal L_D(D^f,D^{\mathrm{gt}})
+      +\lambda_N\mathcal L_N(\bm N^f,\bm N^{\mathrm{gt}})
+      +\lambda_{DN}\mathcal L_{DN}
+      +\lambda_{\mathrm{HF}}\mathcal L_{\mathrm{HF}}.
+\end{align}
+The objective is selected according to the alternating training state,
+\begin{equation}
+    \mathcal L^{(s)}=
+    \begin{cases}
+      \mathcal L_{\mathrm{geo}}+\mathcal L_{\mathrm{ref}},
+      &s=\text{geometry warm-up},\\
+      \mathcal L_{\mathrm{attr}},
+      &s=\text{complete-event attribution},\\
+      \mathcal L_{\mathrm{comp}}+\mathcal L_{\mathrm{ref}}
+      +\lambda_{\mathrm{geo}}\mathcal L_{\mathrm{geo}},
+      &s=\text{Multi-LDR completion/refinement}.
+    \end{cases}
+\end{equation}
+The confidence maps are fixed during geometry warm-up, while the HDR adapter
+and pixel refiner are fixed during source attribution. This ordering prevents
+an untrained confidence predictor from suppressing the event branch and
+prevents final depth supervision from replacing the controlled attribution
+signal.

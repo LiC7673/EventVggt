@@ -237,6 +237,13 @@ def main():
     result["delta_lt_1.25"] = result["delta1"]
     result["delta_lt_1.25^2"] = result["delta2"]
     result["delta_lt_1.25^3"] = result["delta3"]
+    result.update(
+        ATE=None,
+        RPE_trans=None,
+        RPE_rot_deg=None,
+        pose_alignment="unavailable",
+        pose_note="DSEC loader has no valid GT trajectory (pose_valid=False)",
+    )
     payload = {"experiment": "DSEC RGB pretrained without finetuning",
                "checkpoint": args.checkpoint, "test_root": args.root, "metrics": result}
     (output_dir / "metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")

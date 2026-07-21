@@ -197,6 +197,15 @@ def run(model, data, device, optimizer=None, max_batches=0, visual_dir=None,
                   f"RMSElog={details['RMSElog']:.5f} Nmean={details['Nmean']:.3f}", flush=True)
     result = {key: value / max(pixel_total, 1.) for key, value in totals.items()}
     result.update(loss=loss_total / max(count, 1), batches=count, pixels=int(pixel_total))
+    # The current DSEC_EV_VGGT loader supplies identity camera poses and marks
+    # pose_valid=False.  Never report those placeholders as trajectory GT.
+    result.update(
+        ATE=None,
+        RPE_trans=None,
+        RPE_rot_deg=None,
+        pose_alignment="unavailable",
+        pose_note="DSEC loader has no valid GT trajectory (pose_valid=False)",
+    )
     return result
 
 
