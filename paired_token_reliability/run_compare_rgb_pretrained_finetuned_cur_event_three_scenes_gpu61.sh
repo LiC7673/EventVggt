@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Evaluate three frozen checkpoints with exactly the same scenes/exposures.
-# Order: RGB pretrained (GPU 6) -> RGB finetuned (GPU 1) -> cur-event (GPU 6).
+# Default order: RGB pretrained (GPU 6) -> existing cur-event epoch (GPU 1).
+# Set RUN_FINETUNED_RGB=1 to insert RGB finetuned evaluation on GPU 1.
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,7 +14,8 @@ DATA_ROOT="${DATA_ROOT:-/data1/lzh/dataset/reflective_raw}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-exp_f/compare_rgb_pretrained_finetuned_cur_event_three_scenes}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
 FINETUNED_TEMPLATE="${FINETUNED_TEMPLATE:-checkpoints/fine_rgb_{ldr_event_id}/checkpoint-last.pth}"
-EVENT_CHECKPOINT="${EVENT_CHECKPOINT:-exp_f/cur_event_refiner_first_1k_then_joint_gpu4/checkpoint-adapter-best.pth}"
+EVENT_CHECKPOINT="${EVENT_CHECKPOINT:-exp_f/cur_event_refiner_first_1k_then_joint_gpu4/checkpoint-adapter-last.pth}"
+RUN_FINETUNED_RGB="${RUN_FINETUNED_RGB:-0}"
 EXPOSURES="${EXPOSURES:-0,1,2,5,10}"
 DEPTH_SCALE="${DEPTH_SCALE:-2.0}"
 TEST_FRAME_COUNT="${TEST_FRAME_COUNT:-120}"
@@ -49,7 +51,7 @@ if [[ ! -f "${EVENT_CHECKPOINT}" ]]; then
   exit 2
 fi
 
-echo "[1/3] RGB pretrained/no finetuning on physical GPU 6"
+echo "[1/2] RGB pretrained/no finetuning on physical GPU 6"
 CUDA_VISIBLE_DEVICES=6 python -m fine_rgb.evaluate_rgb_four_scenes_streaming \
   --pretrained "${PRETRAINED}" \
   --skip-finetuned \
@@ -65,25 +67,27 @@ CUDA_VISIBLE_DEVICES=6 python -m fine_rgb.evaluate_rgb_four_scenes_streaming \
   --max-visuals-per-condition 0 \
   "$@" 2>&1 | tee "${OUTPUT_ROOT}/logs/01_rgb_pretrained.log"
 
-echo "[2/3] RGB finetuned checkpoints on physical GPU 1"
-CUDA_VISIBLE_DEVICES=1 python -m fine_rgb.evaluate_rgb_four_scenes_streaming \
-  --pretrained "${PRETRAINED}" \
-  --finetuned-template "${FINETUNED_TEMPLATE}" \
-  --skip-pretrained \
-  --output-dir "${OUTPUT_ROOT}/rgb_finetuned" \
-  --data-root "${DATA_ROOT}" \
-  --scenes "${SCENES[@]}" \
-  --ldr-event-ids "${EXPOSURES}" \
-  --num-views "${NUM_VIEWS}" \
-  --test-frame-count "${TEST_FRAME_COUNT}" \
-  --num-workers "${NUM_WORKERS}" \
-  --depth-scale "${DEPTH_SCALE}" \
-  --visualize-every "${VISUALIZE_EVERY}" \
-  --max-visuals-per-condition 0 \
-  "$@" 2>&1 | tee "${OUTPUT_ROOT}/logs/02_rgb_finetuned.log"
+if [[ "${RUN_FINETUNED_RGB}" == "1" ]]; then
+  echo "[optional] RGB finetuned checkpoints on physical GPU 1"
+  CUDA_VISIBLE_DEVICES=1 python -m fine_rgb.evaluate_rgb_four_scenes_streaming \
+    --pretrained "${PRETRAINED}" \
+    --finetuned-template "${FINETUNED_TEMPLATE}" \
+    --skip-pretrained \
+    --output-dir "${OUTPUT_ROOT}/rgb_finetuned" \
+    --data-root "${DATA_ROOT}" \
+    --scenes "${SCENES[@]}" \
+    --ldr-event-ids "${EXPOSURES}" \
+    --num-views "${NUM_VIEWS}" \
+    --test-frame-count "${TEST_FRAME_COUNT}" \
+    --num-workers "${NUM_WORKERS}" \
+    --depth-scale "${DEPTH_SCALE}" \
+    --visualize-every "${VISUALIZE_EVERY}" \
+    --max-visuals-per-condition 0 \
+    "$@" 2>&1 | tee "${OUTPUT_ROOT}/logs/02_rgb_finetuned.log"
+fi
 
-echo "[3/3] cur_event_refiner_first_1k_then_joint checkpoint on physical GPU 6"
-CUDA_VISIBLE_DEVICES=6 python -m \
+echo "[2/2] existing cur_event_refiner_first epoch on physical GPU 1"
+CUDA_VISIBLE_DEVICES=1 python -m \
   paired_token_reliability.evaluate_cur_event_hf_residual_four_scenes \
   --checkpoint "${EVENT_CHECKPOINT}" \
   --output-dir "${OUTPUT_ROOT}/cur_event_refiner_first" \
@@ -102,4 +106,4 @@ CUDA_VISIBLE_DEVICES=6 python -m \
   --max-visuals-per-condition 0 \
   "$@" 2>&1 | tee "${OUTPUT_ROOT}/logs/03_cur_event_refiner_first.log"
 
-echo "All three evaluations completed: ${OUTPUT_ROOT}"
+echo "Requested evaluations completed: ${OUTPUT_ROOT}"
