@@ -22,12 +22,22 @@ NUM_WORKERS="${NUM_WORKERS:-0}"
 VISUALIZE_EVERY="${VISUALIZE_EVERY:-1}"
 
 SCENES=(
-  "DH2_Socrates and Seneca_Car_Paint_Midnigh"
+  "DH2_Socrates and Seneca_Car_Paint_Midnight"
   "Dragon_1_Car_Paint_Midnight"
   "NAPOLEON_fix_Anodized_Red"
 )
 
 mkdir -p "${OUTPUT_ROOT}/logs"
+
+for scene in "${SCENES[@]}"; do
+  if [[ ! -d "${DATA_ROOT}/${scene}" ]]; then
+    echo "Scene directory not found: ${DATA_ROOT}/${scene}" >&2
+    echo "Available close matches:" >&2
+    find "${DATA_ROOT}" -maxdepth 1 -mindepth 1 -type d \
+      -iname "*$(printf '%s' "${scene}" | cut -c1-12)*" -printf '  %f\n' >&2 || true
+    exit 2
+  fi
+done
 
 if [[ ! -f "${PRETRAINED}" ]]; then
   echo "RGB pretrained checkpoint not found: ${PRETRAINED}" >&2
