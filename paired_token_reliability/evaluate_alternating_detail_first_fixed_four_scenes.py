@@ -205,6 +205,10 @@ def write_progress(out, checkpoint, args, exposures, nested, aggregates,
         exposures=exposures, results=nested,
         event_source_mode=args.event_source_mode,
         depth_alignment=f"fixed scale={args.depth_scale}; no test-GT alignment",
+        pose_protocol=(
+            "four-view clip; one first-frame SE(3) alignment; no pose scale "
+            "alignment; ATE RMSE, adjacent-view RPE translation and rotation"
+        ),
         all_scenes_pixel_weighted=aggregates,
         overall_pixel_weighted=overall_metrics,
         complete=bool(complete),
@@ -267,7 +271,10 @@ def main():
             )
             print(f"  final MAE={metrics['final_event_refined']['mae']:.6f} "
                   f"AbsRel={metrics['final_event_refined']['abs_rel']:.6f} "
-                  f"Nmean={metrics['final_event_refined']['normal_mean_deg']:.3f}", flush=True)
+                  f"Nmean={metrics['final_event_refined']['normal_mean_deg']:.3f} "
+                  f"ATE={metrics['final_event_refined']['ate']:.6f} "
+                  f"RPEt={metrics['final_event_refined']['rpe_trans']:.6f} "
+                  f"RPEr={metrics['final_event_refined']['rpe_rot_deg']:.3f}", flush=True)
             del fanout, local, loader, dataset; gc.collect()
             if device.type == "cuda": torch.cuda.empty_cache()
     aggregates={}
