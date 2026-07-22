@@ -14,7 +14,7 @@ DATA_ROOT="${DATA_ROOT:-/data1/lzh/dataset/reflective_raw}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-exp_f/compare_rgb_pretrained_finetuned_cur_event_three_scenes}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
 FINETUNED_TEMPLATE="${FINETUNED_TEMPLATE:-checkpoints/fine_rgb_{ldr_event_id}/checkpoint-last.pth}"
-EVENT_CHECKPOINT="${EVENT_CHECKPOINT:-exp_f/cur_event_refiner_first_1k_then_joint_gpu4/checkpoint-adapter-last.pth}"
+EVENT_CHECKPOINT="${EVENT_CHECKPOINT:-exp_f/cur_event_clean_hf_residual_v2_gpu4/checkpoint-adapter-last.pth}"
 RUN_FINETUNED_RGB="${RUN_FINETUNED_RGB:-0}"
 EXPOSURES="${EXPOSURES:-0,1,2,5,10}"
 DEPTH_SCALE="${DEPTH_SCALE:-2.0}"
@@ -86,11 +86,11 @@ if [[ "${RUN_FINETUNED_RGB}" == "1" ]]; then
     "$@" 2>&1 | tee "${OUTPUT_ROOT}/logs/02_rgb_finetuned.log"
 fi
 
-echo "[2/2] existing cur_event_refiner_first epoch on physical GPU 1"
+echo "[2/2] cur_event_clean_hf_residual_v2 checkpoint on physical GPU 1"
 CUDA_VISIBLE_DEVICES=1 python -m \
   paired_token_reliability.evaluate_cur_event_hf_residual_four_scenes \
   --checkpoint "${EVENT_CHECKPOINT}" \
-  --output-dir "${OUTPUT_ROOT}/cur_event_refiner_first" \
+  --output-dir "${OUTPUT_ROOT}/cur_event_clean_hf_residual_v2" \
   --root "${DATA_ROOT}" \
   --event-source-mode cur_event \
   --scene-names "${SCENES[@]}" \

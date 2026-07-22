@@ -220,9 +220,18 @@ def evaluate_experiment(
                 f"  MAE={row['mae']:.6f} AbsRel={row['abs_rel']:.6f} "
                 f"RMSElog={row['rmse_log']:.6f} "
                 f"Nmean={row['normal_mean_deg']:.4f} "
-                f"N<11.25={row['normal_11_25']:.4f}",
+                f"N<11.25={row['normal_11_25']:.4f} "
+                f"ATE={row['ate']:.6f} "
+                f"RPE_t={row['rpe_trans']:.6f} "
+                f"RPE_r={row['rpe_rot_deg']:.4f}deg",
                 flush=True,
             )
+            if not local.pose["ate"].values:
+                print(
+                    "  [warning] RGB model output contains no usable camera_pose; "
+                    "ATE/RPE are recorded as NaN.",
+                    flush=True,
+                )
             del local, loader
             gc.collect()
             if device.type == "cuda":
