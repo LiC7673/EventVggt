@@ -57,7 +57,7 @@ run_one() {
     batch_size=1 accum_iter=1 \
     mixed_precision="${AMP}" \
     num_workers="${NUM_WORKERS}" pin_mem=true \
-    eval_every_steps=0 skip_final_eval=true \
+    eval_every_steps=0 +skip_final_eval=true \
     save_every_steps=100000000 vis.save_every_steps=0 \
     2>&1 | tee "${train_log}"
 
