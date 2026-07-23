@@ -103,6 +103,33 @@ def percentile(values, q):
 
 
 @torch.inference_mode()
+def profile_forward_flops(model, views, device, amp):
+    """Best-effort PyTorch operator FLOP count for one forward pass."""
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if device.type == "cuda":
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+    enabled = amp != "none" and device.type == "cuda"
+    dtype = torch.bfloat16 if amp == "bf16" else torch.float16
+    with torch.profiler.profile(activities=activities, with_flops=True) as profiler:
+        with torch.autocast(
+            device_type=device.type, dtype=dtype, enabled=enabled
+        ):
+            output = model(views)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        del output
+    flops = sum(float(event.flops or 0) for event in profiler.key_averages())
+    return {
+        "profiled_flops": int(flops),
+        "profiled_tflops_per_forward": flops / 1e12,
+        "flops_note": (
+            "PyTorch operator-profiler estimate; unsupported custom operators "
+            "may be omitted. Use the same profiler for every compared method."
+        ),
+    }
+
+
+@torch.inference_mode()
 def benchmark(model, views, device, *, warmup, repeats, amp):
     if warmup < 1 or repeats < 1:
         raise ValueError("--warmup and --repeats must be positive")
@@ -261,6 +288,7 @@ def main():
             amp=args.amp,
         ),
     }
+    payload["benchmark"].update(profile_forward_flops(model, views, device, args.amp))
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
