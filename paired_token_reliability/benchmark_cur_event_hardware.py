@@ -15,8 +15,9 @@ from omegaconf import OmegaConf
 import finetune_event as fe
 from ablation.eag3r_metrics_eval import move_views_to_device
 from paired_token_reliability.evaluate_cur_event_hf_residual_four_scenes import (
-    build_model,
+    build_model as build_v2_model,
 )
+from paired_token_reliability import evaluate_latest_strategy_ablation as ablation_eval
 import real_reliability_stage.evaluate_stage2_heldout as protocol
 
 
@@ -46,6 +47,12 @@ def parse_args():
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--repeats", type=int, default=50)
     parser.add_argument("--amp", choices=("none", "fp16", "bf16"), default="none")
+    parser.add_argument(
+        "--variant",
+        choices=("full", "noisy_event_only", "multi_ldr_only", "without_refiner_normal"),
+        default="full",
+        help="Configure the checkpoint's actual ablation inference route.",
+    )
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
@@ -175,7 +182,15 @@ def main():
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
 
-    model, cfg = build_model(checkpoint, device, args.depth_scale)
+    if args.variant == "full":
+        model, cfg = build_v2_model(checkpoint, device, args.depth_scale)
+        model.set_confidence_stage("full")
+        model.disable_pixel_refiner = False
+    else:
+        ablation_eval._VARIANT = args.variant
+        model, cfg = ablation_eval.build_model(
+            checkpoint, device, args.depth_scale
+        )
     OmegaConf.set_struct(cfg, False)
     OmegaConf.set_struct(cfg.data, False)
     cfg.data.event_source_mode = args.event_source_mode
@@ -224,6 +239,7 @@ def main():
         )
     payload = {
         "checkpoint": str(checkpoint),
+        "variant": args.variant,
         "input": {
             "scene": args.scene,
             "exposure": namespace.ldr_event_id,
