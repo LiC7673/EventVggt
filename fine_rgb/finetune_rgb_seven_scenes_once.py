@@ -8,6 +8,8 @@ tail of every scene.
 """
 
 import sys
+import datetime
+import shutil
 from collections import defaultdict
 from pathlib import Path
 
@@ -33,6 +35,33 @@ SEVEN_SCENES = [
     "Dragon_1_Car_Paint_Midnight",
     "NAPOLEON_fix_Anodized_Red",
 ]
+
+
+def save_minimal_code_snapshot(outdir):
+    """Snapshot only this experiment's dependencies, never the whole workspace.
+
+    The generic RGB trainer copies ``Path.cwd()``.  With five concurrent
+    experiments inside ``exp_f`` that makes every job copy the other jobs'
+    output trees and causes recursive growth.
+    """
+    stamp = datetime.datetime.now().strftime("%m_%d-%H-%M-%S")
+    destination = Path(outdir).resolve() / "code" / stamp
+    source_files = [
+        ROOT_DIR / "finetune_no_event.py",
+        ROOT_DIR / "config" / "finetune_no_event.yaml",
+        ROOT_DIR / "fine_rgb" / "finetune_rgb_seven_scenes_once.py",
+        ROOT_DIR / "fine_rgb" / "launcher.py",
+        ROOT_DIR / "fine_rgb" / "rgb_ldr_dataset.py",
+        ROOT_DIR / "eventvggt" / "datasets" / "my_event_dataset.py",
+    ]
+    for source in source_files:
+        if not source.is_file():
+            continue
+        relative = source.relative_to(ROOT_DIR)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    return str(destination)
 
 
 def _non_overlapping_starts(start_img_ids, num_views):
@@ -124,6 +153,7 @@ def run(cfg: OmegaConf):
     cfg = configure_rgb_ldr_cfg(cfg)
 
     rgb_fe.build_rgb_loader = build_once_rgb_loader
+    rgb_fe.save_current_code = save_minimal_code_snapshot
     print(
         "Launching seven-scene RGB-only one-pass finetune: "
         f"exposure={cfg.data.ldr_event_id}"

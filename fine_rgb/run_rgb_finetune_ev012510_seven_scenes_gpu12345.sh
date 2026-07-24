@@ -8,7 +8,7 @@ cd "${ROOT}"
 
 DATA_ROOT="${DATA_ROOT:-/data1/lzh/dataset/reflective_raw}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-exp_f/rgb_finetune_ev012510_7scenes_1epoch}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-exp_f/rgb_finetune_ev012510_7scenes_1epoch_safe}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
 TEST_FRAME_COUNT="${TEST_FRAME_COUNT:-120}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
