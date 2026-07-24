@@ -82,6 +82,14 @@ def _non_overlapping_starts(start_img_ids, num_views):
 
 def build_once_rgb_loader(cfg, split="train"):
     ldr_event_id = normalize_ldr_id(getattr(cfg.data, "ldr_event_id", "auto"))
+    # This experiment intentionally trains once on all frames of the seven
+    # scenes, then evaluates those scenes externally.  Reusing the evaluator's
+    # 120-frame test tail here would leave zero train frames for 119-frame
+    # scenes.  Keep the configured tail only for the trainer's unused internal
+    # test loader.
+    split_test_frame_count = (
+        0 if split == "train" else getattr(cfg.data, "test_frame_count", 120)
+    )
     dataset = get_rgb_ldr_dataset(
         root=cfg.data.root,
         num_views=cfg.data.num_views,
@@ -92,7 +100,7 @@ def build_once_rgb_loader(cfg, split="train"):
         initial_scene_idx=cfg.data.initial_scene_idx,
         active_scene_count=cfg.data.active_scene_count,
         split=split,
-        test_frame_count=getattr(cfg.data, "test_frame_count", 120),
+        test_frame_count=split_test_frame_count,
         ldr_event_id=ldr_event_id,
         return_normal_gt=getattr(cfg.data, "return_normal_gt", False),
     )
