@@ -8,11 +8,11 @@ cd "${ROOT}"
 
 DATA_ROOT="${DATA_ROOT:-/data1/lzh/dataset/reflective_raw}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-exp_f/rgb_finetune_ev012510_7scenes_1epoch_safe}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-exp_f/rgb_finetune_ev012510_7scenes_1epoch_scale_aligned}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
 TEST_FRAME_COUNT="${TEST_FRAME_COUNT:-120}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
-DEPTH_SCALE="${DEPTH_SCALE:-2.05}"
+DEPTH_SCALE="${DEPTH_SCALE:-2.0}"
 AMP="${AMP:-bf16}"
 VISUALIZE_EVERY="${VISUALIZE_EVERY:-1}"
 MAX_VISUALS_PER_CONDITION="${MAX_VISUALS_PER_CONDITION:-0}"
@@ -55,6 +55,9 @@ run_one() {
     data.test_frame_count="${TEST_FRAME_COUNT}" \
     epochs=1 start_epoch=0 \
     batch_size=1 accum_iter=1 \
+    lr="${LR:-1.0e-5}" min_lr="${MIN_LR:-1.0e-6}" warmup_epochs="${WARMUP_EPOCHS:-0.1}" \
+    loss.align_depth_scale=true \
+    train.unfreeze_heads=true train.unfreeze_aggregator_blocks=false \
     mixed_precision="${AMP}" \
     num_workers="${NUM_WORKERS}" pin_mem=true \
     eval_every_steps=0 +skip_final_eval=true \

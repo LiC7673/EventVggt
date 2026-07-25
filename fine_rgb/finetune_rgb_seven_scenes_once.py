@@ -164,7 +164,11 @@ def run(cfg: OmegaConf):
     rgb_fe.save_current_code = save_minimal_code_snapshot
     print(
         "Launching seven-scene RGB-only one-pass finetune: "
-        f"exposure={cfg.data.ldr_event_id}"
+        f"exposure={cfg.data.ldr_event_id}, "
+        f"align_depth_scale={bool(cfg.loss.align_depth_scale)}, "
+        f"unfreeze_heads={bool(cfg.train.unfreeze_heads)}, "
+        f"unfreeze_aggregator={bool(cfg.train.unfreeze_aggregator_blocks)}, "
+        f"lr={float(cfg.lr):.3g}"
     )
     rgb_fe.train(cfg)
 
