@@ -118,25 +118,32 @@ class ExternalResultsRgbDataset(PureRgbLdrDataset):
     def __init__(self, *args, result_images, **kwargs):
         self.result_images = list(result_images)
         super().__init__(*args, **kwargs)
+        self._source_to_external = {}
+        for scene_meta in self.active_scene_data.values():
+            for source_paths in scene_meta["image_paths_by_ldr"].values():
+                if len(self.result_images) < len(source_paths):
+                    raise RuntimeError(
+                        f"external RGB has {len(self.result_images)} frames, "
+                        f"but source/GT sequence has {len(source_paths)}"
+                    )
+                for frame_id, source_path in enumerate(source_paths):
+                    self._source_to_external[
+                        str(Path(source_path).resolve())
+                    ] = self.result_images[frame_id]
 
-    def _get_views(self, idx, resolution, rng, num_views):
-        views = super()._get_views(idx, resolution, rng, num_views)
-        _, start_id = self.start_img_ids[idx]
-        width, height = int(resolution[0]), int(resolution[1])
-        for offset, view in enumerate(views):
-            frame_id = int(start_id) + offset
-            if frame_id >= len(self.result_images):
-                raise IndexError(
-                    f"external RGB has {len(self.result_images)} frames, "
-                    f"but GT requested frame {frame_id}"
-                )
-            with Image.open(self.result_images[frame_id]) as image:
-                image = image.convert("RGB")
-                if image.size != (width, height):
-                    image = image.resize((width, height), Image.Resampling.LANCZOS)
-                view["img"] = image.copy()
-            view["external_rgb_path"] = str(self.result_images[frame_id])
-        return views
+    def _load_rgb(self, path):
+        """Load external RGB before the dataset's shared mask/crop/resize."""
+        source = Path(path)
+        external = self._source_to_external.get(str(source.resolve()))
+        if external is None:
+            raise KeyError(f"no external RGB correspondence for source frame: {source}")
+        with Image.open(source) as source_image:
+            source_size = source_image.size
+        with Image.open(external) as image:
+            image = image.convert("RGB")
+            if image.size != source_size:
+                image = image.resize(source_size, Image.Resampling.LANCZOS)
+            return image.copy()
 
 
 def build_result_loader(args, scene: str, exposure: str):
@@ -171,9 +178,14 @@ def build_result_loader(args, scene: str, exposure: str):
             f"scene={scene} exposure={exposure}: external images={len(image_paths)} "
             f"but GT frames={gt_frames}"
         )
+    source_path = next(iter(
+        dataset.active_scene_data[scene]["image_paths_by_ldr"].values()
+    ))[0]
+    with Image.open(source_path) as source_image, Image.open(image_paths[0]) as result_image:
+        size_note = f"source_size={source_image.size} result_size={result_image.size}"
     print(
         f"[external RGB] scene={scene} exposure={exposure} "
-        f"images={len(image_paths)} clips={len(dataset)} dir={image_dir}",
+        f"images={len(image_paths)} clips={len(dataset)} {size_note} dir={image_dir}",
         flush=True,
     )
     return DataLoader(
