@@ -39,6 +39,19 @@ def arguments():
     p.add_argument("--num-views", type=int, default=4)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--max-depth", type=float, default=80.)
+    p.add_argument(
+        "--depth-scale",
+        type=float,
+        default=1.0,
+        help="Fixed depth scale used when scale calibration is disabled.",
+    )
+    p.add_argument(
+        "--scale-calibration-frames",
+        type=int,
+        default=0,
+        help="Estimate one fixed test-sequence depth scale from this many leading "
+             "frames, then reuse it for every evaluated frame. Zero disables calibration.",
+    )
     p.add_argument("--train-sequence", default="outdoor_day1")
     p.add_argument("--test-sequence", default="outdoor_day2")
     p.add_argument("--intrinsics", nargs=4, type=float, default=None)
@@ -129,8 +142,64 @@ def loader(a, train):
                       pin_memory=True, drop_last=False, collate_fn=_collate)
 
 
-def objective(output, views, max_depth):
-    pred = torch.stack([item["depth"][..., 0] for item in output.ress], 1).float()
+def _predicted_depth(output):
+    return torch.stack([item["depth"][..., 0] for item in output.ress], 1).float()
+
+
+@torch.no_grad()
+def calibrate_depth_scale(model, data, device, max_depth, frame_limit):
+    """Estimate one robust metric scale from the leading frames only.
+
+    A frame is one view, not one multi-view batch.  The returned scalar is
+    frozen for the subsequent full evaluation; no per-frame GT alignment is
+    performed.
+    """
+    if frame_limit <= 0:
+        return None, 0, 0
+    model.eval()
+    ratios = []
+    used_frames = used_pixels = 0
+    for cpu_views in data:
+        views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
+        if any("event_voxel" in view for view in views):
+            raise RuntimeError("event input leaked into pure RGB scale calibration")
+        pred = _predicted_depth(model(views))
+        gt = fe.stack_view_field(views, "depthmap").float()
+        for view_index in range(pred.shape[1]):
+            if used_frames >= frame_limit:
+                break
+            p = pred[:, view_index]
+            g = gt[:, view_index]
+            valid = (
+                torch.isfinite(p) & torch.isfinite(g)
+                & (p > 1e-6) & (g > .1) & (g < max_depth)
+            )
+            ratio = (g[valid] / p[valid]).detach()
+            if ratio.numel():
+                # Bound memory while retaining a spatially uniform sample.
+                stride = max(1, ratio.numel() // 200000)
+                ratios.append(ratio[::stride].cpu())
+                used_pixels += int(ratio.numel())
+            used_frames += 1
+        if used_frames >= frame_limit:
+            break
+    if not ratios:
+        raise RuntimeError(
+            f"cannot calibrate depth scale: no valid pixels in first {used_frames} frames"
+        )
+    scale = float(torch.cat(ratios).median())
+    if not np.isfinite(scale) or scale <= 0:
+        raise RuntimeError(f"invalid calibrated depth scale: {scale}")
+    print(
+        f"[RGB scale] fixed_scale={scale:.8f} calibrated_frames={used_frames} "
+        f"valid_pixels={used_pixels}; reused for the complete test sequence",
+        flush=True,
+    )
+    return scale, used_frames, used_pixels
+
+
+def objective(output, views, max_depth, depth_scale=1.0):
+    pred = _predicted_depth(output) * float(depth_scale)
     gt = fe.stack_view_field(views, "depthmap").float()
     intrinsics = fe.stack_view_field(views, "camera_intrinsics").float()
     valid = torch.isfinite(pred) & torch.isfinite(gt) & (pred > 1e-6) & (gt > .1) & (gt < max_depth)
@@ -190,7 +259,7 @@ def save_visual(root, index, views, tensors):
 
 
 def run(model, data, device, max_depth, optimizer=None, max_batches=0, visual_dir=None,
-        visualize_every=10, max_visualizations=30):
+        visualize_every=10, max_visualizations=30, depth_scale=1.0):
     training = optimizer is not None
     model.train(training)
     model.camera_head.eval(); model.point_head.eval(); model.track_head.eval()
@@ -203,7 +272,10 @@ def run(model, data, device, max_depth, optimizer=None, max_batches=0, visual_di
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
         if any("event_voxel" in view for view in views): raise RuntimeError("event input leaked into pure RGB forward")
         with torch.set_grad_enabled(training):
-            output = model(views); loss, details, tensors = objective(output, views, max_depth)
+            output = model(views)
+            loss, details, tensors = objective(
+                output, views, max_depth, depth_scale=depth_scale
+            )
             if training:
                 optimizer.zero_grad(set_to_none=True); loss.backward()
                 torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.)
@@ -246,6 +318,13 @@ def main():
     model = build_model(a, device)
     test = loader(a, False)
     train = loader(a, True) if a.epochs > 0 else None
+    test_depth_scale = float(a.depth_scale)
+    calibration_frames = calibration_pixels = 0
+    if a.scale_calibration_frames > 0:
+        calibrated = calibrate_depth_scale(
+            model, test, device, a.max_depth, a.scale_calibration_frames
+        )
+        test_depth_scale, calibration_frames, calibration_pixels = calibrated
     backbone_params = []
     n = max(0, int(a.unfreeze_last_blocks))
     if n:
@@ -262,7 +341,10 @@ def main():
         limit = min(len(train), remaining) if a.max_train_steps else 0
         tr = run(model, train, device, a.max_depth, optimizer, limit)
         steps += limit if limit else len(train)
-        te = run(model, test, device, a.max_depth, max_batches=a.max_test_batches)
+        te = run(
+            model, test, device, a.max_depth, max_batches=a.max_test_batches,
+            depth_scale=test_depth_scale,
+        )
         row = {"epoch": epoch, "train": tr, "test": te}; history.append(row)
         print(json.dumps(row, indent=2), flush=True)
         torch.save({"schema": "pure_rgb_real_dataset_v1", "model": model.state_dict(),
@@ -271,12 +353,20 @@ def main():
         if a.max_train_steps and steps >= a.max_train_steps: break
     final = run(model, test, device, a.max_depth, max_batches=a.max_test_batches,
                 visual_dir=out / "final_test_visualizations", visualize_every=a.visualize_every,
-                max_visualizations=a.max_visualizations)
+                max_visualizations=a.max_visualizations, depth_scale=test_depth_scale)
     payload = {"dataset": a.dataset, "event_input": False,
                "zero_shot": a.epochs == 0, "source_pretrained": a.pretrained,
                "train_sequence": a.train_sequence if a.dataset == "mvsec" else "DSEC/train",
                "test_sequence": a.test_sequence if a.dataset == "mvsec" else "DSEC/test",
                "rgb_directory": a.dsec_rgb_subdir if a.dataset == "dsec" else None,
+               "depth_scale": test_depth_scale,
+               "scale_calibration": {
+                   "method": "median_gt_over_prediction",
+                   "leading_frames": calibration_frames,
+                   "valid_pixels": calibration_pixels,
+                   "requested_frames": a.scale_calibration_frames,
+                   "fixed_for_full_evaluation": True,
+               },
                "metrics": final}
     (out / "final_test_metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     # DSEC_EV_VGGT currently exposes identity pose placeholders with
@@ -286,6 +376,8 @@ def main():
     rpe_t = final["RPE_trans"] if final["RPE_trans"] is not None else float("nan")
     rpe_r = final["RPE_rot_deg"] if final["RPE_rot_deg"] is not None else float("nan")
     summary = (
+        f"scale={test_depth_scale:.8f} "
+        f"scale_frames={calibration_frames} "
         f"AbsRel={final['AbsRel']:.6f} "
         f"d1={final['delta1']:.6f} "
         f"RMSElog={final['RMSElog']:.6f} "
