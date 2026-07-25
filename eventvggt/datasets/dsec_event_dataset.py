@@ -298,7 +298,11 @@ def _choose_timestamp_file(scene: Path, token: str) -> Optional[Path]:
     return candidates[0] if candidates else None
 
 
-def _choose_rgb_files(scene: Path, target_size: Tuple[int, int]) -> tuple[list[Path], bool]:
+def _choose_rgb_files(
+    scene: Path,
+    target_size: Tuple[int, int],
+    preferred_directory: Optional[str] = None,
+) -> tuple[list[Path], bool]:
     excluded = ("disparity", "depth", "flow", "mask", "label", "semantic")
     candidates = [
         path for path in _find_files(scene, {".png", ".jpg", ".jpeg"})
@@ -307,6 +311,19 @@ def _choose_rgb_files(scene: Path, target_size: Tuple[int, int]) -> tuple[list[P
     groups: Dict[Path, list[Path]] = {}
     for path in candidates:
         groups.setdefault(path.parent, []).append(path)
+    if preferred_directory:
+        normalized = str(preferred_directory).replace("\\", "/").strip("/").lower()
+        preferred = {
+            parent: files for parent, files in groups.items()
+            if normalized in str(parent.relative_to(scene)).replace("\\", "/").lower()
+        }
+        if not preferred:
+            discovered = sorted(str(parent.relative_to(scene)) for parent in groups)
+            raise FileNotFoundError(
+                f"{scene.name}: requested RGB directory {preferred_directory!r} was not found; "
+                f"available image directories={discovered}"
+            )
+        groups = preferred
 
     scored = []
     for parent, files in groups.items():
@@ -372,6 +389,7 @@ class DSECEventDataset(BaseEventMultiViewDataset):
         disparity_fx: Optional[float] = None,
         disparity_baseline: Optional[float] = None,
         max_depth: float = 80.0,
+        rgb_directory_hint: Optional[str] = None,
         **kwargs,
     ):
         self.ROOT = Path(ROOT)
@@ -385,6 +403,9 @@ class DSECEventDataset(BaseEventMultiViewDataset):
         self.disparity_fx = None if disparity_fx is None else float(disparity_fx)
         self.disparity_baseline = None if disparity_baseline is None else float(disparity_baseline)
         self.max_depth = float(max_depth)
+        self.rgb_directory_hint = (
+            None if rgb_directory_hint is None else str(rgb_directory_hint)
+        )
         self.scene_data: Dict[str, Dict[str, Any]] = {}
         self.scenes: list[str] = []
         self.start_img_ids: list[tuple[str, int]] = []
@@ -534,7 +555,9 @@ class DSECEventDataset(BaseEventMultiViewDataset):
             first = _load_map(supervision[0])
             target_size = (int(first.shape[1]), int(first.shape[0]))
 
-        rgb_files, explicitly_aligned = _choose_rgb_files(scene, target_size)
+        rgb_files, explicitly_aligned = _choose_rgb_files(
+            scene, target_size, preferred_directory=self.rgb_directory_hint
+        )
         if not rgb_files:
             raise FileNotFoundError(f"No RGB/frame images found in {scene}")
         rgb_size = _image_size(rgb_files[0])

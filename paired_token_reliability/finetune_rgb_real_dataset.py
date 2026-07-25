@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
@@ -19,6 +20,7 @@ from eventvggt.datasets.dsec_event_dataset import get_dsec_dataset
 from eventvggt.datasets.mvsec_event_dataset import get_mvsec_dataset
 from eventvggt.datasets.my_event_dataset import event_multiview_collate
 from paired_token_reliability.common import move_views_to_device, torch_load
+from paired_token_reliability.finetune_refiner_first_mvsec import pose_metrics
 from streamvggt.models.streamvggt import StreamVGGT
 
 
@@ -42,6 +44,12 @@ def arguments():
     p.add_argument("--intrinsics", nargs=4, type=float, default=None)
     p.add_argument("--visualize-every", type=int, default=10)
     p.add_argument("--max-visualizations", type=int, default=30)
+    p.add_argument(
+        "--dsec-rgb-subdir",
+        default=None,
+        help="Require DSEC RGB frames from this scene-relative directory, "
+             "e.g. hdr_diff_images/event_aligned.",
+    )
     p.add_argument("--device", default="cuda")
     return p.parse_args()
 
@@ -104,6 +112,7 @@ def loader(a, train):
             a.root, split=split, num_views=a.num_views, resolution=(518, 392), seed=0,
             event_window_ms=50., event_resize_bins=5, clip_stride=4,
             allow_unaligned_rgb=False, depth_scale=1., max_depth=a.max_depth,
+            rgb_directory_hint=a.dsec_rgb_subdir,
         )
         label = f"DSEC/{split}"
     else:
@@ -132,6 +141,7 @@ def objective(output, views, max_depth):
     mae = (difference * valid).sum() / pixels
     absrel = ((difference / gt.clamp_min(1e-6)) * valid).sum() / pixels
     rmselog = torch.sqrt((signed_log.square() * valid).sum() / pixels)
+    rmse = torch.sqrt(((pred - gt).square() * valid).sum() / pixels)
     ratio = torch.maximum(pred / gt.clamp_min(1e-6), gt / pred.clamp_min(1e-6))
     delta = [((ratio < 1.25 ** power) & valid).sum() / pixels for power in (1, 2, 3)]
     pn = F.normalize(fe.depth_to_normals(pred, intrinsics), dim=-1, eps=1e-6)
@@ -146,7 +156,7 @@ def objective(output, views, max_depth):
     n22 = ((angle < 22.5) & normal_valid).sum() / normal_pixels
     n30 = ((angle < 30.) & normal_valid).sum() / normal_pixels
     loss = depth_loss + .2 * normal_loss
-    details = dict(MAE=mae, AbsRel=absrel, RMSElog=rmselog, delta1=delta[0],
+    details = dict(MAE=mae, AbsRel=absrel, RMSElog=rmselog, RMSE=rmse, delta1=delta[0],
                    delta2=delta[1], delta3=delta[2], Nmean=nmean,
                    N11_25=n11, N22_5=n22, N30=n30,
                    depth_loss=depth_loss, normal_loss=normal_loss, pixels=valid.sum().float())
@@ -184,9 +194,10 @@ def run(model, data, device, max_depth, optimizer=None, max_batches=0, visual_di
     training = optimizer is not None
     model.train(training)
     model.camera_head.eval(); model.point_head.eval(); model.track_head.eval()
-    keys = ("MAE", "AbsRel", "RMSElog", "delta1", "delta2", "delta3",
+    keys = ("MAE", "AbsRel", "RMSElog", "RMSE", "delta1", "delta2", "delta3",
             "Nmean", "N11_25", "N22_5", "N30", "depth_loss", "normal_loss")
     totals = {key: 0. for key in keys}; pixel_total = loss_total = 0.; batches = visual_count = 0
+    pose_sums = defaultdict(float)
     for index, cpu_views in enumerate(data):
         if max_batches > 0 and index >= max_batches: break
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
@@ -197,6 +208,9 @@ def run(model, data, device, max_depth, optimizer=None, max_batches=0, visual_di
                 optimizer.zero_grad(set_to_none=True); loss.backward()
                 torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.)
                 optimizer.step()
+        pose = pose_metrics(output, views, image_hw=tensors[0].shape[-2:])
+        for key, value in pose.items():
+            pose_sums[key] += float(value.detach())
         weight = float(details["pixels"])
         for key in keys: totals[key] += float(details[key]) * weight
         pixel_total += weight; loss_total += float(loss); batches += 1
@@ -210,13 +224,28 @@ def run(model, data, device, max_depth, optimizer=None, max_batches=0, visual_di
                   f"RMSElog={float(details['RMSElog']):.5f} Nmean={float(details['Nmean']):.3f}", flush=True)
     result = {key: value / max(pixel_total, 1.) for key, value in totals.items()}
     result.update(loss=loss_total / max(batches, 1), batches=batches, pixels=int(pixel_total))
+    if pose_sums["ATE_count"] > 0:
+        result.update(
+            ATE=(pose_sums["ATE_sq_sum"] / pose_sums["ATE_count"]) ** .5,
+            RPE_trans=pose_sums["RPE_trans_sum"] / max(pose_sums["RPE_count"], 1.),
+            RPE_rot_deg=pose_sums["RPE_rot_sum"] / max(pose_sums["RPE_count"], 1.),
+            pose_frames=int(pose_sums["ATE_count"]),
+            pose_pairs=int(pose_sums["RPE_count"]),
+        )
+    else:
+        result.update(
+            ATE=None, RPE_trans=None, RPE_rot_deg=None,
+            pose_frames=0, pose_pairs=0,
+        )
     return result
 
 
 def main():
     a = arguments(); device = torch.device(a.device if torch.cuda.is_available() else "cpu")
     out = Path(a.output); out.mkdir(parents=True, exist_ok=True)
-    model = build_model(a, device); train = loader(a, True); test = loader(a, False)
+    model = build_model(a, device)
+    test = loader(a, False)
+    train = loader(a, True) if a.epochs > 0 else None
     backbone_params = []
     n = max(0, int(a.unfreeze_last_blocks))
     if n:
@@ -225,9 +254,10 @@ def main():
     optimizer = torch.optim.AdamW([
         {"params": model.depth_head.parameters(), "lr": a.lr_head},
         {"params": backbone_params, "lr": a.lr_backbone},
-    ], weight_decay=1e-5, betas=(.9, .95))
+    ], weight_decay=1e-5, betas=(.9, .95)) if a.epochs > 0 else None
     history=[]; steps=0
     for epoch in range(a.epochs):
+        assert train is not None and optimizer is not None
         remaining = max(a.max_train_steps - steps, 0) if a.max_train_steps else 0
         limit = min(len(train), remaining) if a.max_train_steps else 0
         tr = run(model, train, device, a.max_depth, optimizer, limit)
@@ -242,10 +272,28 @@ def main():
     final = run(model, test, device, a.max_depth, max_batches=a.max_test_batches,
                 visual_dir=out / "final_test_visualizations", visualize_every=a.visualize_every,
                 max_visualizations=a.max_visualizations)
-    payload = {"dataset": a.dataset, "event_input": False, "source_pretrained": a.pretrained,
+    payload = {"dataset": a.dataset, "event_input": False,
+               "zero_shot": a.epochs == 0, "source_pretrained": a.pretrained,
                "train_sequence": a.train_sequence if a.dataset == "mvsec" else "DSEC/train",
-               "test_sequence": a.test_sequence if a.dataset == "mvsec" else "DSEC/test", "metrics": final}
+               "test_sequence": a.test_sequence if a.dataset == "mvsec" else "DSEC/test",
+               "rgb_directory": a.dsec_rgb_subdir if a.dataset == "dsec" else None,
+               "metrics": final}
     (out / "final_test_metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # DSEC_EV_VGGT currently exposes identity pose placeholders with
+    # pose_valid=False. Keep the requested paper-friendly schema explicit
+    # without fabricating trajectory metrics.
+    ate = final["ATE"] if final["ATE"] is not None else float("nan")
+    rpe_t = final["RPE_trans"] if final["RPE_trans"] is not None else float("nan")
+    rpe_r = final["RPE_rot_deg"] if final["RPE_rot_deg"] is not None else float("nan")
+    summary = (
+        f"AbsRel={final['AbsRel']:.6f} "
+        f"d1={final['delta1']:.6f} "
+        f"RMSElog={final['RMSElog']:.6f} "
+        f"RMSE={final['RMSE']:.6f} "
+        f"ATE={ate:.6f} RPE_t={rpe_t:.6f} RPE_r={rpe_r:.6f}"
+    )
+    (out / "metrics.txt").write_text(summary + "\n", encoding="utf-8")
+    print(f"[PURE RGB metrics.txt] {summary}", flush=True)
     print(f"[PURE RGB final] {json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 
