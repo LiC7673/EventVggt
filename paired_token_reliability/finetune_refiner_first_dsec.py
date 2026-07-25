@@ -213,16 +213,18 @@ def main():
     args = parse_args(); device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     out = Path(args.output); out.mkdir(parents=True, exist_ok=True)
     model = load_model(args, device)
-    train = loader(args, "train", True); test = loader(args, "test", False)
+    test = loader(args, "test", False)
+    train = loader(args, "train", True) if args.epochs > 0 else None
     optimizer = torch.optim.AdamW([
         {"params": model.pixel_depth_refiner.parameters(), "lr": args.lr},
         {"params": model.event_encoder.parameters(), "lr": args.lr},
         {"params": model.event_normal_decoder.parameters(), "lr": args.lr},
         {"params": model.event_token_projection.parameters(), "lr": .2 * args.lr},
         {"params": model.ldr_event_hdr_aligner.parameters(), "lr": .2 * args.lr},
-    ], weight_decay=1e-5, betas=(.9, .95))
+    ], weight_decay=1e-5, betas=(.9, .95)) if args.epochs > 0 else None
     history=[]; global_steps=0
     for epoch in range(args.epochs):
+        assert train is not None and optimizer is not None
         remaining = max(args.max_train_steps - global_steps, 0) if args.max_train_steps > 0 else 0
         train_limit = min(len(train), remaining) if args.max_train_steps > 0 else 0
         tr = run(model, train, device, optimizer, train_limit)
@@ -233,12 +235,15 @@ def main():
                     "source_checkpoint": args.checkpoint, "history": history}, out / "checkpoint-last.pth")
         (out / "metrics.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
         if args.max_train_steps > 0 and global_steps >= args.max_train_steps: break
-    print("[DSEC final-test] running complete held-out test after fine-tuning", flush=True)
+    mode = "after fine-tuning" if args.epochs > 0 else "zero-shot (no parameter updates)"
+    print(f"[DSEC final-test] running complete held-out test: {mode}", flush=True)
     final_test = run(model, test, device, None, args.max_test_batches,
                      visual_dir=out / "final_test_visualizations",
                      visualize_every=args.visualize_every,
                      max_visualizations=args.max_visualizations)
-    payload = {"checkpoint": str(out / "checkpoint-last.pth"), "source_checkpoint": args.checkpoint,
+    evaluated_checkpoint = str(out / "checkpoint-last.pth") if args.epochs > 0 else args.checkpoint
+    payload = {"checkpoint": evaluated_checkpoint, "source_checkpoint": args.checkpoint,
+               "zero_shot": args.epochs == 0,
                "test_split": "DSEC_EV_VGGT/test", "metrics": final_test}
     (out / "final_test_metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"[DSEC final-test] {json.dumps(final_test, ensure_ascii=False)}", flush=True)
