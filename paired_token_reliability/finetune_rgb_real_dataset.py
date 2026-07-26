@@ -215,7 +215,7 @@ def calibrate_depth_scale(
     )
     # MVSEC evaluation windows have stride one. Skipping N window starts makes
     # the first evaluated window begin strictly after the N calibration frames.
-    skip_batches = requested if dataset_kind == "mvsec" else 0
+    skip_batches = int(frame_limit) if dataset_kind == "mvsec" else 0
     return scale, used_frames, used_pixels, skip_batches
 
 
