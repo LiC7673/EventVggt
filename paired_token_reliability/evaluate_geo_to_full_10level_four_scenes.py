@@ -599,7 +599,10 @@ def write_level(level_dir, checkpoint, args, level, alpha, scale, nested,
             "raw-event sampling before voxelization"
         ),
         "depth_scale": scale,
-        "depth_scale_protocol": "predeclared linear 2.3 geo -> 2.2 full",
+        "depth_scale_protocol": (
+            f"predeclared linear {args.geo_depth_scale} geo -> "
+            f"{args.full_depth_scale} full"
+        ),
         "scenes": list(args.scene_names), "exposures": args.exposures,
         "results": nested, "all_scenes_pixel_weighted": aggregates,
         "overall_pixel_weighted": overall_metrics, "complete": complete,
@@ -761,9 +764,12 @@ def main():
                     level_dir, checkpoint, args, level, alpha, scale, nested,
                     {}, {}, level_rows, complete=False,
                 )
-                final = metrics["final_event_refined"]
+                # The default method exposes coarse/final conditions, whereas
+                # compatible baseline drivers may expose only one final output.
+                report_condition = CONDITIONS[-1]
+                final = metrics[report_condition]
                 print(
-                    f"    final AbsRel={final['abs_rel']:.6f} "
+                    f"    {report_condition} AbsRel={final['abs_rel']:.6f} "
                     f"RMSElog={final['rmse_log']:.6f} "
                     f"d1={final['delta1']:.6f} "
                     f"Nmean={final['normal_mean_deg']:.3f}", flush=True

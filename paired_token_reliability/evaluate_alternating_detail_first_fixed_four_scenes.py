@@ -175,9 +175,21 @@ def evaluate_loader(model, loader, cfg, args, device, accumulators, scene, expos
         values = {"coarse_hdr_like": stack_output(output, "depth_coarse"),
                   "final_event_refined": stack_output(output, "depth")}
         for name, depth in values.items():
+            # A pose-refinement variant stores the frozen RGB camera-head
+            # prediction separately.  The coarse row must measure that base
+            # pose, while the final row measures the overwritten refined pose.
+            swapped_poses = []
+            if name == "coarse_hdr_like":
+                for item in output.ress:
+                    base_pose = item.get("camera_pose_base")
+                    if base_pose is not None:
+                        swapped_poses.append((item, item["camera_pose"]))
+                        item["camera_pose"] = base_pose
             for accumulator in accumulators[name]:
                 _update_condition(accumulator, name, output, depth, depth_gt,
                                   intrinsics, poses, valid)
+            for item, refined_pose in swapped_poses:
+                item["camera_pose"] = refined_pose
         visual_budget = (args.max_visuals_per_condition <= 0
                          or visuals < args.max_visuals_per_condition)
         if (args.visualize_every > 0 and batch_index % args.visualize_every == 0
