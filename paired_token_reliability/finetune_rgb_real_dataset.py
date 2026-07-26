@@ -156,7 +156,9 @@ def _predicted_depth(output):
 
 
 @torch.no_grad()
-def calibrate_depth_scale(model, data, device, max_depth, frame_limit):
+def calibrate_depth_scale(
+    model, data, device, max_depth, frame_limit, dataset_kind,
+):
     """Estimate one robust metric scale from the leading frames only.
 
     A frame is one view, not one multi-view batch.  The returned scalar is
@@ -168,7 +170,14 @@ def calibrate_depth_scale(model, data, device, max_depth, frame_limit):
     model.eval()
     ratios = []
     used_frames = used_pixels = 0
-    for cpu_views in data:
+    num_views = int(getattr(data.dataset, "num_views", 4))
+    for batch_index, cpu_views in enumerate(data):
+        # MVSEC uses stride-one multi-view windows. Select starts
+        # 0,V,2V,... so the leading calibration frames are unique rather than
+        # repeatedly counting overlapping frames. DSEC clips already use a
+        # non-overlapping stride equal to the number of views.
+        if dataset_kind == "mvsec" and batch_index % max(num_views, 1) != 0:
+            continue
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
         if any("event_voxel" in view for view in views):
             raise RuntimeError("event input leaked into pure RGB scale calibration")
@@ -204,7 +213,10 @@ def calibrate_depth_scale(model, data, device, max_depth, frame_limit):
         f"valid_pixels={used_pixels}; reused for the complete test sequence",
         flush=True,
     )
-    return scale, used_frames, used_pixels
+    # MVSEC evaluation windows have stride one. Skipping N window starts makes
+    # the first evaluated window begin strictly after the N calibration frames.
+    skip_batches = requested if dataset_kind == "mvsec" else 0
+    return scale, used_frames, used_pixels, skip_batches
 
 
 def objective(output, views, max_depth, depth_scale=1.0):
@@ -268,7 +280,8 @@ def save_visual(root, index, views, tensors):
 
 
 def run(model, data, device, max_depth, optimizer=None, max_batches=0, visual_dir=None,
-        visualize_every=10, max_visualizations=30, depth_scale=1.0):
+        visualize_every=10, max_visualizations=30, depth_scale=1.0,
+        skip_batches=0):
     training = optimizer is not None
     model.train(training)
     model.camera_head.eval(); model.point_head.eval(); model.track_head.eval()
@@ -277,7 +290,10 @@ def run(model, data, device, max_depth, optimizer=None, max_batches=0, visual_di
     totals = {key: 0. for key in keys}; pixel_total = loss_total = 0.; batches = visual_count = 0
     pose_sums = defaultdict(float)
     for index, cpu_views in enumerate(data):
-        if max_batches > 0 and index >= max_batches: break
+        if index < int(skip_batches):
+            continue
+        if max_batches > 0 and batches >= max_batches:
+            break
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
         if any("event_voxel" in view for view in views): raise RuntimeError("event input leaked into pure RGB forward")
         with torch.set_grad_enabled(training):
@@ -328,12 +344,16 @@ def main():
     test = loader(a, False)
     train = loader(a, True) if a.epochs > 0 else None
     test_depth_scale = float(a.depth_scale)
-    calibration_frames = calibration_pixels = 0
+    calibration_frames = calibration_pixels = calibration_skip_batches = 0
     if a.scale_calibration_frames > 0:
         calibrated = calibrate_depth_scale(
-            model, test, device, a.max_depth, a.scale_calibration_frames
+            model, test, device, a.max_depth, a.scale_calibration_frames,
+            a.dataset,
         )
-        test_depth_scale, calibration_frames, calibration_pixels = calibrated
+        (
+            test_depth_scale, calibration_frames, calibration_pixels,
+            calibration_skip_batches,
+        ) = calibrated
     backbone_params = []
     n = max(0, int(a.unfreeze_last_blocks))
     if n:
@@ -353,6 +373,7 @@ def main():
         te = run(
             model, test, device, a.max_depth, max_batches=a.max_test_batches,
             depth_scale=test_depth_scale,
+            skip_batches=calibration_skip_batches,
         )
         row = {"epoch": epoch, "train": tr, "test": te}; history.append(row)
         print(json.dumps(row, indent=2), flush=True)
@@ -362,7 +383,8 @@ def main():
         if a.max_train_steps and steps >= a.max_train_steps: break
     final = run(model, test, device, a.max_depth, max_batches=a.max_test_batches,
                 visual_dir=out / "final_test_visualizations", visualize_every=a.visualize_every,
-                max_visualizations=a.max_visualizations, depth_scale=test_depth_scale)
+                max_visualizations=a.max_visualizations, depth_scale=test_depth_scale,
+                skip_batches=calibration_skip_batches)
     payload = {"dataset": a.dataset, "event_input": False,
                "zero_shot": a.epochs == 0, "source_pretrained": a.pretrained,
                "train_sequence": a.train_sequence if a.dataset == "mvsec" else "DSEC/train",
@@ -376,6 +398,8 @@ def main():
                    "valid_pixels": calibration_pixels,
                    "requested_frames": a.scale_calibration_frames,
                    "fixed_for_full_evaluation": True,
+                   "unique_non_overlapping_frames": True,
+                   "skipped_test_batches": calibration_skip_batches,
                },
                "metrics": final}
     (out / "final_test_metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
