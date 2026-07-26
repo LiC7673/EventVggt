@@ -1,0 +1,297 @@
+{
+  "input_directory": "E:\\result\\eventvgg\\rgb_f",
+  "experiment": "rgb_finetuned",
+  "condition": "rgb_only_fixed_scale",
+  "exposure_order": [
+    "ev_0",
+    "ev_1",
+    "ev_2",
+    "ev_5",
+    "ev_10"
+  ],
+  "scenes": [
+    "Centaur_Anodized_Red",
+    "Child_with_goose_Industrial_Plastic_Grey",
+    "Colchester Sphinx_Old_Copper",
+    "Cupid as Shepherd_100MB_Old_Copper"
+  ],
+  "aggregation": {
+    "abs_rel": "depth-pixel weighted mean",
+    "delta1": "depth-pixel weighted mean",
+    "rmse_log": "pooled pixel squared log error, then square root",
+    "rmse": "pooled pixel squared error, then square root",
+    "ate_rpe": "evaluated-batch weighted scene means"
+  },
+  "by_exposure": {
+    "ev_0": {
+      "source_csv": "E:\\result\\eventvgg\\rgb_f\\ev_0.csv",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "metrics": {
+        "abs_rel": 0.08532786221007824,
+        "delta1": 0.9996532247607401,
+        "rmse_log": 0.09737195705984274,
+        "rmse": 0.2023326159190525,
+        "ate": 0.5560803898321144,
+        "rpe_trans": 0.38959473824321195,
+        "rpe_rot_deg": 2.9195362194601833
+      },
+      "per_scene": {
+        "Centaur_Anodized_Red": {
+          "abs_rel": 0.08588730337188058,
+          "delta1": 0.9992711802458992,
+          "rmse_log": 0.10177352406152552,
+          "rmse": 0.21540575254691913,
+          "ate": 0.5702467147132446,
+          "rpe_trans": 0.39157506078481674,
+          "rpe_rot_deg": 2.9871803558078307
+        },
+        "Child_with_goose_Industrial_Plastic_Grey": {
+          "abs_rel": 0.10114978003047738,
+          "delta1": 0.9997000604903532,
+          "rmse_log": 0.1093349608721511,
+          "rmse": 0.22521387418909114,
+          "ate": 0.6146845464305631,
+          "rpe_trans": 0.4258603797904376,
+          "rpe_rot_deg": 2.899410121399781
+        },
+        "Colchester Sphinx_Old_Copper": {
+          "abs_rel": 0.0631476006671725,
+          "delta1": 0.9997185149500202,
+          "rmse_log": 0.07209980921484013,
+          "rmse": 0.14838186875488277,
+          "ate": 0.5961405231521048,
+          "rpe_trans": 0.416416348825241,
+          "rpe_rot_deg": 3.105695804645275
+        },
+        "Cupid as Shepherd_100MB_Old_Copper": {
+          "abs_rel": 0.11431335958340043,
+          "delta1": 0.999969498149905,
+          "rmse_log": 0.1226922421256202,
+          "rmse": 0.2556952189717958,
+          "ate": 0.443249775032545,
+          "rpe_trans": 0.3245271635723525,
+          "rpe_rot_deg": 2.6858585959878463
+        }
+      }
+    },
+    "ev_1": {
+      "source_csv": "E:\\result\\eventvgg\\rgb_f\\ev_1.csv",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "metrics": {
+        "abs_rel": 0.08612161775262749,
+        "delta1": 0.9995885017475933,
+        "rmse_log": 0.09815920765605773,
+        "rmse": 0.2041380480263831,
+        "ate": 0.4430406668127097,
+        "rpe_trans": 0.310862285004736,
+        "rpe_rot_deg": 2.524835800816273
+      },
+      "per_scene": {
+        "Centaur_Anodized_Red": {
+          "abs_rel": 0.08646010787695681,
+          "delta1": 0.9989895950113039,
+          "rmse_log": 0.10240950905145892,
+          "rmse": 0.21718801937557838,
+          "ate": 0.4687722862280648,
+          "rpe_trans": 0.3388485301542899,
+          "rpe_rot_deg": 2.7051021035375267
+        },
+        "Child_with_goose_Industrial_Plastic_Grey": {
+          "abs_rel": 0.10196332665900033,
+          "delta1": 0.9997461424539444,
+          "rmse_log": 0.11016240096105806,
+          "rmse": 0.2270174717004717,
+          "ate": 0.4777794462339631,
+          "rpe_trans": 0.36753055941441964,
+          "rpe_rot_deg": 2.914837032556534
+        },
+        "Colchester Sphinx_Old_Copper": {
+          "abs_rel": 0.06417754708816409,
+          "delta1": 0.9996707611734608,
+          "rmse_log": 0.07319083279681572,
+          "rmse": 0.15069525941113276,
+          "ate": 0.48456409753396595,
+          "rpe_trans": 0.3134769269361578,
+          "rpe_rot_deg": 2.6157380810071684
+        },
+        "Cupid as Shepherd_100MB_Old_Copper": {
+          "abs_rel": 0.11475471936349714,
+          "delta1": 0.9999716973428586,
+          "rmse_log": 0.12319301344667485,
+          "rmse": 0.2569228523721139,
+          "ate": 0.34104683725484486,
+          "rpe_trans": 0.22359312351407676,
+          "rpe_rot_deg": 1.863665986163863
+        }
+      }
+    },
+    "ev_2": {
+      "source_csv": "E:\\result\\eventvgg\\rgb_f\\ev_2.csv",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "metrics": {
+        "abs_rel": 0.08790902083749288,
+        "delta1": 0.9982504005030515,
+        "rmse_log": 0.10032178431448785,
+        "rmse": 0.20880206007851218,
+        "ate": 0.3764275450195218,
+        "rpe_trans": 0.29933957774834385,
+        "rpe_rot_deg": 3.171830597943787
+      },
+      "per_scene": {
+        "Centaur_Anodized_Red": {
+          "abs_rel": 0.08871143938672618,
+          "delta1": 0.9928023870810129,
+          "rmse_log": 0.10541582263984194,
+          "rmse": 0.2240716006158085,
+          "ate": 0.3925727514614319,
+          "rpe_trans": 0.3252253885669955,
+          "rpe_rot_deg": 3.250870636824904
+        },
+        "Child_with_goose_Industrial_Plastic_Grey": {
+          "abs_rel": 0.10316278519884416,
+          "delta1": 0.9997213070031616,
+          "rmse_log": 0.1115731773418175,
+          "rmse": 0.22991489372559565,
+          "ate": 0.39888422293909664,
+          "rpe_trans": 0.3376794484411848,
+          "rpe_rot_deg": 3.920725462765529
+        },
+        "Colchester Sphinx_Old_Copper": {
+          "abs_rel": 0.0662919906414502,
+          "delta1": 0.9996076530395538,
+          "rmse_log": 0.07598516359038082,
+          "rmse": 0.15657859621869166,
+          "ate": 0.3989575908615671,
+          "rpe_trans": 0.30101819972282856,
+          "rpe_rot_deg": 3.2461670012823465
+        },
+        "Cupid as Shepherd_100MB_Old_Copper": {
+          "abs_rel": 0.11609323137442532,
+          "delta1": 0.9999748527066615,
+          "rmse_log": 0.1247808680976581,
+          "rmse": 0.2602823870443179,
+          "ate": 0.3152956148159915,
+          "rpe_trans": 0.23343527426236663,
+          "rpe_rot_deg": 2.269559290902368
+        }
+      }
+    },
+    "ev_5": {
+      "source_csv": "E:\\result\\eventvgg\\rgb_f\\ev_5.csv",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "metrics": {
+        "abs_rel": 0.10038432078317291,
+        "delta1": 0.9828340897835495,
+        "rmse_log": 0.11887660286567928,
+        "rmse": 0.24814693923731962,
+        "ate": 0.33944007956647665,
+        "rpe_trans": 0.19883067112672945,
+        "rpe_rot_deg": 3.1488011964950067
+      },
+      "per_scene": {
+        "Centaur_Anodized_Red": {
+          "abs_rel": 0.09227996388942009,
+          "delta1": 0.9693246461959436,
+          "rmse_log": 0.11363609661274593,
+          "rmse": 0.24233278639673367,
+          "ate": 0.3175668228289177,
+          "rpe_trans": 0.1937672458589077,
+          "rpe_rot_deg": 2.270033131385672
+        },
+        "Child_with_goose_Industrial_Plastic_Grey": {
+          "abs_rel": 0.10957322185761503,
+          "delta1": 0.9765494007502412,
+          "rmse_log": 0.12714684083762715,
+          "rmse": 0.2667078811072118,
+          "ate": 0.3447976154756957,
+          "rpe_trans": 0.18311187522164707,
+          "rpe_rot_deg": 3.2179270797762376
+        },
+        "Colchester Sphinx_Old_Copper": {
+          "abs_rel": 0.08960729717617454,
+          "delta1": 0.9890060386099635,
+          "rmse_log": 0.10882025175881155,
+          "rmse": 0.22368086880140275,
+          "ate": 0.33878102461839543,
+          "rpe_trans": 0.22200102371902303,
+          "rpe_rot_deg": 4.397611132983504
+        },
+        "Cupid as Shepherd_100MB_Old_Copper": {
+          "abs_rel": 0.1244209008210173,
+          "delta1": 0.9991792229428988,
+          "rmse_log": 0.13526168943115308,
+          "rmse": 0.28085897302026963,
+          "ate": 0.3566148553428979,
+          "rpe_trans": 0.19644253970734005,
+          "rpe_rot_deg": 2.7096334418346144
+        }
+      }
+    },
+    "ev_10": {
+      "source_csv": "E:\\result\\eventvgg\\rgb_f\\ev_10.csv",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "metrics": {
+        "abs_rel": 0.11861296809303674,
+        "delta1": 0.9516685735253103,
+        "rmse_log": 0.14102817631852,
+        "rmse": 0.28993349515433575,
+        "ate": 0.332879187378647,
+        "rpe_trans": 0.31583590572699904,
+        "rpe_rot_deg": 3.4562113006310216
+      },
+      "per_scene": {
+        "Centaur_Anodized_Red": {
+          "abs_rel": 0.11057466918869932,
+          "delta1": 0.9437107158763555,
+          "rmse_log": 0.13416075989557874,
+          "rmse": 0.2807986176748313,
+          "ate": 0.2927329591636,
+          "rpe_trans": 0.29906123985761196,
+          "rpe_rot_deg": 3.7640433352569054
+        },
+        "Child_with_goose_Industrial_Plastic_Grey": {
+          "abs_rel": 0.12679879571361893,
+          "delta1": 0.9409305790770562,
+          "rmse_log": 0.14715502311586948,
+          "rmse": 0.30445745888376236,
+          "ate": 0.26457341965930214,
+          "rpe_trans": 0.2736827835183719,
+          "rpe_rot_deg": 3.2864250103975166
+        },
+        "Colchester Sphinx_Old_Copper": {
+          "abs_rel": 0.10970715763029742,
+          "delta1": 0.9488470792613664,
+          "rmse_log": 0.1357919293350962,
+          "rmse": 0.27441862148911617,
+          "ate": 0.4103631450441377,
+          "rpe_trans": 0.35048701755445577,
+          "rpe_rot_deg": 3.595510252590837
+        },
+        "Cupid as Shepherd_100MB_Old_Copper": {
+          "abs_rel": 0.1393662425357718,
+          "delta1": 0.9932496250376014,
+          "rmse_log": 0.15264376097483198,
+          "rmse": 0.3148613408873695,
+          "ate": 0.3638472256475481,
+          "rpe_trans": 0.3401125819775565,
+          "rpe_rot_deg": 3.1788666042788276
+        }
+      }
+    }
+  },
+  "latex_rows": {
+    "abs_rel": "       & 0.0853 & 0.0861 & 0.0879 & 0.1004 & 0.1186",
+    "delta1": "       & 0.9997 & 0.9996 & 0.9983 & 0.9828 & 0.9517",
+    "rmse_log": "       & 0.0974 & 0.0982 & 0.1003 & 0.1189 & 0.1410"
+  }
+}

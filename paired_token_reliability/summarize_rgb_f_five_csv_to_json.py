@@ -41,7 +41,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--input-dir",
-        default=r"E:\result\eventvgg\rgb_f",
+        default=r"E:\result\eventvgg\rgb_no_f",
     )
     parser.add_argument(
         "--output",
