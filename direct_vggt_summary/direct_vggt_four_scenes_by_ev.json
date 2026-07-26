@@ -1,0 +1,290 @@
+{
+  "input_directory": "E:\\result\\eventvgg\\dirct+Vggt",
+  "exposure_order": [
+    "ev_0",
+    "ev_1",
+    "ev_2",
+    "ev_5",
+    "ev_10"
+  ],
+  "scenes": [
+    "Centaur_Anodized_Red",
+    "Child_with_goose_Industrial_Plastic_Grey",
+    "Colchester Sphinx_Old_Copper",
+    "Cupid as Shepherd_100MB_Old_Copper"
+  ],
+  "aggregation": {
+    "abs_rel_delta1": "depth-pixel weighted mean",
+    "rmse_rmse_log": "pixel-weighted squared error, then square root",
+    "ate_rpe": "evaluated-batch weighted scene means"
+  },
+  "rows": [
+    {
+      "exposure": "ev_0",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.04903864898115734,
+      "delta1": 0.999872030892221,
+      "rmse_log": 0.062119211500711646,
+      "rmse": 0.12543409370999914,
+      "ate": 0.1280015685820374,
+      "rpe_trans": 0.06834382334210236,
+      "rpe_rot_deg": 1.905002035264825
+    },
+    {
+      "exposure": "ev_1",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.04937219055532974,
+      "delta1": 0.9998289127136322,
+      "rmse_log": 0.06258000968295589,
+      "rmse": 0.12643354173674587,
+      "ate": 0.1279179695833089,
+      "rpe_trans": 0.06830455359585326,
+      "rpe_rot_deg": 1.9094498644358124
+    },
+    {
+      "exposure": "ev_2",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.04994883703080384,
+      "delta1": 0.9995734058105608,
+      "rmse_log": 0.06353875639481314,
+      "rmse": 0.1284973456202366,
+      "ate": 0.12784500943561053,
+      "rpe_trans": 0.06827719011825734,
+      "rpe_rot_deg": 1.8973028763871769
+    },
+    {
+      "exposure": "ev_5",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.05434482113168117,
+      "delta1": 0.9979095067977004,
+      "rmse_log": 0.06900718412509799,
+      "rmse": 0.14287092537605087,
+      "ate": 0.13549027546983342,
+      "rpe_trans": 0.07220738406839042,
+      "rpe_rot_deg": 2.055508962479131
+    },
+    {
+      "exposure": "ev_10",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.0547653622839548,
+      "delta1": 0.9978583374526944,
+      "rmse_log": 0.0709718206558488,
+      "rmse": 0.14865404676884064,
+      "ate": 0.141354953067313,
+      "rpe_trans": 0.07517694735674765,
+      "rpe_rot_deg": 2.163360874457606
+    }
+  ],
+  "per_scene": {
+    "ev_0": {
+      "Centaur_Anodized_Red": {
+        "abs_rel": 0.07040442498048063,
+        "delta1": 0.9994509273422911,
+        "rmse_log": 0.08091060212858703,
+        "rmse": 0.16371135291479433,
+        "ate": 0.11489735742838218,
+        "rpe_trans": 0.061634688060088406,
+        "rpe_rot_deg": 1.647201698144962
+      },
+      "Child_with_goose_Industrial_Plastic_Grey": {
+        "abs_rel": 0.027503176699847833,
+        "delta1": 0.999999856442481,
+        "rmse_log": 0.03351014315708188,
+        "rmse": 0.0716424521843023,
+        "ate": 0.13284759306959038,
+        "rpe_trans": 0.07065802652003436,
+        "rpe_rot_deg": 1.9872194292216465
+      },
+      "Colchester Sphinx_Old_Copper": {
+        "abs_rel": 0.062127209358318634,
+        "delta1": 0.9999686702101763,
+        "rmse_log": 0.073757625292296,
+        "rmse": 0.14684203871127804,
+        "ate": 0.11894997350614646,
+        "rpe_trans": 0.06370819016391861,
+        "rpe_rot_deg": 1.765934482216835
+      },
+      "Cupid as Shepherd_100MB_Old_Copper": {
+        "abs_rel": 0.02275954551269633,
+        "delta1": 1.0,
+        "rmse_log": 0.028052080135640717,
+        "rmse": 0.0604035927544016,
+        "ate": 0.14531135032403059,
+        "rpe_trans": 0.07737438862436805,
+        "rpe_rot_deg": 2.219652531475856
+      }
+    },
+    "ev_1": {
+      "Centaur_Anodized_Red": {
+        "abs_rel": 0.07143567558503831,
+        "delta1": 0.9992589992421189,
+        "rmse_log": 0.08195941973374134,
+        "rmse": 0.16604182196068537,
+        "ate": 0.11455674822731264,
+        "rpe_trans": 0.06146620451633272,
+        "rpe_rot_deg": 1.6605969405379788
+      },
+      "Child_with_goose_Industrial_Plastic_Grey": {
+        "abs_rel": 0.02755263348014004,
+        "delta1": 0.9999996650324557,
+        "rmse_log": 0.03352177952943682,
+        "rmse": 0.07166289497461628,
+        "ate": 0.1329189046318161,
+        "rpe_trans": 0.07070486446649864,
+        "rpe_rot_deg": 2.0071792468942444
+      },
+      "Colchester Sphinx_Old_Copper": {
+        "abs_rel": 0.06234185259593855,
+        "delta1": 0.9999620799129777,
+        "rmse_log": 0.07410702996255905,
+        "rmse": 0.14757235187501921,
+        "ate": 0.11886085987347982,
+        "rpe_trans": 0.06365430419301164,
+        "rpe_rot_deg": 1.741330758250993
+      },
+      "Cupid as Shepherd_100MB_Old_Copper": {
+        "abs_rel": 0.02291129339812599,
+        "delta1": 1.0,
+        "rmse_log": 0.02825603670244163,
+        "rmse": 0.06082849993770758,
+        "ate": 0.14533536560062704,
+        "rpe_trans": 0.07739284120757005,
+        "rpe_rot_deg": 2.228692512060034
+      }
+    },
+    "ev_2": {
+      "Centaur_Anodized_Red": {
+        "abs_rel": 0.07319179449026998,
+        "delta1": 0.9980426301742755,
+        "rmse_log": 0.08403110355693472,
+        "rmse": 0.17062057311858722,
+        "ate": 0.11440622658822043,
+        "rpe_trans": 0.06140121878606492,
+        "rpe_rot_deg": 1.6481324922421883
+      },
+      "Child_with_goose_Industrial_Plastic_Grey": {
+        "abs_rel": 0.027560928518178023,
+        "delta1": 0.9999993779174178,
+        "rmse_log": 0.0334799437298263,
+        "rmse": 0.07158016054211935,
+        "ate": 0.13277137292356328,
+        "rpe_trans": 0.07061931205078445,
+        "rpe_rot_deg": 2.0014156236730773
+      },
+      "Colchester Sphinx_Old_Copper": {
+        "abs_rel": 0.062804210327763,
+        "delta1": 0.9999665309513998,
+        "rmse_log": 0.07493968472034904,
+        "rmse": 0.14930113068127754,
+        "ate": 0.11871643319469073,
+        "rpe_trans": 0.06361628786243241,
+        "rpe_rot_deg": 1.7236787687087882
+      },
+      "Cupid as Shepherd_100MB_Old_Copper": {
+        "abs_rel": 0.023116389710914863,
+        "delta1": 1.0,
+        "rmse_log": 0.028511497542646688,
+        "rmse": 0.061374233677714045,
+        "ate": 0.14548600503596767,
+        "rpe_trans": 0.07747194177374758,
+        "rpe_rot_deg": 2.2159846209246536
+      }
+    },
+    "ev_5": {
+      "Centaur_Anodized_Red": {
+        "abs_rel": 0.07417360082761922,
+        "delta1": 0.9971993584506456,
+        "rmse_log": 0.08469781041812392,
+        "rmse": 0.17291332107888532,
+        "ate": 0.11459264737264864,
+        "rpe_trans": 0.06146765407174826,
+        "rpe_rot_deg": 1.597100538426432
+      },
+      "Child_with_goose_Industrial_Plastic_Grey": {
+        "abs_rel": 0.04733038001160196,
+        "delta1": 0.9981783986417162,
+        "rmse_log": 0.06237535884547161,
+        "rmse": 0.13631849524957648,
+        "ate": 0.1444930406608458,
+        "rpe_trans": 0.07657841445300086,
+        "rpe_rot_deg": 2.207151213596607
+      },
+      "Colchester Sphinx_Old_Copper": {
+        "abs_rel": 0.059345345589987906,
+        "delta1": 0.9973575323525798,
+        "rmse_log": 0.07370153167875813,
+        "rmse": 0.1491111201555578,
+        "ate": 0.13461846248086157,
+        "rpe_trans": 0.07191841012059615,
+        "rpe_rot_deg": 2.1037337112015693
+      },
+      "Cupid as Shepherd_100MB_Old_Copper": {
+        "abs_rel": 0.02384048945628313,
+        "delta1": 1.0,
+        "rmse_log": 0.030282953672467087,
+        "rmse": 0.06593839277373696,
+        "ate": 0.1482569513649776,
+        "rpe_trans": 0.07886505762821641,
+        "rpe_rot_deg": 2.3140503866919158
+      }
+    },
+    "ev_10": {
+      "Centaur_Anodized_Red": {
+        "abs_rel": 0.05732508965240037,
+        "delta1": 0.9987223549182163,
+        "rmse_log": 0.07062570144035817,
+        "rmse": 0.14516752806832783,
+        "ate": 0.1260340134773789,
+        "rpe_trans": 0.06718783003502879,
+        "rpe_rot_deg": 1.8258128854735145
+      },
+      "Child_with_goose_Industrial_Plastic_Grey": {
+        "abs_rel": 0.05200765854334632,
+        "delta1": 0.9948758579176781,
+        "rmse_log": 0.07051257319936427,
+        "rmse": 0.15421233149053204,
+        "ate": 0.14976722117641877,
+        "rpe_trans": 0.07932583827140002,
+        "rpe_rot_deg": 2.335029565054795
+      },
+      "Colchester Sphinx_Old_Copper": {
+        "abs_rel": 0.06626404323782932,
+        "delta1": 0.9987599199931019,
+        "rmse_log": 0.08099135732548497,
+        "rmse": 0.16630154796068192,
+        "ate": 0.1399278637535613,
+        "rpe_trans": 0.07466896067790944,
+        "rpe_rot_deg": 2.1481441413534097
+      },
+      "Cupid as Shepherd_100MB_Old_Copper": {
+        "abs_rel": 0.024452518379628117,
+        "delta1": 0.999983267010136,
+        "rmse_log": 0.03198794426016256,
+        "rmse": 0.07011235444499982,
+        "ate": 0.14969071386189298,
+        "rpe_trans": 0.07952516044265237,
+        "rpe_rot_deg": 2.3444569059487046
+      }
+    }
+  },
+  "latex_rows": {
+    "abs_rel": "       & 0.0490 & 0.0494 & 0.0499 & 0.0543 & 0.0548",
+    "delta1": "       & 0.9999 & 0.9998 & 0.9996 & 0.9979 & 0.9979",
+    "rmse_log": "       & 0.0621 & 0.0626 & 0.0635 & 0.0690 & 0.0710"
+  }
+}

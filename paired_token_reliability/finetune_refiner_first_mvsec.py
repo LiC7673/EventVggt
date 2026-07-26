@@ -39,6 +39,16 @@ def arguments():
     p.add_argument("--intrinsics", nargs=4, type=float, default=None, metavar=("FX", "FY", "CX", "CY"))
     p.add_argument("--device", default="cuda")
     p.add_argument("--max-test-batches", type=int, default=0)
+    p.add_argument(
+        "--scale-calibration-frames", type=int, default=0,
+        help=(
+            "Estimate one fixed depth scale from this many leading, "
+            "non-overlapping test frames; 0 disables calibration."
+        ),
+    )
+    p.add_argument(
+        "--scale-calibration-pixels-per-frame", type=int, default=10000,
+    )
     p.add_argument("--visualize-every", type=int, default=10)
     p.add_argument("--max-visualizations", type=int, default=30)
     return p.parse_args()
@@ -144,9 +154,15 @@ def pose_metrics(output, views, image_hw):
     }
 
 
-def losses_and_metrics(output, views, max_depth):
-    pred = torch.stack([x["depth"][..., 0] for x in output.ress], 1).float()
-    base = torch.stack([x["depth_hdr_base"][..., 0] for x in output.ress], 1).float()
+def losses_and_metrics(output, views, max_depth, depth_scale=1.0):
+    pred = (
+        torch.stack([x["depth"][..., 0] for x in output.ress], 1).float()
+        * float(depth_scale)
+    )
+    base = (
+        torch.stack([x["depth_hdr_base"][..., 0] for x in output.ress], 1).float()
+        * float(depth_scale)
+    )
     gt = fe.stack_view_field(views, "depthmap").float()
     k = fe.stack_view_field(views, "camera_intrinsics").float()
     valid = torch.isfinite(gt) & torch.isfinite(pred) & (gt > .1) & (gt < max_depth) & (pred > 1e-6)
@@ -185,10 +201,16 @@ def _normal_image(normal, mask):
     return image * mask.detach().float().cpu().unsqueeze(-1)
 
 
-def save_visuals(root, index, views, output, max_depth):
+def save_visuals(root, index, views, output, max_depth, depth_scale=1.0):
     root.mkdir(parents=True, exist_ok=True)
-    pred = torch.stack([x["depth"][..., 0] for x in output.ress], 1).float()
-    coarse = torch.stack([x["depth_hdr_base"][..., 0] for x in output.ress], 1).float()
+    pred = (
+        torch.stack([x["depth"][..., 0] for x in output.ress], 1).float()
+        * float(depth_scale)
+    )
+    coarse = (
+        torch.stack([x["depth_hdr_base"][..., 0] for x in output.ress], 1).float()
+        * float(depth_scale)
+    )
     gt = fe.stack_view_field(views, "depthmap").float()
     intrinsics = fe.stack_view_field(views, "camera_intrinsics").float()
     valid = torch.isfinite(gt) & torch.isfinite(pred) & (gt > .1) & (gt < max_depth) & (pred > 1e-6)
@@ -227,24 +249,34 @@ def save_visuals(root, index, views, output, max_depth):
 
 
 def run(model, loader, device, max_depth, optimizer=None, max_steps=0,
-        visual_dir=None, visualize_every=10, max_visualizations=30):
+        visual_dir=None, visualize_every=10, max_visualizations=30,
+        depth_scale=1.0, skip_batches=0):
     train = optimizer is not None; model.train(train)
     model.aggregator.eval(); model.camera_head.eval(); model.depth_head.eval(); model.point_head.eval()
     sums, batches, pixel_total = defaultdict(float), 0, 0.
     pose_sums = defaultdict(float)
     visual_count = 0
     for i, cpu_views in enumerate(loader):
-        if max_steps and i >= max_steps: break
+        if i < int(skip_batches):
+            continue
+        if max_steps and batches >= max_steps:
+            break
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
         with torch.set_grad_enabled(train):
-            output = model(views); loss, metrics = losses_and_metrics(output, views, max_depth)
+            output = model(views)
+            loss, metrics = losses_and_metrics(
+                output, views, max_depth, depth_scale=depth_scale
+            )
             if train:
                 optimizer.zero_grad(set_to_none=True); loss.backward()
                 torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.)
                 optimizer.step()
         if (visual_dir is not None and visualize_every > 0 and i % visualize_every == 0
                 and (max_visualizations <= 0 or visual_count < max_visualizations)):
-            save_visuals(Path(visual_dir), i, views, output, max_depth)
+            save_visuals(
+                Path(visual_dir), i, views, output, max_depth,
+                depth_scale=depth_scale,
+            )
             visual_count += len(views)
         pixels = float(metrics["pixels"].detach())
         pose_keys = {"ATE_sq_sum", "ATE_count", "RPE_trans_sum", "RPE_rot_sum", "RPE_count"}
@@ -276,8 +308,76 @@ def run(model, loader, device, max_depth, optimizer=None, max_steps=0,
         result.update(ATE=None, RPE_trans=None, RPE_rot_deg=None,
                       pose_frames=0, pose_pairs=0,
                       pose_alignment="unavailable: invalid GT pose")
-    result.update(pixels=pixel_total, batches=batches)
+    result.update(
+        pixels=pixel_total, batches=batches,
+        depth_scale=float(depth_scale),
+        skipped_calibration_batches=int(skip_batches),
+    )
     return result
+
+
+@torch.inference_mode()
+def calibrate_depth_scale(
+    model, loader, device, max_depth, frame_count,
+    pixels_per_frame=10000,
+):
+    """Estimate one scale from leading non-overlapping four-view clips."""
+    requested = int(frame_count)
+    if requested <= 0:
+        return 1.0, 0, 0, 0
+    model.eval()
+    values = []
+    frames = 0
+    num_views = int(getattr(loader.dataset, "num_views", 4))
+    for batch_index, cpu_views in enumerate(loader):
+        # Windows have stride one. Taking starts 0,V,2V,... gives disjoint
+        # frames [1..V], [V+1..2V], ... without repeated calibration images.
+        if batch_index % max(num_views, 1) != 0:
+            continue
+        views = move_views_to_device(
+            fe.maybe_denormalize_views(cpu_views), device
+        )
+        output = model(views)
+        pred = torch.stack(
+            [item["depth"][..., 0] for item in output.ress], 1
+        ).float()
+        gt = fe.stack_view_field(views, "depthmap").float()
+        for view_index in range(pred.shape[1]):
+            if frames >= requested:
+                break
+            valid = (
+                torch.isfinite(gt[:, view_index])
+                & torch.isfinite(pred[:, view_index])
+                & (gt[:, view_index] > .1)
+                & (gt[:, view_index] < max_depth)
+                & (pred[:, view_index] > 1e-6)
+            )
+            ratio = (
+                gt[:, view_index][valid]
+                / pred[:, view_index][valid].clamp_min(1e-6)
+            )
+            if ratio.numel():
+                cap = max(int(pixels_per_frame), 1)
+                stride = max(int(ratio.numel() // cap), 1)
+                values.append(ratio[::stride][:cap].detach().cpu())
+            frames += 1
+        if frames >= requested:
+            break
+    if not values:
+        raise RuntimeError("no valid pixels for MVSEC depth-scale calibration")
+    concatenated = torch.cat(values)
+    scale = float(torch.median(concatenated))
+    if not np.isfinite(scale) or scale <= 0:
+        raise RuntimeError(f"invalid calibrated MVSEC depth scale: {scale}")
+    # With stride-one windows, skipping N starts makes the next window begin
+    # at frame N+1, strictly after the N calibration frames.
+    skip_batches = requested
+    print(
+        f"[MVSEC scale] frames={frames} pixels={concatenated.numel()} "
+        f"fixed_scale={scale:.8f}; evaluation_skip_batches={skip_batches}",
+        flush=True,
+    )
+    return scale, frames, int(concatenated.numel()), skip_batches
 
 
 def main():
@@ -298,7 +398,13 @@ def main():
         limit = max(a.max_train_steps - steps, 0) if a.max_train_steps else 0
         tr = run(model, train_loader, device, a.max_depth, optimizer, limit)
         steps += min(len(train_loader), limit) if limit else len(train_loader)
-        tests = {name: run(model, dl, device, a.max_depth, max_steps=a.max_test_batches) for name, dl in test_loaders.items()}
+        tests = {
+            name: run(
+                model, dl, device, a.max_depth,
+                max_steps=a.max_test_batches,
+            )
+            for name, dl in test_loaders.items()
+        }
         row = {"epoch": epoch, "train_sequence": a.train_sequence, "train": tr, "test": tests}
         history.append(row); print(json.dumps(row, indent=2), flush=True)
         torch.save({"schema": "mvsec_refiner_first_day_to_night_v1", "model": model.state_dict(),
@@ -307,10 +413,27 @@ def main():
         if a.max_train_steps and steps >= a.max_train_steps: break
     final_tests = {}
     for name, dl in test_loaders.items():
+        scale, calibration_frames, calibration_pixels, skip_batches = (
+            calibrate_depth_scale(
+                model, dl, device, a.max_depth,
+                a.scale_calibration_frames,
+                a.scale_calibration_pixels_per_frame,
+            )
+        )
         final_tests[name] = run(
             model, dl, device, a.max_depth, max_steps=a.max_test_batches,
             visual_dir=out / "final_test_visualizations" / name,
             visualize_every=a.visualize_every, max_visualizations=a.max_visualizations,
+            depth_scale=scale, skip_batches=skip_batches,
+        )
+        final_tests[name].update(
+            scale_calibration_frames=calibration_frames,
+            scale_calibration_pixels=calibration_pixels,
+            scale_protocol=(
+                "fixed median(GT/pred) from leading non-overlapping frames; "
+                "calibration frames excluded from reported metrics"
+                if calibration_frames else "none"
+            ),
         )
     payload = {"source_checkpoint": a.checkpoint, "train_sequence": a.train_sequence,
                "test_sequences": a.test_sequences, "metrics": final_tests}

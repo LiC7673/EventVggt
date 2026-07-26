@@ -9,7 +9,7 @@ cd "${ROOT}"
 RAW_ROOT="${MVSEC_RAW_ROOT:-/data1/lzh/dataset/MVSEC_raw}"
 H5_ROOT="${MVSEC_H5_ROOT:-${RAW_ROOT}/converted_hdf5}"
 CHECKPOINT="${CHECKPOINT:-exp_f/cur_event_refiner_first_1k_then_joint_gpu4/checkpoint-adapter-best.pth}"
-OUTPUT="${OUTPUT:-exp_f/zero_shot_mvsec_outdoor_day2_synthetic_best_gpu5}"
+OUTPUT="${OUTPUT:-exp_f/zero_shot_mvsec_outdoor_day2_synthetic_best_scale20_gpu5}"
 GPU="${GPU:-5}"
 
 if [[ ! -f "${CHECKPOINT}" ]]; then
@@ -35,6 +35,7 @@ export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
 
 echo "[MVSEC zero-shot] checkpoint=${CHECKPOINT}"
 echo "[MVSEC zero-shot] sequence=outdoor_day2; epochs=0; parameter updates=NONE"
+echo "[MVSEC zero-shot] fixed depth scale from first ${SCALE_CALIBRATION_FRAMES:-20} unique frames"
 
 # finetune_refiner_first_mvsec also provides the common MVSEC evaluator.
 # epochs=0 bypasses its entire training loop and directly executes final test.
@@ -47,6 +48,9 @@ python -m paired_token_reliability.finetune_refiner_first_mvsec \
   --epochs 0 \
   --max-train-steps 0 \
   --max-test-batches "${MAX_TEST_BATCHES:-0}" \
+  --scale-calibration-frames "${SCALE_CALIBRATION_FRAMES:-20}" \
+  --scale-calibration-pixels-per-frame \
+    "${SCALE_CALIBRATION_PIXELS_PER_FRAME:-10000}" \
   --num-workers "${NUM_WORKERS:-2}" \
   --num-views "${NUM_VIEWS:-4}" \
   --event-bins "${EVENT_BINS:-5}" \

@@ -1,0 +1,110 @@
+{
+  "input": "E:\\result\\eventvgg\\rgb_no_f\\4_scene.csv",
+  "experiment": "rgb_pretrained_no_finetune",
+  "condition": "rgb_only_fixed_scale",
+  "exposure_order": [
+    "ev_0",
+    "ev_1",
+    "ev_2",
+    "ev_5",
+    "ev_10"
+  ],
+  "scenes": [
+    "Centaur_Anodized_Red",
+    "Child_with_goose_Industrial_Plastic_Grey",
+    "Colchester Sphinx_Old_Copper",
+    "Cupid as Shepherd_100MB_Old_Copper"
+  ],
+  "aggregation": {
+    "abs_rel_delta1": "depth-pixel weighted mean",
+    "rmse_rmse_log": "pixel-weighted squared error, then square root",
+    "ate_rpe": "evaluated-batch weighted scene means"
+  },
+  "rows": [
+    {
+      "experiment": "rgb_pretrained_no_finetune",
+      "condition": "rgb_only_fixed_scale",
+      "ldr_event_id": "ev_0",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.1181669806256654,
+      "delta1": 0.990763521519023,
+      "rmse_log": 0.13670854790222792,
+      "rmse": 0.275883813052658,
+      "ate": 0.1342019646685442,
+      "rpe_trans": 0.0692162701844013,
+      "rpe_rot_deg": 1.2301680586011758
+    },
+    {
+      "experiment": "rgb_pretrained_no_finetune",
+      "condition": "rgb_only_fixed_scale",
+      "ldr_event_id": "ev_1",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.1181361933627614,
+      "delta1": 0.990852071279538,
+      "rmse_log": 0.13664731899246904,
+      "rmse": 0.275916555577676,
+      "ate": 0.1344219327840055,
+      "rpe_trans": 0.06931861486799758,
+      "rpe_rot_deg": 1.2087985313947087
+    },
+    {
+      "experiment": "rgb_pretrained_no_finetune",
+      "condition": "rgb_only_fixed_scale",
+      "ldr_event_id": "ev_2",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.11821428212661567,
+      "delta1": 0.987593688424016,
+      "rmse_log": 0.13696296669190497,
+      "rmse": 0.2766389233602372,
+      "ate": 0.13490556508045773,
+      "rpe_trans": 0.069507371385357,
+      "rpe_rot_deg": 1.263087780150617
+    },
+    {
+      "experiment": "rgb_pretrained_no_finetune",
+      "condition": "rgb_only_fixed_scale",
+      "ldr_event_id": "ev_5",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.12398179375099569,
+      "delta1": 0.9453351156210887,
+      "rmse_log": 0.14721058283018706,
+      "rmse": 0.2991154925113876,
+      "ate": 0.16489434285603208,
+      "rpe_trans": 0.08708876814564755,
+      "rpe_rot_deg": 2.146966548251181
+    },
+    {
+      "experiment": "rgb_pretrained_no_finetune",
+      "condition": "rgb_only_fixed_scale",
+      "ldr_event_id": "ev_10",
+      "scene": "ALL_4_SCENES",
+      "scene_count": 4,
+      "evaluated_batches": 464,
+      "depth_pixels": 76510653,
+      "abs_rel": 0.12794242428524033,
+      "delta1": 0.9048456820777624,
+      "rmse_log": 0.15450547707640092,
+      "rmse": 0.3120619427213283,
+      "ate": 0.17169792091088562,
+      "rpe_trans": 0.08931531073878808,
+      "rpe_rot_deg": 2.171879965490822
+    }
+  ],
+  "latex_rows": {
+    "abs_rel": "       & 0.1182 & 0.1181 & 0.1182 & 0.1240 & 0.1279",
+    "delta1": "       & 0.9908 & 0.9909 & 0.9876 & 0.9453 & 0.9048",
+    "rmse_log": "       & 0.1367 & 0.1366 & 0.1370 & 0.1472 & 0.1545"
+  }
+}
