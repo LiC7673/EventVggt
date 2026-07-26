@@ -1,21 +1,24 @@
 """Evaluate one checkpoint along a ten-level E_geo -> E_full continuum.
 
-This is a strictly inference-only protocol.  For level alpha, the event tensor
-actually consumed by the model is
+This is a strictly inference-only protocol.  All geometry events are retained,
+while a nested alpha fraction of the raw material/reflection and noise events
+is injected before the common five-bin linear-time voxelization.  No voxel
+interpolation or full-minus-geo subtraction is used.
 
-    E_alpha = (1 - alpha) * E_geo + alpha * E_full.
-
-The geometry tensor is used only to construct E_alpha; it is not exposed as a
-teacher or loss target during inference.  Each level uses one predeclared fixed
-depth scale, linearly interpolated from 2.3 (geo) to 2.2 (full).
+The geometry stream is used only to construct the inference input; it is not
+exposed as a teacher or loss target during inference.  Each level uses one
+predeclared fixed depth scale, linearly interpolated from 2.3 (geo) to 2.2
+(full).
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import gc
+import hashlib
 import json
 import math
+import os.path as osp
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,13 +29,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 import finetune_event as fe
 from ablation.eag3r_metrics_eval import move_views_to_device, stack_output
 from eventvggt.datasets.my_event_dataset import (
     event_multiview_collate,
     get_combined_dataset,
+)
+from event_branch_ablation.data import (
+    _branch_path,
+    _common_frame_index,
+    _event_meta,
 )
 from event_branch_ablation.evaluate_event_contribution import (
     ConditionAccumulator,
@@ -51,14 +59,188 @@ SCENES = (
     "Cupid as Shepherd_100MB_Old_Copper",
 )
 CONDITIONS = ("coarse_hdr_like", "final_event_refined")
+ADDITIVE_BRANCHES = ("geometry_motion", "material_reflection", "noise")
 
 
 def _cfg_value(branch, name, default):
     return getattr(branch, name, default) if branch is not None else default
 
 
-def build_decomposition_loader(cfg, args):
-    """Build a loader that returns both full and controlled-geometry voxels."""
+class NestedNonGeometryInjectionDataset(Dataset):
+    """Keep all geometry events and inject nested raw non-geometry subsets."""
+
+    def __init__(self, dataset, *, alpha, root_name="events_additive", seed=20260726):
+        self.dataset = dataset
+        self.alpha = float(alpha)
+        self.root_name = str(root_name)
+        self.seed = int(seed)
+        if not 0.0 <= self.alpha <= 1.0:
+            raise ValueError(f"alpha must lie in [0,1], got {self.alpha}")
+        self.branch_meta = {}
+        self._prepare()
+
+    def __getattr__(self, name):
+        return getattr(self.dataset, name)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def _prepare(self):
+        required = (*ADDITIVE_BRANCHES, "full")
+        for scene in self.dataset.get_active_scenes():
+            scene_meta = self.dataset.active_scene_data[scene]
+            full_path = _branch_path(scene_meta["scene_dir"], self.root_name, "full")
+            if not osp.isfile(full_path):
+                raise FileNotFoundError(full_path)
+            full_meta = _event_meta(self.dataset, full_path, scene_meta["frame_count"])
+            reference = full_meta["time_info"]
+            per_scene = {}
+            for branch in required:
+                path = _branch_path(scene_meta["scene_dir"], self.root_name, branch)
+                if not osp.isfile(path):
+                    raise FileNotFoundError(
+                        f"missing additive branch scene={scene} branch={branch}: {path}"
+                    )
+                meta = _event_meta(self.dataset, path, scene_meta["frame_count"])
+                meta["frame_index"] = _common_frame_index(
+                    path, columns=meta["columns"],
+                    origin=float(reference["origin"]),
+                    dt=float(reference["dt"]),
+                    frame_count=scene_meta["frame_count"],
+                )
+                meta["common_origin"] = float(reference["origin"])
+                meta["common_dt"] = float(reference["dt"])
+                per_scene[branch] = meta
+            self.branch_meta[scene] = per_scene
+
+    def _load_raw(self, scene, frame_idx, branch):
+        meta = self.branch_meta[scene][branch]
+        start, end = meta["frame_index"][frame_idx]
+        return self.dataset.load_event_slice(
+            meta["path"], start, end, event_columns=meta["columns"],
+            time_origin=meta["common_origin"],
+        )
+
+    def _event_scores(self, scene, frame_idx, branch, count):
+        # Reconstructing this generator at every alpha gives every raw event
+        # the same score in all ten runs. Hence S_a is nested as a increases.
+        token = f"{self.seed}|{scene}|{frame_idx}|{branch}".encode("utf-8")
+        digest = hashlib.blake2b(token, digest_size=8).digest()
+        local_seed = int.from_bytes(digest, "little", signed=False)
+        return np.random.default_rng(local_seed).random(count)
+
+    @staticmethod
+    def _select(data, keep):
+        return {
+            "event_xy": data["event_xy"][keep],
+            "event_t": data["event_t"][keep],
+            "event_p": data["event_p"][keep],
+        }
+
+    @staticmethod
+    def _merge(parts):
+        if not parts:
+            return {
+                "event_xy": np.zeros((0, 2), dtype=np.int32),
+                "event_t": np.zeros((0,), dtype=np.float32),
+                "event_p": np.zeros((0,), dtype=np.float32),
+            }
+        return {
+            key: np.concatenate([part[key] for part in parts], axis=0)
+            for key in ("event_xy", "event_t", "event_p")
+        }
+
+    def _voxelize(self, raw, view, src_resolution):
+        dst = np.asarray(view["event_resolution"]).reshape(-1)
+        time_window = np.asarray(view["event_time_range"]).reshape(-1)
+        result = self.dataset._resize_event_data(
+            raw, src_resolution=src_resolution,
+            dst_resolution=(int(dst[0]), int(dst[1])),
+            spatial_transform=str(view["event_spatial_transform"]),
+            resize_method="voxel_linear_time",
+            resize_bins=int(self.dataset.event_resize_bins),
+            time_window=(float(time_window[0]), float(time_window[1])),
+        )
+        voxel = result["event_voxel"].astype(np.float32, copy=False)
+        if "mask" in view:
+            voxel = voxel * np.asarray(view["mask"], dtype=np.float32)[None]
+        return voxel
+
+    def __getitem__(self, index):
+        views = self.dataset[index]
+        for view in views:
+            scene, frame_text = str(view["instance"]).rsplit("_", 1)
+            frame_idx = int(frame_text)
+            raw = {
+                branch: self._load_raw(scene, frame_idx, branch)
+                for branch in ADDITIVE_BRANCHES
+            }
+            fallback = np.asarray(view["event_source_resolution"]).reshape(-1)
+            resolutions = []
+            for branch in ADDITIVE_BRANCHES:
+                info = self.branch_meta[scene][branch]["time_info"]
+                resolutions.append((
+                    int(info.get("event_width") or fallback[0]),
+                    int(info.get("event_height") or fallback[1]),
+                ))
+            if len(set(resolutions)) != 1:
+                raise RuntimeError(
+                    f"additive branches have different source resolutions: "
+                    f"scene={scene}, resolutions={resolutions}"
+                )
+            src_resolution = resolutions[0]
+            geo_raw = raw["geometry_motion"]
+            selected_parts = [geo_raw]
+            selected_non_geo = 0
+            total_non_geo = 0
+            for branch in ("material_reflection", "noise"):
+                current = raw[branch]
+                count = len(current["event_t"])
+                scores = self._event_scores(scene, frame_idx, branch, count)
+                keep = scores < self.alpha
+                selected_parts.append(self._select(current, keep))
+                selected_non_geo += int(keep.sum())
+                total_non_geo += count
+            mixed_raw = self._merge(selected_parts)
+            geo_voxel = self._voxelize(geo_raw, view, src_resolution)
+            # The base dataset already produced E_full with the exact same
+            # linear-time representation. Preserve it as the physical endpoint.
+            full_voxel = np.asarray(view["event_voxel"], dtype=np.float32)
+            if self.alpha == 0.0:
+                mixed_voxel = geo_voxel
+            elif self.alpha == 1.0:
+                reconstructed_full = self._voxelize(
+                    self._merge([raw[branch] for branch in ADDITIVE_BRANCHES]),
+                    view, src_resolution,
+                )
+                reconstruction_relative_l1 = float(
+                    np.abs(reconstructed_full - full_voxel).mean(dtype=np.float64)
+                    / max(np.abs(full_voxel).mean(dtype=np.float64), 1e-12)
+                )
+                mixed_voxel = full_voxel
+            else:
+                reconstruction_relative_l1 = float("nan")
+                mixed_voxel = self._voxelize(mixed_raw, view, src_resolution)
+            if self.alpha == 0.0:
+                reconstruction_relative_l1 = float("nan")
+            view["event_voxel"] = mixed_voxel.astype(np.float32, copy=False)
+            view["geometry_event_voxel"] = geo_voxel.astype(np.float32, copy=False)
+            view["full_event_voxel"] = full_voxel.astype(np.float32, copy=False)
+            view["injected_non_geometry_count"] = np.array(
+                selected_non_geo, dtype=np.int64
+            )
+            view["total_non_geometry_count"] = np.array(
+                total_non_geo, dtype=np.int64
+            )
+            view["injection_alpha"] = np.array(self.alpha, dtype=np.float32)
+            view["additive_reconstruction_relative_l1"] = np.array(
+                reconstruction_relative_l1, dtype=np.float32
+            )
+        return views
+
+
+def build_injection_loader(cfg, args, alpha):
+    """Build one deterministic raw-event injection level."""
     dataset = get_combined_dataset(
         root=args.root or str(cfg.data.root),
         num_views=args.num_views,
@@ -77,20 +259,25 @@ def build_decomposition_loader(cfg, args):
         event_resize_method=args.event_resize_method,
         event_resize_bins=args.event_resize_bins,
         event_source_mode="decomposition_full",
-        decomposition_supervision=True,
+        decomposition_supervision=False,
         decomposition_event_root=str(
             _cfg_value(cfg.data, "decomposition_event_root", "events_additive")
         ),
-        decomposition_geo_branch="geometry_motion",
         decomposition_full_branch=str(
             _cfg_value(cfg.data, "decomposition_full_branch", "full")
         ),
         return_normal_gt=True,
         return_debug_event_fields=False,
     )
+    injected = NestedNonGeometryInjectionDataset(
+        dataset, alpha=alpha,
+        root_name=str(
+            _cfg_value(cfg.data, "decomposition_event_root", "events_additive")
+        ),
+    )
     indices = list(range(0, len(dataset), max(args.window_stride, 1)))
     loader = DataLoader(
-        Subset(dataset, indices), batch_size=args.batch_size, shuffle=False,
+        Subset(injected, indices), batch_size=args.batch_size, shuffle=False,
         num_workers=args.num_workers, pin_memory=False, drop_last=False,
         collate_fn=event_multiview_collate,
     )
@@ -235,31 +422,34 @@ def save_visuals(root, scene, exposure, level, alpha, scale, batch_index,
         plt.close(fig)
 
 
-def _mix_events(views, alpha):
+def _prepare_injected_events(views, alpha):
     geo_values, full_values, mixed_values = [], [], []
     for view_index, view in enumerate(views):
         full = view.get("event_voxel")
         geo = view.get("geometry_event_voxel")
-        if full is None or geo is None:
+        full_reference = view.get("full_event_voxel")
+        if full is None or geo is None or full_reference is None:
             raise RuntimeError(
-                f"view {view_index} lacks geo/full tensors: "
-                f"event_voxel={full is not None}, geometry_event_voxel={geo is not None}. "
-                "Use decomposition_full with geometry_motion supervision."
+                f"view {view_index} lacks injected/geo/full tensors: "
+                f"event_voxel={full is not None}, "
+                f"geometry_event_voxel={geo is not None}, "
+                f"full_event_voxel={full_reference is not None}"
             )
-        if full.shape != geo.shape:
+        if full.shape != geo.shape or full.shape != full_reference.shape:
             raise RuntimeError(
-                f"geo/full shape mismatch in view {view_index}: "
-                f"geo={tuple(geo.shape)} full={tuple(full.shape)}"
+                f"injected/geo/full shape mismatch in view {view_index}: "
+                f"mixed={tuple(full.shape)} geo={tuple(geo.shape)} "
+                f"full={tuple(full_reference.shape)}"
             )
-        mixed = torch.lerp(geo, full, float(alpha))
+        mixed = full
         if not torch.isfinite(mixed).all():
             raise FloatingPointError(f"non-finite mixed event tensor at alpha={alpha}")
         geo_values.append(geo)
-        full_values.append(full)
+        full_values.append(full_reference)
         mixed_values.append(mixed)
-        view["event_voxel"] = mixed
         # Do not expose an oracle geometry teacher to the inference graph.
         view.pop("geometry_event_voxel", None)
+        view.pop("full_event_voxel", None)
         view.pop("contribution_target", None)
         view.pop("decomposition_valid", None)
     return geo_values, full_values, mixed_values
@@ -269,15 +459,29 @@ def _mix_events(views, alpha):
 def evaluate_loader(model, loader, args, device, accumulators, scene, exposure,
                     level_dir, level, alpha, scale):
     batches = 0
+    selected_non_geo = total_non_geo = event_views = 0
+    reconstruction_errors = []
     for batch_index, cpu_views in enumerate(loader):
         if args.max_batches is not None and batch_index >= args.max_batches:
             break
         views = move_views_to_device(fe.maybe_denormalize_views(cpu_views), device)
+        for view in views:
+            selected_non_geo += int(
+                view["injected_non_geometry_count"].detach().sum().cpu()
+            )
+            total_non_geo += int(
+                view["total_non_geometry_count"].detach().sum().cpu()
+            )
+            error = view["additive_reconstruction_relative_l1"].detach().float()
+            finite_error = error[torch.isfinite(error)]
+            if finite_error.numel():
+                reconstruction_errors.extend(finite_error.cpu().tolist())
+            event_views += int(view["injection_alpha"].numel())
         depth_gt = fe.stack_view_field(views, "depthmap").float()
         intrinsics = fe.stack_view_field(views, "camera_intrinsics").float()
         poses = fe.stack_view_field(views, "camera_pose").float()
         valid = fe.build_valid_mask(views, depth_gt, depth_min=1e-6, depth_max=None)
-        geo, full, mixed = _mix_events(views, alpha)
+        geo, full, mixed = _prepare_injected_events(views, alpha)
         enabled = args.amp != "none" and device.type == "cuda"
         dtype = torch.bfloat16 if args.amp == "bf16" else torch.float16
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=enabled):
@@ -301,10 +505,23 @@ def evaluate_loader(model, loader, args, device, accumulators, scene, exposure,
                 args.save_every_view,
             )
         batches += 1
-    return batches
+    diagnostics = {
+        "selected_non_geometry_events": selected_non_geo,
+        "total_non_geometry_events": total_non_geo,
+        "realized_non_geometry_fraction": (
+            selected_non_geo / max(total_non_geo, 1)
+        ),
+        "event_views": event_views,
+        "additive_reconstruction_relative_l1": (
+            float(np.mean(reconstruction_errors))
+            if reconstruction_errors else float("nan")
+        ),
+    }
+    return batches, diagnostics
 
 
-def rows_for(scope, scene, exposure, accumulators, batches, level, alpha, scale):
+def rows_for(scope, scene, exposure, accumulators, batches, level, alpha, scale,
+             injection_diagnostics=None):
     rows, metrics = [], {}
     for condition in CONDITIONS:
         value = accumulators[condition].compute()
@@ -313,9 +530,49 @@ def rows_for(scope, scene, exposure, accumulators, batches, level, alpha, scale)
             "level": level, "alpha_full": alpha, "geo_weight": 1.0 - alpha,
             "full_weight": alpha, "depth_scale": scale, "scope": scope,
             "scene": scene, "exposure": exposure, "condition": condition,
-            "evaluated_batches": batches, **value,
+            "evaluated_batches": batches, **(injection_diagnostics or {}), **value,
         })
     return rows, metrics
+
+
+def _empty_injection_totals():
+    return {
+        "selected_non_geometry_events": 0,
+        "total_non_geometry_events": 0,
+        "event_views": 0,
+        "_reconstruction_error_sum": 0.0,
+        "_reconstruction_error_count": 0,
+    }
+
+
+def _accumulate_injection(target, value):
+    for key in (
+        "selected_non_geometry_events",
+        "total_non_geometry_events",
+        "event_views",
+    ):
+        target[key] += int(value[key])
+    error = float(value["additive_reconstruction_relative_l1"])
+    if np.isfinite(error):
+        target["_reconstruction_error_sum"] += error * int(value["event_views"])
+        target["_reconstruction_error_count"] += int(value["event_views"])
+
+
+def _finalize_injection(value):
+    return {
+        "selected_non_geometry_events": value["selected_non_geometry_events"],
+        "total_non_geometry_events": value["total_non_geometry_events"],
+        "realized_non_geometry_fraction": (
+            value["selected_non_geometry_events"]
+            / max(value["total_non_geometry_events"], 1)
+        ),
+        "event_views": value["event_views"],
+        "additive_reconstruction_relative_l1": (
+            value["_reconstruction_error_sum"]
+            / max(value["_reconstruction_error_count"], 1)
+            if value["_reconstruction_error_count"] else float("nan")
+        ),
+    }
 
 
 def write_csv(path, rows):
@@ -337,7 +594,10 @@ def write_level(level_dir, checkpoint, args, level, alpha, scale, nested,
         "checkpoint": str(checkpoint), "training": False,
         "level": level, "levels": args.levels, "alpha_full": alpha,
         "geo_weight": 1.0 - alpha, "full_weight": alpha,
-        "event_definition": "E_mix=(1-alpha)*E_geo+alpha*E_full",
+        "event_definition": (
+            "E_mix=E_geo union nested_sample_alpha(E_material union E_noise); "
+            "raw-event sampling before voxelization"
+        ),
         "depth_scale": scale,
         "depth_scale_protocol": "predeclared linear 2.3 geo -> 2.2 full",
         "scenes": list(args.scene_names), "exposures": args.exposures,
@@ -447,6 +707,10 @@ def main():
         }
         overall = {name: ConditionAccumulator() for name in CONDITIONS}
         exposure_batches = {exposure: 0 for exposure in exposures}
+        exposure_injection = {
+            exposure: _empty_injection_totals() for exposure in exposures
+        }
+        overall_injection = _empty_injection_totals()
         level_rows, nested = [], {}
         level_batches = 0
         for scene in args.scene_names:
@@ -466,7 +730,7 @@ def main():
                     batch_size=args.batch_size, num_workers=args.num_workers,
                     pin_memory=False, max_batches=args.max_batches,
                 )
-                dataset, loader = build_decomposition_loader(cfg, ns)
+                dataset, loader = build_injection_loader(cfg, ns, alpha)
                 active = list(dataset.get_active_scenes())
                 if active != [scene]:
                     raise RuntimeError(
@@ -477,18 +741,22 @@ def main():
                     name: (local[name], totals[exposure][name], overall[name])
                     for name in CONDITIONS
                 }
-                batches = evaluate_loader(
+                batches, injection_diagnostics = evaluate_loader(
                     model, loader, args, device, fanout, scene, exposure,
                     level_dir, level, alpha, scale,
                 )
                 rows, metrics = rows_for(
                     "scene", scene, exposure, local, batches,
-                    level, alpha, scale,
+                    level, alpha, scale, injection_diagnostics,
                 )
                 level_rows.extend(rows)
                 nested[scene][exposure] = metrics
                 exposure_batches[exposure] += batches
                 level_batches += batches
+                _accumulate_injection(
+                    exposure_injection[exposure], injection_diagnostics
+                )
+                _accumulate_injection(overall_injection, injection_diagnostics)
                 write_level(
                     level_dir, checkpoint, args, level, alpha, scale, nested,
                     {}, {}, level_rows, complete=False,
@@ -510,13 +778,14 @@ def main():
                 "all_scenes_pixel_weighted", "ALL", exposure,
                 totals[exposure], exposure_batches[exposure],
                 level, alpha, scale,
+                _finalize_injection(exposure_injection[exposure]),
             )
             level_rows.extend(rows)
             aggregate_rows.extend(rows)
             aggregates[exposure] = metrics
         rows, overall_metrics = rows_for(
             "all_pixel_weighted", "ALL", "ALL", overall, level_batches,
-            level, alpha, scale,
+            level, alpha, scale, _finalize_injection(overall_injection),
         )
         level_rows.extend(rows)
         aggregate_rows.extend(rows)
@@ -534,7 +803,9 @@ def main():
         (out / "all_levels_summary.json").write_text(
             json.dumps({
                 "checkpoint": str(checkpoint), "training": False,
-                "event_definition": "E_mix=(1-alpha)*E_geo+alpha*E_full",
+                "event_definition": (
+                    "E_mix=E_geo union nested_sample_alpha(E_material union E_noise)"
+                ),
                 "levels": all_summaries, "complete": False,
             }, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -543,7 +814,9 @@ def main():
     (out / "all_levels_summary.json").write_text(
         json.dumps({
             "checkpoint": str(checkpoint), "training": False,
-            "event_definition": "E_mix=(1-alpha)*E_geo+alpha*E_full",
+            "event_definition": (
+                "E_mix=E_geo union nested_sample_alpha(E_material union E_noise)"
+            ),
             "levels": all_summaries, "complete": True,
         }, indent=2, ensure_ascii=False),
         encoding="utf-8",
