@@ -31,6 +31,7 @@ export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
 echo "[DSEC zero-shot] checkpoint=${CHECKPOINT}"
 echo "[DSEC zero-shot] root=${DSEC_ROOT}"
 echo "[DSEC zero-shot] epochs=0; parameter updates=NONE"
+echo "[DSEC zero-shot] one fixed scale from first ${SCALE_CALIBRATION_FRAMES:-20} frames"
 
 # This entry point contains the common DSEC evaluator. With epochs=0 its
 # optimization loop is skipped, and the loaded synthetic checkpoint is sent
@@ -42,6 +43,9 @@ python -m paired_token_reliability.finetune_refiner_first_dsec \
   --epochs 0 \
   --max-train-steps 0 \
   --max-test-batches "${MAX_TEST_BATCHES:-0}" \
+  --scale-calibration-frames "${SCALE_CALIBRATION_FRAMES:-20}" \
+  --scale-calibration-pixels-per-frame \
+    "${SCALE_CALIBRATION_PIXELS_PER_FRAME:-10000}" \
   --batch-size 1 \
   --num-workers "${NUM_WORKERS:-2}" \
   --num-views "${NUM_VIEWS:-4}" \

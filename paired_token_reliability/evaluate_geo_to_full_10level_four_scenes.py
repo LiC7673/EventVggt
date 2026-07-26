@@ -1,14 +1,16 @@
-"""Evaluate one checkpoint along a ten-level E_geo -> E_full continuum.
+"""Evaluate geometry events with nested material/noise event injection.
 
 This is a strictly inference-only protocol.  All geometry events are retained,
-while a nested alpha fraction of the raw material/reflection and noise events
+while a nested ratio of the raw material/reflection and noise events
 is injected before the common five-bin linear-time voxelization.  No voxel
-interpolation or full-minus-geo subtraction is used.
+interpolation, full-minus-geo subtraction, or full-event input is used.
 
 The geometry stream is used only to construct the inference input; it is not
-exposed as a teacher or loss target during inference.  Each level uses one
-predeclared fixed depth scale, linearly interpolated from 2.3 (geo) to 2.2
-(full).
+exposed as a teacher or loss target during inference. Both learned confidence
+maps are forced to one, so the experiment measures only the effect of injecting
+controlled non-geometry events. Each level uses one predeclared fixed depth
+scale, linearly interpolated from 2.3 (geometry only) to 2.2 (all three
+controlled branches).
 """
 from __future__ import annotations
 
@@ -53,10 +55,7 @@ from paired_token_reliability.evaluate_cur_event_hf_residual_four_scenes import 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENES = (
-    "Centaur_Anodized_Red",
-    "Child_with_goose_Industrial_Plastic_Grey",
-    "Colchester Sphinx_Old_Copper",
-    "Cupid as Shepherd_100MB_Old_Copper",
+    "Actaeon_Anodized_Red",
 )
 CONDITIONS = ("coarse_hdr_like", "final_event_refined")
 ADDITIVE_BRANCHES = ("geometry_motion", "material_reflection", "noise")
@@ -86,16 +85,17 @@ class NestedNonGeometryInjectionDataset(Dataset):
         return len(self.dataset)
 
     def _prepare(self):
-        required = (*ADDITIVE_BRANCHES, "full")
         for scene in self.dataset.get_active_scenes():
             scene_meta = self.dataset.active_scene_data[scene]
-            full_path = _branch_path(scene_meta["scene_dir"], self.root_name, "full")
-            if not osp.isfile(full_path):
-                raise FileNotFoundError(full_path)
-            full_meta = _event_meta(self.dataset, full_path, scene_meta["frame_count"])
-            reference = full_meta["time_info"]
+            geo_path = _branch_path(
+                scene_meta["scene_dir"], self.root_name, "geometry_motion"
+            )
+            if not osp.isfile(geo_path):
+                raise FileNotFoundError(geo_path)
+            geo_meta = _event_meta(self.dataset, geo_path, scene_meta["frame_count"])
+            reference = geo_meta["time_info"]
             per_scene = {}
-            for branch in required:
+            for branch in ADDITIVE_BRANCHES:
                 path = _branch_path(scene_meta["scene_dir"], self.root_name, branch)
                 if not osp.isfile(path):
                     raise FileNotFoundError(
@@ -197,35 +197,25 @@ class NestedNonGeometryInjectionDataset(Dataset):
                 current = raw[branch]
                 count = len(current["event_t"])
                 scores = self._event_scores(scene, frame_idx, branch, count)
-                keep = scores < self.alpha
+                keep_count = int(round(self.alpha * count))
+                keep = np.zeros(count, dtype=bool)
+                if keep_count:
+                    keep[np.argsort(scores, kind="stable")[:keep_count]] = True
                 selected_parts.append(self._select(current, keep))
                 selected_non_geo += int(keep.sum())
                 total_non_geo += count
             mixed_raw = self._merge(selected_parts)
             geo_voxel = self._voxelize(geo_raw, view, src_resolution)
-            # The base dataset already produced E_full with the exact same
-            # linear-time representation. Preserve it as the physical endpoint.
-            full_voxel = np.asarray(view["event_voxel"], dtype=np.float32)
             if self.alpha == 0.0:
                 mixed_voxel = geo_voxel
-            elif self.alpha == 1.0:
-                reconstructed_full = self._voxelize(
-                    self._merge([raw[branch] for branch in ADDITIVE_BRANCHES]),
-                    view, src_resolution,
-                )
-                reconstruction_relative_l1 = float(
-                    np.abs(reconstructed_full - full_voxel).mean(dtype=np.float64)
-                    / max(np.abs(full_voxel).mean(dtype=np.float64), 1e-12)
-                )
-                mixed_voxel = full_voxel
             else:
-                reconstruction_relative_l1 = float("nan")
                 mixed_voxel = self._voxelize(mixed_raw, view, src_resolution)
-            if self.alpha == 0.0:
-                reconstruction_relative_l1 = float("nan")
             view["event_voxel"] = mixed_voxel.astype(np.float32, copy=False)
             view["geometry_event_voxel"] = geo_voxel.astype(np.float32, copy=False)
-            view["full_event_voxel"] = full_voxel.astype(np.float32, copy=False)
+            view["all_controlled_event_voxel"] = self._voxelize(
+                self._merge([raw[branch] for branch in ADDITIVE_BRANCHES]),
+                view, src_resolution,
+            )
             view["injected_non_geometry_count"] = np.array(
                 selected_non_geo, dtype=np.int64
             )
@@ -233,9 +223,6 @@ class NestedNonGeometryInjectionDataset(Dataset):
                 total_non_geo, dtype=np.int64
             )
             view["injection_alpha"] = np.array(self.alpha, dtype=np.float32)
-            view["additive_reconstruction_relative_l1"] = np.array(
-                reconstruction_relative_l1, dtype=np.float32
-            )
         return views
 
 
@@ -263,9 +250,9 @@ def build_injection_loader(cfg, args, alpha):
         decomposition_event_root=str(
             _cfg_value(cfg.data, "decomposition_event_root", "events_additive")
         ),
-        decomposition_full_branch=str(
-            _cfg_value(cfg.data, "decomposition_full_branch", "full")
-        ),
+        # The base loader also reads geometry_motion, so full/events.h5 is
+        # never consumed by this experiment.
+        decomposition_full_branch="geometry_motion",
         return_normal_gt=True,
         return_debug_event_fields=False,
     )
@@ -294,12 +281,17 @@ def arguments():
     p.add_argument(
         "--output-dir",
         default="exp_f/cur_event_refiner_first_1k_then_joint_gpu4/"
-                "test_geo_to_full_10level",
+                "test_geo_plus_random_material_noise_actaeon",
     )
     p.add_argument("--root", default=None)
     p.add_argument("--scene-names", nargs="+", default=list(SCENES))
     p.add_argument("--exposures", default="0,1,2,5,10")
     p.add_argument("--levels", type=int, default=10)
+    p.add_argument(
+        "--ratios",
+        default="0,0.05,0.10,0.20,0.30,0.40,0.50,0.60,0.80,1.00",
+        help="Nested material/noise retention ratios; overrides --levels.",
+    )
     p.add_argument("--geo-depth-scale", type=float, default=2.3)
     p.add_argument("--full-depth-scale", type=float, default=2.2)
     p.add_argument("--test-frame-count", type=int, default=120)
@@ -340,7 +332,7 @@ def _output_map(output, key, view_index):
 
 def save_visuals(root, scene, exposure, level, alpha, scale, batch_index,
                  views, output, depth_gt, valid, intrinsics, geo_events,
-                 full_events, mixed_events, every_view):
+                 all_controlled_events, mixed_events, every_view):
     coarse_all = stack_output(output, "depth_coarse").float()
     final_all = stack_output(output, "depth").float()
     view_indices = range(len(views)) if every_view else (0,)
@@ -365,7 +357,9 @@ def save_visuals(root, scene, exposure, level, alpha, scale, batch_index,
             .permute(1, 2, 0).cpu().clamp(0, 1)
         )
         geo = geo_events[view_index][0].detach().float().abs().sum(0).cpu()
-        full = full_events[view_index][0].detach().float().abs().sum(0).cpu()
+        all_controlled = (
+            all_controlled_events[view_index][0].detach().float().abs().sum(0).cpu()
+        )
         mixed = mixed_events[view_index][0].detach().float().abs().sum(0).cpu()
         values = torch.cat((coarse[mask], final[mask], gt[mask]))
         vmin, vmax = float(values.min()), float(values.max())
@@ -376,8 +370,8 @@ def save_visuals(root, scene, exposure, level, alpha, scale, batch_index,
         panels = [
             (rgb, "LDR RGB", None, None, None),
             (geo, "|E_geo|", "gray", None, None),
-            (full, "|E_full|", "gray", None, None),
-            (mixed, f"|E_mix| alpha={alpha:.4f}", "gray", None, None),
+            (all_controlled, "|E_geo + E_material + E_noise|", "gray", None, None),
+            (mixed, f"|E_input| retain={alpha:.1%}", "gray", None, None),
             (coarse.cpu() * mask.cpu(), "coarse depth", "viridis", vmin, vmax),
             (final.cpu() * mask.cpu(), "final depth", "viridis", vmin, vmax),
             (gt.cpu() * mask.cpu(), "GT depth", "viridis", vmin, vmax),
@@ -410,7 +404,8 @@ def save_visuals(root, scene, exposure, level, alpha, scale, batch_index,
             raw_instance = raw_instance[0]
         fig.suptitle(
             f"{scene} | {exposure} | level={level:02d} | "
-            f"alpha={alpha:.4f} | fixed scale={scale:.4f}"
+            f"non-geometry retain={alpha:.1%} | C_fusion=C_refine=1 | "
+            f"fixed scale={scale:.4f}"
         )
         path = (
             root / "visualizations" / _safe_name(scene) / exposure
@@ -423,36 +418,36 @@ def save_visuals(root, scene, exposure, level, alpha, scale, batch_index,
 
 
 def _prepare_injected_events(views, alpha):
-    geo_values, full_values, mixed_values = [], [], []
+    geo_values, all_values, mixed_values = [], [], []
     for view_index, view in enumerate(views):
         full = view.get("event_voxel")
         geo = view.get("geometry_event_voxel")
-        full_reference = view.get("full_event_voxel")
-        if full is None or geo is None or full_reference is None:
+        all_controlled = view.get("all_controlled_event_voxel")
+        if full is None or geo is None or all_controlled is None:
             raise RuntimeError(
-                f"view {view_index} lacks injected/geo/full tensors: "
+                f"view {view_index} lacks injected/geo/all-controlled tensors: "
                 f"event_voxel={full is not None}, "
                 f"geometry_event_voxel={geo is not None}, "
-                f"full_event_voxel={full_reference is not None}"
+                f"all_controlled_event_voxel={all_controlled is not None}"
             )
-        if full.shape != geo.shape or full.shape != full_reference.shape:
+        if full.shape != geo.shape or full.shape != all_controlled.shape:
             raise RuntimeError(
-                f"injected/geo/full shape mismatch in view {view_index}: "
+                f"injected/geo/all-controlled shape mismatch in view {view_index}: "
                 f"mixed={tuple(full.shape)} geo={tuple(geo.shape)} "
-                f"full={tuple(full_reference.shape)}"
+                f"all={tuple(all_controlled.shape)}"
             )
         mixed = full
         if not torch.isfinite(mixed).all():
             raise FloatingPointError(f"non-finite mixed event tensor at alpha={alpha}")
         geo_values.append(geo)
-        full_values.append(full_reference)
+        all_values.append(all_controlled)
         mixed_values.append(mixed)
         # Do not expose an oracle geometry teacher to the inference graph.
         view.pop("geometry_event_voxel", None)
-        view.pop("full_event_voxel", None)
+        view.pop("all_controlled_event_voxel", None)
         view.pop("contribution_target", None)
         view.pop("decomposition_valid", None)
-    return geo_values, full_values, mixed_values
+    return geo_values, all_values, mixed_values
 
 
 @torch.inference_mode()
@@ -460,7 +455,6 @@ def evaluate_loader(model, loader, args, device, accumulators, scene, exposure,
                     level_dir, level, alpha, scale):
     batches = 0
     selected_non_geo = total_non_geo = event_views = 0
-    reconstruction_errors = []
     for batch_index, cpu_views in enumerate(loader):
         if args.max_batches is not None and batch_index >= args.max_batches:
             break
@@ -472,20 +466,27 @@ def evaluate_loader(model, loader, args, device, accumulators, scene, exposure,
             total_non_geo += int(
                 view["total_non_geometry_count"].detach().sum().cpu()
             )
-            error = view["additive_reconstruction_relative_l1"].detach().float()
-            finite_error = error[torch.isfinite(error)]
-            if finite_error.numel():
-                reconstruction_errors.extend(finite_error.cpu().tolist())
             event_views += int(view["injection_alpha"].numel())
         depth_gt = fe.stack_view_field(views, "depthmap").float()
         intrinsics = fe.stack_view_field(views, "camera_intrinsics").float()
         poses = fe.stack_view_field(views, "camera_pose").float()
         valid = fe.build_valid_mask(views, depth_gt, depth_min=1e-6, depth_max=None)
-        geo, full, mixed = _prepare_injected_events(views, alpha)
+        geo, all_controlled, mixed = _prepare_injected_events(views, alpha)
         enabled = args.amp != "none" and device.type == "cuda"
         dtype = torch.bfloat16 if args.amp == "bf16" else torch.float16
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=enabled):
             output = model(views)
+        for key in ("event_contribution", "normal_fusion_gate"):
+            values = stack_output(output, key)
+            if values is None or not torch.allclose(
+                values.float(), torch.ones_like(values, dtype=torch.float32),
+                atol=1e-6, rtol=0.0,
+            ):
+                observed = float(values.float().mean()) if values is not None else None
+                raise RuntimeError(
+                    f"{key} is not forced to one (mean={observed}); "
+                    "the controlled-injection protocol would be invalid"
+                )
         depths = {
             "coarse_hdr_like": stack_output(output, "depth_coarse"),
             "final_event_refined": stack_output(output, "depth"),
@@ -501,7 +502,8 @@ def evaluate_loader(model, loader, args, device, accumulators, scene, exposure,
         if args.visualize_every > 0 and batch_index % args.visualize_every == 0:
             save_visuals(
                 level_dir, scene, exposure, level, alpha, scale, batch_index,
-                views, output, depth_gt, valid, intrinsics, geo, full, mixed,
+                views, output, depth_gt, valid, intrinsics, geo,
+                all_controlled, mixed,
                 args.save_every_view,
             )
         batches += 1
@@ -512,10 +514,6 @@ def evaluate_loader(model, loader, args, device, accumulators, scene, exposure,
             selected_non_geo / max(total_non_geo, 1)
         ),
         "event_views": event_views,
-        "additive_reconstruction_relative_l1": (
-            float(np.mean(reconstruction_errors))
-            if reconstruction_errors else float("nan")
-        ),
     }
     return batches, diagnostics
 
@@ -527,8 +525,12 @@ def rows_for(scope, scene, exposure, accumulators, batches, level, alpha, scale,
         value = accumulators[condition].compute()
         metrics[condition] = value
         rows.append({
-            "level": level, "alpha_full": alpha, "geo_weight": 1.0 - alpha,
-            "full_weight": alpha, "depth_scale": scale, "scope": scope,
+            # alpha_full is retained only for compatibility with older table
+            # consumers. It now means non-geometry retention, not Full mixing.
+            "level": level, "alpha_full": alpha,
+            "non_geometry_retention": alpha,
+            "geo_weight": 1.0, "full_weight": 0.0,
+            "depth_scale": scale, "scope": scope,
             "scene": scene, "exposure": exposure, "condition": condition,
             "evaluated_batches": batches, **(injection_diagnostics or {}), **value,
         })
@@ -540,8 +542,6 @@ def _empty_injection_totals():
         "selected_non_geometry_events": 0,
         "total_non_geometry_events": 0,
         "event_views": 0,
-        "_reconstruction_error_sum": 0.0,
-        "_reconstruction_error_count": 0,
     }
 
 
@@ -552,10 +552,6 @@ def _accumulate_injection(target, value):
         "event_views",
     ):
         target[key] += int(value[key])
-    error = float(value["additive_reconstruction_relative_l1"])
-    if np.isfinite(error):
-        target["_reconstruction_error_sum"] += error * int(value["event_views"])
-        target["_reconstruction_error_count"] += int(value["event_views"])
 
 
 def _finalize_injection(value):
@@ -567,11 +563,6 @@ def _finalize_injection(value):
             / max(value["total_non_geometry_events"], 1)
         ),
         "event_views": value["event_views"],
-        "additive_reconstruction_relative_l1": (
-            value["_reconstruction_error_sum"]
-            / max(value["_reconstruction_error_count"], 1)
-            if value["_reconstruction_error_count"] else float("nan")
-        ),
     }
 
 
@@ -592,8 +583,9 @@ def write_level(level_dir, checkpoint, args, level, alpha, scale, nested,
                 aggregates, overall_metrics, rows, complete):
     payload = {
         "checkpoint": str(checkpoint), "training": False,
-        "level": level, "levels": args.levels, "alpha_full": alpha,
-        "geo_weight": 1.0 - alpha, "full_weight": alpha,
+        "level": level, "levels": len(args.parsed_ratios), "alpha_full": alpha,
+        "geo_weight": 1.0, "full_weight": 0.0,
+        "non_geometry_retention": alpha,
         "event_definition": (
             "E_mix=E_geo union nested_sample_alpha(E_material union E_noise); "
             "raw-event sampling before voxelization"
@@ -601,7 +593,7 @@ def write_level(level_dir, checkpoint, args, level, alpha, scale, nested,
         "depth_scale": scale,
         "depth_scale_protocol": (
             f"predeclared linear {args.geo_depth_scale} geo -> "
-            f"{args.full_depth_scale} full"
+            f"{args.full_depth_scale} all-controlled-branches"
         ),
         "scenes": list(args.scene_names), "exposures": args.exposures,
         "results": nested, "all_scenes_pixel_weighted": aggregates,
@@ -644,12 +636,12 @@ def plot_all_metrics(out, aggregate_rows):
                     any_finite = True
                     axis.plot(x, y, style, label=condition)
             axis.set_title(exposure)
-            axis.set_xlabel("full-event mixture alpha (0=geo, 1=full)")
+            axis.set_xlabel("retained material/noise event ratio")
             axis.set_ylabel(metric)
             axis.grid(alpha=0.3)
             axis.legend(fontsize=8)
         if any_finite:
-            fig.suptitle(f"{metric}: E_geo to E_full")
+            fig.suptitle(f"{metric}: geometry + sampled material/noise events")
             fig.tight_layout()
             fig.savefig(plot_root / f"{_safe_name(metric)}.png", dpi=150)
         plt.close(fig)
@@ -657,8 +649,18 @@ def plot_all_metrics(out, aggregate_rows):
 
 def main():
     args = arguments()
-    if args.levels < 2:
-        raise ValueError("--levels must be >=2 so both geo and full endpoints exist")
+    args.parsed_ratios = [
+        float(value.strip()) for value in args.ratios.split(",") if value.strip()
+    ]
+    if len(args.parsed_ratios) < 2:
+        raise ValueError("--ratios must contain at least two values")
+    if args.parsed_ratios != sorted(args.parsed_ratios):
+        raise ValueError("--ratios must be sorted")
+    if args.parsed_ratios[0] != 0.0 or args.parsed_ratios[-1] != 1.0:
+        raise ValueError("--ratios must start at 0 and end at 1")
+    if any(value < 0.0 or value > 1.0 for value in args.parsed_ratios):
+        raise ValueError("--ratios values must lie in [0,1]")
+    args.levels = len(args.parsed_ratios)
     checkpoint = Path(args.checkpoint).expanduser()
     if not checkpoint.is_absolute():
         checkpoint = ROOT / checkpoint
@@ -671,6 +673,9 @@ def main():
     )
     # Initial construction scale is overwritten before every level.
     model, cfg = build_model(checkpoint, device, args.geo_depth_scale)
+    # Geo stage makes both DelayedGate instances return exactly one and also
+    # bypasses the Full-to-Geo aligner. This is intentional for every ratio.
+    model.set_confidence_stage("geo")
     OmegaConf.set_struct(cfg, False)
     OmegaConf.set_struct(cfg.data, False)
     cfg.data.event_source_mode = "decomposition_full"
@@ -683,8 +688,7 @@ def main():
     all_rows = []
     aggregate_rows = []
     all_summaries = []
-    for level in range(args.levels):
-        alpha = level / float(args.levels - 1)
+    for level, alpha in enumerate(args.parsed_ratios):
         scale = (
             (1.0 - alpha) * args.geo_depth_scale
             + alpha * args.full_depth_scale
@@ -694,15 +698,15 @@ def main():
         if level == args.levels - 1 and (
             alpha != 1.0 or scale != args.full_depth_scale
         ):
-            raise AssertionError("full endpoint is not exact")
+            raise AssertionError("all-controlled-branches endpoint is not exact")
         model.fixed_eval_depth_scale = float(scale)
         model.eval()
         level_dir = out / (
             f"level_{level:02d}_alpha_{alpha:.4f}_scale_{scale:.4f}"
         )
         print(
-            f"[geo->full] level={level:02d}/{args.levels - 1:02d} "
-            f"alpha={alpha:.6f} scale={scale:.6f}", flush=True
+            f"[controlled injection] level={level:02d}/{args.levels - 1:02d} "
+            f"retain={alpha:.1%} scale={scale:.6f} C=1", flush=True
         )
         totals = {
             exposure: {name: ConditionAccumulator() for name in CONDITIONS}
@@ -801,7 +805,8 @@ def main():
             aggregates, overall_metrics, level_rows, complete=True,
         )
         all_summaries.append({
-            "level": level, "alpha_full": alpha, "depth_scale": scale,
+            "level": level, "alpha_full": alpha,
+            "non_geometry_retention": alpha, "depth_scale": scale,
             "all_scenes_pixel_weighted": aggregates,
             "overall_pixel_weighted": overall_metrics,
         })

@@ -63,6 +63,14 @@ def arguments():
         help="Require DSEC RGB frames from this scene-relative directory, "
              "e.g. hdr_diff_images/event_aligned.",
     )
+    p.add_argument(
+        "--mvsec-rgb-directory",
+        default=None,
+        help=(
+            "Optional external MVSEC RGB directory. Images are matched to "
+            "the aligned APS index using names such as 000000.png."
+        ),
+    )
     p.add_argument("--device", default="cuda")
     return p.parse_args()
 
@@ -134,6 +142,7 @@ def loader(a, train):
             a.root, split="all", sequence_names=[sequence], num_views=a.num_views,
             resolution=(518, 392), fps=20, seed=0, camera="left",
             intrinsics=a.intrinsics, event_resize_method="voxel_linear_time", event_resize_bins=5,
+            external_rgb_directory=a.mvsec_rgb_directory,
         )
         label = f"MVSEC/{sequence}"
     if len(dataset) == 0: raise RuntimeError(f"empty pure-RGB dataset: {label}, root={a.root}")
@@ -359,6 +368,7 @@ def main():
                "train_sequence": a.train_sequence if a.dataset == "mvsec" else "DSEC/train",
                "test_sequence": a.test_sequence if a.dataset == "mvsec" else "DSEC/test",
                "rgb_directory": a.dsec_rgb_subdir if a.dataset == "dsec" else None,
+               "mvsec_rgb_directory": a.mvsec_rgb_directory if a.dataset == "mvsec" else None,
                "depth_scale": test_depth_scale,
                "scale_calibration": {
                    "method": "median_gt_over_prediction",

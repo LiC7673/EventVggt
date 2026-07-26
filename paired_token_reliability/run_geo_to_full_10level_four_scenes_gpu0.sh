@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Inference-only ten-level E_geo -> E_full continuum on four scenes/all EVs.
+# Inference-only nested material/noise injection on Actaeon/all EVs.
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,7 +7,7 @@ cd "${ROOT}"
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
 
 CHECKPOINT="${CHECKPOINT:-exp_f/cur_event_refiner_first_1k_then_joint_gpu4/checkpoint-adapter-best.pth}"
-OUTPUT_DIR="${OUTPUT_DIR:-exp_f/cur_event_refiner_first_1k_then_joint_gpu4/test_geo_to_full_10level}"
+OUTPUT_DIR="${OUTPUT_DIR:-exp_f/cur_event_refiner_first_1k_then_joint_gpu4/test_geo_plus_random_material_noise_actaeon}"
 
 if [[ ! -f "${CHECKPOINT}" ]]; then
   echo "Missing checkpoint: ${CHECKPOINT}" >&2
@@ -16,20 +16,16 @@ if [[ ! -f "${CHECKPOINT}" ]]; then
 fi
 
 mkdir -p "${OUTPUT_DIR}/logs"
-echo "[geo->full] inference only; GPU=${GPU:-0}; checkpoint=${CHECKPOINT}"
-echo "[geo->full] 10 levels; scale 2.3 (geo) -> 2.2 (full)"
+echo "[controlled injection] inference only; GPU=${GPU:-0}; checkpoint=${CHECKPOINT}"
+echo "[controlled injection] C=1; geometry always kept; nested material/noise sampling"
 
 CUDA_VISIBLE_DEVICES="${GPU:-0}" python -m \
   paired_token_reliability.evaluate_geo_to_full_10level_four_scenes \
   --checkpoint "${CHECKPOINT}" \
   --output-dir "${OUTPUT_DIR}" \
-  --scene-names \
-    "Centaur_Anodized_Red" \
-    "Child_with_goose_Industrial_Plastic_Grey" \
-    "Colchester Sphinx_Old_Copper" \
-    "Cupid as Shepherd_100MB_Old_Copper" \
+  --scene-names "Actaeon_Anodized_Red" \
   --exposures "${EXPOSURES:-0,1,2,5,10}" \
-  --levels 10 \
+  --ratios "${RATIOS:-0,0.05,0.10,0.20,0.30,0.40,0.50,0.60,0.80,1.00}" \
   --geo-depth-scale 2.3 \
   --full-depth-scale 2.2 \
   --test-frame-count "${TEST_FRAME_COUNT:-120}" \

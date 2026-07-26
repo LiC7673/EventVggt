@@ -28,6 +28,7 @@ export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
 echo "[HDR-Diff RGB zero-shot] checkpoint=${PRETRAINED}"
 echo "[HDR-Diff RGB zero-shot] input=${DSEC_ROOT}/test/*/${RGB_SUBDIR}"
 echo "[HDR-Diff RGB zero-shot] epochs=0; parameter updates=NONE; event input=NONE"
+echo "[HDR-Diff RGB zero-shot] one fixed scale from first ${SCALE_CALIBRATION_FRAMES:-20} frames"
 
 python -m paired_token_reliability.finetune_rgb_real_dataset \
   --dataset dsec \
@@ -39,7 +40,7 @@ python -m paired_token_reliability.finetune_rgb_real_dataset \
   --max-train-steps 0 \
   --max-test-batches "${MAX_TEST_BATCHES:-0}" \
   --depth-scale "${DEPTH_SCALE:-1.0}" \
-  --scale-calibration-frames "${SCALE_CALIBRATION_FRAMES:-0}" \
+  --scale-calibration-frames "${SCALE_CALIBRATION_FRAMES:-20}" \
   --num-views "${NUM_VIEWS:-4}" \
   --num-workers "${NUM_WORKERS:-2}" \
   --visualize-every "${VISUALIZE_EVERY:-1}" \

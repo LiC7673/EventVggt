@@ -1,25 +1,48 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Pure-RGB DSEC zero-shot with the same leading-20-frame fixed-scale protocol
+# used by the event method and HDR-Diff baseline.
+set -Eeuo pipefail
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-5}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT}"
 
-CALIBRATION_ARGS=()
-if [[ "${CALIBRATE_SCALE:-1}" == "1" ]]; then
-  CALIBRATION_ARGS+=(--calibrate-scale)
-  if [[ -n "${CALIBRATION_SCENE:-}" ]]; then
-    CALIBRATION_ARGS+=(--calibration-scene "${CALIBRATION_SCENE}")
-  fi
-  CALIBRATION_ARGS+=(--max-calibration-batches "${MAX_CALIBRATION_BATCHES:-20}")
+GPU="${GPU:-5}"
+PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
+DSEC_ROOT="${DSEC_ROOT:-/data1/lzh/dataset/DESC/DSEC_EV_VGGT}"
+OUTPUT="${OUTPUT:-exp_f/dsec_rgb_pretrained_no_finetune_gpu5}"
+
+if [[ ! -f "${PRETRAINED}" ]]; then
+  echo "Missing pretrained RGB checkpoint: ${PRETRAINED}" >&2
+  exit 2
+fi
+if [[ ! -d "${DSEC_ROOT}/test" ]]; then
+  echo "Missing DSEC test split: ${DSEC_ROOT}/test" >&2
+  exit 2
 fi
 
-python -m paired_token_reliability.evaluate_rgb_pretrained_dsec \
-  --checkpoint "${CHECKPOINT:-ckpt/model.pt}" \
-  --root "${DSEC_ROOT:-/data1/lzh/dataset/DESC/DSEC_EV_VGGT}" \
-  --output "${OUTPUT:-exp_f/dsec_rgb_pretrained_no_finetune_gpu5}" \
+mkdir -p "${OUTPUT}/logs"
+export CUDA_VISIBLE_DEVICES="${GPU}"
+export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
+
+echo "[DSEC RGB zero-shot] normal RGB input; event input=NONE"
+echo "[DSEC RGB zero-shot] one fixed scale from first ${SCALE_CALIBRATION_FRAMES:-20} test frames"
+
+python -m paired_token_reliability.finetune_rgb_real_dataset \
+  --dataset dsec \
+  --root "${DSEC_ROOT}" \
+  --pretrained "${PRETRAINED}" \
+  --output "${OUTPUT}" \
+  --epochs 0 \
+  --max-train-steps 0 \
+  --max-test-batches "${MAX_TEST_BATCHES:-0}" \
+  --depth-scale "${DEPTH_SCALE:-1.0}" \
+  --scale-calibration-frames "${SCALE_CALIBRATION_FRAMES:-20}" \
   --num-views "${NUM_VIEWS:-4}" \
   --num-workers "${NUM_WORKERS:-2}" \
-  --depth-scale "${DEPTH_SCALE:-1.0}" \
-  --max-test-batches "${MAX_TEST_BATCHES:-0}" \
   --visualize-every "${VISUALIZE_EVERY:-10}" \
   --max-visualizations "${MAX_VISUALIZATIONS:-40}" \
-  "${CALIBRATION_ARGS[@]}" "$@"
+  "$@" 2>&1 | tee "${OUTPUT}/logs/zero_shot_test.log"
+
+echo "[DSEC RGB zero-shot] JSON: ${OUTPUT}/final_test_metrics.json"
+echo "[DSEC RGB zero-shot] TXT:  ${OUTPUT}/metrics.txt"
+echo "[DSEC RGB zero-shot] VIS:  ${OUTPUT}/final_test_visualizations"

@@ -193,6 +193,7 @@ class MVSECEventDataset(BaseEventMultiViewDataset):
         test_frame_count=20,
         event_resize_method="voxel_antialias",
         event_resize_bins=10,
+        external_rgb_directory=None,
         return_debug_event_fields=False,
         **kwargs,
     ):
@@ -211,6 +212,10 @@ class MVSECEventDataset(BaseEventMultiViewDataset):
         self.test_frame_count = int(test_frame_count)
         self.event_resize_method = event_resize_method
         self.event_resize_bins = event_resize_bins
+        self.external_rgb_directory = (
+            osp.abspath(osp.expanduser(external_rgb_directory))
+            if external_rgb_directory else None
+        )
         self.return_debug_event_fields = return_debug_event_fields
         self.start_img_ids = []
         self.scene_data = {}
@@ -581,6 +586,34 @@ class MVSECEventDataset(BaseEventMultiViewDataset):
         pose_idx = _nearest_index(meta["pose_ts"], timestamp)
         return _pose_to_matrix(pose_ds[pose_idx])
 
+    def _load_external_rgb(self, scene_name, image_idx):
+        """Load an externally restored APS frame without changing GT alignment."""
+        root = self.external_rgb_directory
+        if root is None:
+            return None
+        stems = (f"{int(image_idx):06d}", str(int(image_idx)))
+        directories = (
+            root,
+            osp.join(root, "event_aligned"),
+            osp.join(root, scene_name),
+            osp.join(root, scene_name, "event_aligned"),
+        )
+        candidates = [
+            osp.join(directory, stem + extension)
+            for directory in directories
+            for stem in stems
+            for extension in (".png", ".jpg", ".jpeg")
+        ]
+        path = next((candidate for candidate in candidates if osp.isfile(candidate)), None)
+        if path is None:
+            raise FileNotFoundError(
+                "Missing external MVSEC RGB for "
+                f"scene={scene_name}, image_idx={image_idx}. "
+                f"Searched under {root}; first candidates={candidates[:4]}"
+            )
+        with Image.open(path) as image:
+            return image.convert("RGB").copy()
+
     def _get_views(self, idx, resolution, rng, num_views):
         scene_name, start_id = self.start_img_ids[idx]
         meta = self.scene_data[scene_name]
@@ -600,7 +633,9 @@ class MVSECEventDataset(BaseEventMultiViewDataset):
                     image_idx = int(meta["image_for_depth"][frame_idx])
                 else:
                     image_idx = _nearest_index(meta["image_ts"], timestamp)
-                image = _image_to_rgb(image_ds[image_idx])
+                image = self._load_external_rgb(scene_name, image_idx)
+                if image is None:
+                    image = _image_to_rgb(image_ds[image_idx])
                 src_width, src_height = image.size
                 depth, mask = _clean_depth(depth_ds[frame_idx])
 

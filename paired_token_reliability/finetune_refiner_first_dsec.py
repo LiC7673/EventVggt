@@ -33,6 +33,14 @@ def parse_args():
     p.add_argument("--num-views", type=int, default=4)
     p.add_argument("--max-train-steps", type=int, default=2000)
     p.add_argument("--max-test-batches", type=int, default=0)
+    p.add_argument(
+        "--scale-calibration-frames", type=int, default=0,
+        help="Estimate one fixed depth scale from this many leading test frames. "
+             "The fixed scalar is then reused for the complete test split.",
+    )
+    p.add_argument(
+        "--scale-calibration-pixels-per-frame", type=int, default=10000,
+    )
     p.add_argument("--device", default="cuda")
     p.add_argument("--visualize-every", type=int, default=10)
     p.add_argument("--max-visualizations", type=int, default=30,
@@ -81,6 +89,62 @@ def loader(args, split, shuffle):
     return DataLoader(dataset, batch_size=args.batch_size, shuffle=shuffle,
                       num_workers=args.num_workers, pin_memory=True,
                       collate_fn=event_multiview_collate, drop_last=False)
+
+
+@torch.inference_mode()
+def calibrate_depth_scale(model, data, device, frame_count, pixels_per_frame):
+    """Estimate one fixed test-set scale without per-batch GT alignment."""
+    requested = int(frame_count)
+    if requested <= 0:
+        return None, 0, 0
+    model.eval()
+    # Prevent the model's legacy eval fallback from reading GT per batch.
+    previous = model.fixed_eval_depth_scale
+    model.fixed_eval_depth_scale = 1.0
+    ratios = []
+    used_frames = used_pixels = 0
+    try:
+        for cpu_views in data:
+            views = move_views_to_device(
+                fe.maybe_denormalize_views(cpu_views), device
+            )
+            output = model(views)
+            pred = torch.stack(
+                [item["depth"][..., 0] for item in output.ress], 1
+            ).float()
+            gt = fe.stack_view_field(views, "depthmap").float()
+            for view_index in range(pred.shape[1]):
+                if used_frames >= requested:
+                    break
+                p = pred[:, view_index]
+                g = gt[:, view_index]
+                valid = (
+                    torch.isfinite(p) & torch.isfinite(g)
+                    & (p > 1e-6) & (g > .1) & (g < 80.)
+                )
+                ratio = (g[valid] / p[valid].clamp_min(1e-6)).detach()
+                if ratio.numel():
+                    cap = max(int(pixels_per_frame), 1)
+                    stride = max(int(ratio.numel() // cap), 1)
+                    sampled = ratio[::stride][:cap].cpu()
+                    ratios.append(sampled)
+                    used_pixels += int(sampled.numel())
+                used_frames += 1
+            if used_frames >= requested:
+                break
+    finally:
+        model.fixed_eval_depth_scale = previous
+    if not ratios:
+        raise RuntimeError("no valid pixels for DSEC fixed-scale calibration")
+    scale = float(torch.median(torch.cat(ratios)))
+    if not np.isfinite(scale) or scale <= 0:
+        raise RuntimeError(f"invalid DSEC calibrated scale: {scale}")
+    print(
+        f"[DSEC scale] leading_frames={used_frames} pixels={used_pixels} "
+        f"fixed_scale={scale:.8f}; reused for complete test split",
+        flush=True,
+    )
+    return scale, used_frames, used_pixels
 
 
 def objective(output, views):
@@ -214,6 +278,19 @@ def main():
     out = Path(args.output); out.mkdir(parents=True, exist_ok=True)
     model = load_model(args, device)
     test = loader(args, "test", False)
+    calibrated_scale = None
+    calibration_frames = calibration_pixels = 0
+    if args.scale_calibration_frames > 0:
+        calibrated_scale, calibration_frames, calibration_pixels = (
+            calibrate_depth_scale(
+                model, test, device, args.scale_calibration_frames,
+                args.scale_calibration_pixels_per_frame,
+            )
+        )
+        model.fixed_eval_depth_scale = float(calibrated_scale)
+    else:
+        # Never allow the model to fall back to per-batch GT scale at test.
+        model.fixed_eval_depth_scale = 1.0
     train = loader(args, "train", True) if args.epochs > 0 else None
     optimizer = torch.optim.AdamW([
         {"params": model.pixel_depth_refiner.parameters(), "lr": args.lr},
@@ -244,7 +321,17 @@ def main():
     evaluated_checkpoint = str(out / "checkpoint-last.pth") if args.epochs > 0 else args.checkpoint
     payload = {"checkpoint": evaluated_checkpoint, "source_checkpoint": args.checkpoint,
                "zero_shot": args.epochs == 0,
-               "test_split": "DSEC_EV_VGGT/test", "metrics": final_test}
+               "test_split": "DSEC_EV_VGGT/test",
+               "depth_scale": float(model.fixed_eval_depth_scale),
+               "scale_calibration": {
+                   "method": "median_gt_over_prediction",
+                   "requested_leading_frames": args.scale_calibration_frames,
+                   "used_leading_frames": calibration_frames,
+                   "sampled_pixels": calibration_pixels,
+                   "fixed_for_complete_test": True,
+                   "per_batch_gt_alignment": False,
+               },
+               "metrics": final_test}
     (out / "final_test_metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"[DSEC final-test] {json.dumps(final_test, ensure_ascii=False)}", flush=True)
 
