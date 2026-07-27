@@ -1,0 +1,100 @@
+{
+  "input": "E:\\result\\eventvgg\\hdreff\\syn_final.csv",
+  "selection": {
+    "scope": "scene",
+    "condition": "rgb_only_fixed_scale",
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "exposures": [
+      "ev_0",
+      "ev_1",
+      "ev_2",
+      "ev_5",
+      "ev_10"
+    ],
+    "selected_rows": 20
+  },
+  "per_exposure": {
+    "ev_0": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.13510718002337319,
+        "rpe_trans": 0.06911889990342074,
+        "rpe_rot_deg": 1.4384919893125008
+      },
+      "batch_weighted_average": {
+        "ate": 0.1351071800233732,
+        "rpe_trans": 0.06911889990342074,
+        "rpe_rot_deg": 1.4384919893125008
+      }
+    },
+    "ev_1": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.13519976061672487,
+        "rpe_trans": 0.06920686144991939,
+        "rpe_rot_deg": 1.4533100872429023
+      },
+      "batch_weighted_average": {
+        "ate": 0.13519976061672487,
+        "rpe_trans": 0.06920686144991939,
+        "rpe_rot_deg": 1.4533100872429023
+      }
+    },
+    "ev_2": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.13573810405997108,
+        "rpe_trans": 0.06960255224739427,
+        "rpe_rot_deg": 1.4819593625464316
+      },
+      "batch_weighted_average": {
+        "ate": 0.1357381040599711,
+        "rpe_trans": 0.06960255224739426,
+        "rpe_rot_deg": 1.4819593625464316
+      }
+    },
+    "ev_5": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.15974170017329142,
+        "rpe_trans": 0.08361851631117792,
+        "rpe_rot_deg": 2.1393020970040353
+      },
+      "batch_weighted_average": {
+        "ate": 0.15974170017329142,
+        "rpe_trans": 0.08361851631117792,
+        "rpe_rot_deg": 2.1393020970040353
+      }
+    },
+    "ev_10": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.1616770825268508,
+        "rpe_trans": 0.08431337508453249,
+        "rpe_rot_deg": 2.188014054285555
+      },
+      "batch_weighted_average": {
+        "ate": 0.1616770825268508,
+        "rpe_trans": 0.08431337508453249,
+        "rpe_rot_deg": 2.188014054285555
+      }
+    }
+  },
+  "all_4_scenes_x_5_exposures": {
+    "macro_average": {
+      "ate": 0.14549276548004228,
+      "rpe_trans": 0.07517204099928895,
+      "rpe_rot_deg": 1.7402155180782852
+    },
+    "batch_weighted_average": {
+      "ate": 0.14549276548004228,
+      "rpe_trans": 0.07517204099928897,
+      "rpe_rot_deg": 1.740215518078285
+    }
+  }
+}

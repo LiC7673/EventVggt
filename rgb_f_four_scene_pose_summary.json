@@ -1,0 +1,271 @@
+{
+  "input_files": [
+    "E:\\result\\eventvgg\\rgb_f\\ev_0.csv",
+    "E:\\result\\eventvgg\\rgb_f\\ev_1.csv",
+    "E:\\result\\eventvgg\\rgb_f\\ev_2.csv",
+    "E:\\result\\eventvgg\\rgb_f\\ev_5.csv",
+    "E:\\result\\eventvgg\\rgb_f\\ev_10.csv"
+  ],
+  "selection": {
+    "experiment": "rgb_finetuned",
+    "scope": "scene",
+    "condition": "rgb_only_fixed_scale",
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "exposures": [
+      "ev_0",
+      "ev_1",
+      "ev_2",
+      "ev_5",
+      "ev_10"
+    ],
+    "selected_rows": 20
+  },
+  "per_scene_exposure": {
+    "Centaur_Anodized_Red": {
+      "ev_0": {
+        "ate": 0.5702467147132446,
+        "rpe_trans": 0.39157506078481674,
+        "rpe_rot_deg": 2.9871803558078307
+      },
+      "ev_1": {
+        "ate": 0.4687722862280648,
+        "rpe_trans": 0.3388485301542899,
+        "rpe_rot_deg": 2.7051021035375267
+      },
+      "ev_2": {
+        "ate": 0.3925727514614319,
+        "rpe_trans": 0.3252253885669955,
+        "rpe_rot_deg": 3.250870636824904
+      },
+      "ev_5": {
+        "ate": 0.3175668228289177,
+        "rpe_trans": 0.1937672458589077,
+        "rpe_rot_deg": 2.270033131385672
+      },
+      "ev_10": {
+        "ate": 0.2927329591636,
+        "rpe_trans": 0.29906123985761196,
+        "rpe_rot_deg": 3.7640433352569054
+      }
+    },
+    "Child_with_goose_Industrial_Plastic_Grey": {
+      "ev_0": {
+        "ate": 0.6146845464305631,
+        "rpe_trans": 0.4258603797904376,
+        "rpe_rot_deg": 2.899410121399781
+      },
+      "ev_1": {
+        "ate": 0.4777794462339631,
+        "rpe_trans": 0.36753055941441964,
+        "rpe_rot_deg": 2.914837032556534
+      },
+      "ev_2": {
+        "ate": 0.39888422293909664,
+        "rpe_trans": 0.3376794484411848,
+        "rpe_rot_deg": 3.920725462765529
+      },
+      "ev_5": {
+        "ate": 0.3447976154756957,
+        "rpe_trans": 0.18311187522164707,
+        "rpe_rot_deg": 3.2179270797762376
+      },
+      "ev_10": {
+        "ate": 0.26457341965930214,
+        "rpe_trans": 0.2736827835183719,
+        "rpe_rot_deg": 3.2864250103975166
+      }
+    },
+    "Colchester Sphinx_Old_Copper": {
+      "ev_0": {
+        "ate": 0.5961405231521048,
+        "rpe_trans": 0.416416348825241,
+        "rpe_rot_deg": 3.105695804645275
+      },
+      "ev_1": {
+        "ate": 0.48456409753396595,
+        "rpe_trans": 0.3134769269361578,
+        "rpe_rot_deg": 2.6157380810071684
+      },
+      "ev_2": {
+        "ate": 0.3989575908615671,
+        "rpe_trans": 0.30101819972282856,
+        "rpe_rot_deg": 3.2461670012823465
+      },
+      "ev_5": {
+        "ate": 0.33878102461839543,
+        "rpe_trans": 0.22200102371902303,
+        "rpe_rot_deg": 4.397611132983504
+      },
+      "ev_10": {
+        "ate": 0.4103631450441377,
+        "rpe_trans": 0.35048701755445577,
+        "rpe_rot_deg": 3.595510252590837
+      }
+    },
+    "Cupid as Shepherd_100MB_Old_Copper": {
+      "ev_0": {
+        "ate": 0.443249775032545,
+        "rpe_trans": 0.3245271635723525,
+        "rpe_rot_deg": 2.6858585959878463
+      },
+      "ev_1": {
+        "ate": 0.34104683725484486,
+        "rpe_trans": 0.22359312351407676,
+        "rpe_rot_deg": 1.863665986163863
+      },
+      "ev_2": {
+        "ate": 0.3152956148159915,
+        "rpe_trans": 0.23343527426236663,
+        "rpe_rot_deg": 2.269559290902368
+      },
+      "ev_5": {
+        "ate": 0.3566148553428979,
+        "rpe_trans": 0.19644253970734005,
+        "rpe_rot_deg": 2.7096334418346144
+      },
+      "ev_10": {
+        "ate": 0.3638472256475481,
+        "rpe_trans": 0.3401125819775565,
+        "rpe_rot_deg": 3.1788666042788276
+      }
+    }
+  },
+  "per_scene": {
+    "Centaur_Anodized_Red": {
+      "exposure_count": 5,
+      "macro_average": {
+        "ate": 0.40837830687905174,
+        "rpe_trans": 0.3096954930445244,
+        "rpe_rot_deg": 2.9954459125625674
+      },
+      "batch_weighted_average": {
+        "ate": 0.4083783068790518,
+        "rpe_trans": 0.3096954930445244,
+        "rpe_rot_deg": 2.9954459125625674
+      }
+    },
+    "Child_with_goose_Industrial_Plastic_Grey": {
+      "exposure_count": 5,
+      "macro_average": {
+        "ate": 0.42014385014772415,
+        "rpe_trans": 0.3175730092772122,
+        "rpe_rot_deg": 3.2478649413791194
+      },
+      "batch_weighted_average": {
+        "ate": 0.42014385014772415,
+        "rpe_trans": 0.3175730092772122,
+        "rpe_rot_deg": 3.2478649413791194
+      }
+    },
+    "Colchester Sphinx_Old_Copper": {
+      "exposure_count": 5,
+      "macro_average": {
+        "ate": 0.4457612762420342,
+        "rpe_trans": 0.3206799033515412,
+        "rpe_rot_deg": 3.392144454501826
+      },
+      "batch_weighted_average": {
+        "ate": 0.4457612762420342,
+        "rpe_trans": 0.32067990335154123,
+        "rpe_rot_deg": 3.392144454501826
+      }
+    },
+    "Cupid as Shepherd_100MB_Old_Copper": {
+      "exposure_count": 5,
+      "macro_average": {
+        "ate": 0.36401086161876545,
+        "rpe_trans": 0.2636221366067385,
+        "rpe_rot_deg": 2.5415167838335035
+      },
+      "batch_weighted_average": {
+        "ate": 0.36401086161876545,
+        "rpe_trans": 0.2636221366067385,
+        "rpe_rot_deg": 2.5415167838335035
+      }
+    }
+  },
+  "per_exposure": {
+    "ev_0": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.5560803898321144,
+        "rpe_trans": 0.389594738243212,
+        "rpe_rot_deg": 2.9195362194601833
+      },
+      "batch_weighted_average": {
+        "ate": 0.5560803898321144,
+        "rpe_trans": 0.38959473824321195,
+        "rpe_rot_deg": 2.9195362194601833
+      }
+    },
+    "ev_1": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.4430406668127097,
+        "rpe_trans": 0.310862285004736,
+        "rpe_rot_deg": 2.5248358008162732
+      },
+      "batch_weighted_average": {
+        "ate": 0.4430406668127097,
+        "rpe_trans": 0.310862285004736,
+        "rpe_rot_deg": 2.524835800816273
+      }
+    },
+    "ev_2": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.3764275450195218,
+        "rpe_trans": 0.29933957774834385,
+        "rpe_rot_deg": 3.171830597943787
+      },
+      "batch_weighted_average": {
+        "ate": 0.3764275450195218,
+        "rpe_trans": 0.29933957774834385,
+        "rpe_rot_deg": 3.171830597943787
+      }
+    },
+    "ev_5": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.3394400795664767,
+        "rpe_trans": 0.19883067112672945,
+        "rpe_rot_deg": 3.1488011964950067
+      },
+      "batch_weighted_average": {
+        "ate": 0.33944007956647665,
+        "rpe_trans": 0.19883067112672945,
+        "rpe_rot_deg": 3.1488011964950067
+      }
+    },
+    "ev_10": {
+      "scene_count": 4,
+      "macro_average": {
+        "ate": 0.33287918737864697,
+        "rpe_trans": 0.31583590572699904,
+        "rpe_rot_deg": 3.4562113006310216
+      },
+      "batch_weighted_average": {
+        "ate": 0.332879187378647,
+        "rpe_trans": 0.31583590572699904,
+        "rpe_rot_deg": 3.4562113006310216
+      }
+    }
+  },
+  "all_4_scenes_x_5_exposures": {
+    "macro_average": {
+      "ate": 0.40957357372189396,
+      "rpe_trans": 0.30289263557000407,
+      "rpe_rot_deg": 3.0442430230692543
+    },
+    "batch_weighted_average": {
+      "ate": 0.4095735737218939,
+      "rpe_trans": 0.30289263557000407,
+      "rpe_rot_deg": 3.0442430230692543
+    }
+  }
+}
