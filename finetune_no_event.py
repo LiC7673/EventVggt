@@ -402,6 +402,37 @@ def align_c2w_by_first_frame(pred_c2w: torch.Tensor, gt_c2w: torch.Tensor) -> Tu
     return aligned_c2w, alignment
 
 
+def relative_pose_supervision_loss(
+    pred_c2w: torch.Tensor,
+    gt_c2w: torch.Tensor,
+    rotation_eps: float = 1e-6,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Supervise adjacent relative SE(3) poses without depth-scale leakage."""
+    pred_c2w = ensure_homogeneous_pose(pred_c2w.float())
+    gt_c2w = ensure_homogeneous_pose(gt_c2w.float())
+    if pred_c2w.shape[1] <= 1:
+        zero = pred_c2w.sum() * 0.0
+        return zero, zero, zero
+
+    pred_relative = torch.linalg.inv(pred_c2w[:, :-1]) @ pred_c2w[:, 1:]
+    gt_relative = torch.linalg.inv(gt_c2w[:, :-1]) @ gt_c2w[:, 1:]
+    translation_loss = F.smooth_l1_loss(
+        pred_relative[..., :3, 3],
+        gt_relative[..., :3, 3],
+    )
+
+    rotation_error = (
+        gt_relative[..., :3, :3].transpose(-1, -2)
+        @ pred_relative[..., :3, :3]
+    )
+    trace = torch.diagonal(rotation_error, dim1=-2, dim2=-1).sum(dim=-1)
+    cosine = ((trace - 1.0) * 0.5).clamp(
+        -1.0 + rotation_eps, 1.0 - rotation_eps
+    )
+    rotation_loss = torch.acos(cosine).mean()
+    return translation_loss + rotation_loss, translation_loss, rotation_loss
+
+
 def transform_world_points(points: torch.Tensor, transform: torch.Tensor) -> torch.Tensor:
     rot = transform[:, :3, :3]
     trans = transform[:, :3, 3]
@@ -656,13 +687,12 @@ class RGBSupervisedLoss(nn.Module):
         
         # Pose loss 只计算第一帧以外的帧 (skip first frame for pose supervision)
 
-        if self.align_depth_scale_enabled:
-            pose_gt[..., :3] = pose_gt[..., :3] * depth_scales.unsqueeze(-1)
-
-        if pose_pred_aligned.shape[1] > 1:
-            pose_loss = F.smooth_l1_loss(pose_pred_aligned[:, 1:, :], pose_gt[:, 1:, :])
-        else:
-            pose_loss = pose_pred.new_tensor(0.0, requires_grad=True)
+        # Do not apply per-frame depth scales to camera translations.  That
+        # deforms the trajectory whenever adjacent frames receive different
+        # scales.  Adjacent relative transforms also remove the global gauge.
+        pose_loss, pose_translation_loss, pose_rotation_loss = (
+            relative_pose_supervision_loss(pred_c2w, pose_matrix_gt)
+        )
         
         # depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
         depth_loss = masked_l1(depth_pred, depth_gt_aligned, valid_mask)
@@ -706,6 +736,8 @@ class RGBSupervisedLoss(nn.Module):
 
         details = {
             "pose_loss": float(pose_loss.detach()),
+            "pose_translation_loss": float(pose_translation_loss.detach()),
+            "pose_rotation_loss_rad": float(pose_rotation_loss.detach()),
             "depth_loss": float(depth_loss.detach()),
             "points_loss": float(points_loss.detach()),
             "normal_loss": float(normal_loss.detach()),

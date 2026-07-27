@@ -8,7 +8,7 @@ cd "${ROOT}"
 
 DATA_ROOT="${DATA_ROOT:-/data1/lzh/dataset/reflective_raw}"
 PRETRAINED="${PRETRAINED:-ckpt/model.pt}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-exp_f/rgb_finetune_ev012510_4scenes_3epochs_pose}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-exp_f/rgb_finetune_ev012510_4scenes_3epochs_relative_pose_fixed}"
 NUM_VIEWS="${NUM_VIEWS:-4}"
 TEST_FRAME_COUNT="${TEST_FRAME_COUNT:-120}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
@@ -32,7 +32,7 @@ run_one() {
   local exposure="$1"
   local gpu="$2"
   local ldr="ev_${exposure}"
-  local name="rgb_finetune_${ldr}_4scenes_3epochs_pose"
+  local name="rgb_finetune_${ldr}_4scenes_3epochs_relative_pose_fixed"
   local experiment="${OUTPUT_ROOT}/${name}"
 
   echo "[GPU ${gpu}] ${ldr}: four-scene RGB-only training for 3 epochs"
