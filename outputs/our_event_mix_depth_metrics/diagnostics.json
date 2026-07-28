@@ -1,0 +1,306 @@
+[
+  {
+    "file": "0.csv",
+    "alpha_full": 0.0,
+    "exposure": "ev_0",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.csv",
+    "alpha_full": 0.0,
+    "exposure": "ev_1",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.csv",
+    "alpha_full": 0.0,
+    "exposure": "ev_2",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.csv",
+    "alpha_full": 0.0,
+    "exposure": "ev_5",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.csv",
+    "alpha_full": 0.0,
+    "exposure": "ev_10",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.25.csv",
+    "alpha_full": 0.25,
+    "exposure": "ev_0",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.25.csv",
+    "alpha_full": 0.25,
+    "exposure": "ev_1",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.25.csv",
+    "alpha_full": 0.25,
+    "exposure": "ev_2",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.25.csv",
+    "alpha_full": 0.25,
+    "exposure": "ev_5",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.25.csv",
+    "alpha_full": 0.25,
+    "exposure": "ev_10",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.5.csv",
+    "alpha_full": 0.5,
+    "exposure": "ev_0",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.5.csv",
+    "alpha_full": 0.5,
+    "exposure": "ev_1",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.5.csv",
+    "alpha_full": 0.5,
+    "exposure": "ev_2",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.5.csv",
+    "alpha_full": 0.5,
+    "exposure": "ev_5",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.5.csv",
+    "alpha_full": 0.5,
+    "exposure": "ev_10",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.75.csv",
+    "alpha_full": 0.75,
+    "exposure": "ev_0",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.75.csv",
+    "alpha_full": 0.75,
+    "exposure": "ev_1",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.75.csv",
+    "alpha_full": 0.75,
+    "exposure": "ev_2",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.75.csv",
+    "alpha_full": 0.75,
+    "exposure": "ev_5",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "0.75.csv",
+    "alpha_full": 0.75,
+    "exposure": "ev_10",
+    "rows": 4,
+    "scenes": [
+      "Centaur_Anodized_Red",
+      "Child_with_goose_Industrial_Plastic_Grey",
+      "Colchester Sphinx_Old_Copper",
+      "Cupid as Shepherd_100MB_Old_Copper"
+    ],
+    "complete_four_scene_result": true
+  },
+  {
+    "file": "1.0.csv",
+    "alpha_full": 1.0,
+    "exposure": "ev_0",
+    "rows": 1,
+    "scenes": [
+      "Centaur_Anodized_Red"
+    ],
+    "complete_four_scene_result": false
+  },
+  {
+    "file": "1.0.csv",
+    "alpha_full": 1.0,
+    "exposure": "ev_1",
+    "rows": 1,
+    "scenes": [
+      "Centaur_Anodized_Red"
+    ],
+    "complete_four_scene_result": false
+  },
+  {
+    "file": "1.0.csv",
+    "alpha_full": 1.0,
+    "exposure": "ev_2",
+    "rows": 0,
+    "scenes": [],
+    "complete_four_scene_result": false
+  },
+  {
+    "file": "1.0.csv",
+    "alpha_full": 1.0,
+    "exposure": "ev_5",
+    "rows": 0,
+    "scenes": [],
+    "complete_four_scene_result": false
+  },
+  {
+    "file": "1.0.csv",
+    "alpha_full": 1.0,
+    "exposure": "ev_10",
+    "rows": 0,
+    "scenes": [],
+    "complete_four_scene_result": false
+  }
+]

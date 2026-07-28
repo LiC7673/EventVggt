@@ -1,0 +1,157 @@
+{
+  "data": [
+    {
+      "alpha_full": 0.0,
+      "exposure": "ev_0",
+      "abs_rel": 0.041859550079441324,
+      "rmse_log": 0.05627262149563269
+    },
+    {
+      "alpha_full": 0.0,
+      "exposure": "ev_1",
+      "abs_rel": 0.04188543806480513,
+      "rmse_log": 0.056399905928040686
+    },
+    {
+      "alpha_full": 0.0,
+      "exposure": "ev_2",
+      "abs_rel": 0.0424964573754127,
+      "rmse_log": 0.05715866488037231
+    },
+    {
+      "alpha_full": 0.0,
+      "exposure": "ev_5",
+      "abs_rel": 0.05513674647598226,
+      "rmse_log": 0.07261405950099725
+    },
+    {
+      "alpha_full": 0.0,
+      "exposure": "ev_10",
+      "abs_rel": 0.05971714292311421,
+      "rmse_log": 0.07652460209323395
+    },
+    {
+      "alpha_full": 0.25,
+      "exposure": "ev_0",
+      "abs_rel": 0.040987774051098685,
+      "rmse_log": 0.056793923265200885
+    },
+    {
+      "alpha_full": 0.25,
+      "exposure": "ev_1",
+      "abs_rel": 0.04100255749494647,
+      "rmse_log": 0.0568873767483647
+    },
+    {
+      "alpha_full": 0.25,
+      "exposure": "ev_2",
+      "abs_rel": 0.04160912847592742,
+      "rmse_log": 0.05759643223879772
+    },
+    {
+      "alpha_full": 0.25,
+      "exposure": "ev_5",
+      "abs_rel": 0.054845224058095686,
+      "rmse_log": 0.07307643088617856
+    },
+    {
+      "alpha_full": 0.25,
+      "exposure": "ev_10",
+      "abs_rel": 0.059366118711168134,
+      "rmse_log": 0.07674404793269321
+    },
+    {
+      "alpha_full": 0.5,
+      "exposure": "ev_0",
+      "abs_rel": 0.040778927966392244,
+      "rmse_log": 0.057887095001775205
+    },
+    {
+      "alpha_full": 0.5,
+      "exposure": "ev_1",
+      "abs_rel": 0.04078899294551352,
+      "rmse_log": 0.057947053331859594
+    },
+    {
+      "alpha_full": 0.5,
+      "exposure": "ev_2",
+      "abs_rel": 0.041360467627909014,
+      "rmse_log": 0.05860070689022123
+    },
+    {
+      "alpha_full": 0.5,
+      "exposure": "ev_5",
+      "abs_rel": 0.05501496979823301,
+      "rmse_log": 0.07398186923265172
+    },
+    {
+      "alpha_full": 0.5,
+      "exposure": "ev_10",
+      "abs_rel": 0.05941991648151343,
+      "rmse_log": 0.07739033187175873
+    },
+    {
+      "alpha_full": 0.75,
+      "exposure": "ev_0",
+      "abs_rel": 0.04130847885044426,
+      "rmse_log": 0.05951103307536172
+    },
+    {
+      "alpha_full": 0.75,
+      "exposure": "ev_1",
+      "abs_rel": 0.04130723158840602,
+      "rmse_log": 0.05953899347669063
+    },
+    {
+      "alpha_full": 0.75,
+      "exposure": "ev_2",
+      "abs_rel": 0.041835860976304276,
+      "rmse_log": 0.06013430951400945
+    },
+    {
+      "alpha_full": 0.75,
+      "exposure": "ev_5",
+      "abs_rel": 0.05566808661537793,
+      "rmse_log": 0.07530897106295986
+    },
+    {
+      "alpha_full": 0.75,
+      "exposure": "ev_10",
+      "abs_rel": 0.059887462553156856,
+      "rmse_log": 0.07844754551736587
+    },
+    {
+      "alpha_full": 1.0,
+      "exposure": "ev_0",
+      "abs_rel": 0.043744704156557894,
+      "rmse_log": 0.0621358786651825
+    },
+    {
+      "alpha_full": 1.0,
+      "exposure": "ev_1",
+      "abs_rel": 0.04383000473973698,
+      "rmse_log": 0.062285657047776
+    },
+    {
+      "alpha_full": 1.0,
+      "exposure": "ev_2",
+      "abs_rel": 0.044183319075544236,
+      "rmse_log": 0.06272203689319489
+    },
+    {
+      "alpha_full": 1.0,
+      "exposure": "ev_5",
+      "abs_rel": 0.055222704923343524,
+      "rmse_log": 0.07427686572977302
+    },
+    {
+      "alpha_full": 1.0,
+      "exposure": "ev_10",
+      "abs_rel": 0.05910285725357381,
+      "rmse_log": 0.07783426892639728
+    }
+  ],
+  "notes": [
+    "alpha=1.0 used 4_scene.csv because 1.0.csv lacks a complete four-scene/all-exposure summary."
+  ]
+}
