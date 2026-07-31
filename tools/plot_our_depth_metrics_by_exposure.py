@@ -91,7 +91,7 @@ def draw(
     output: Path,
 ) -> None:
     # Compact, paper-friendly figure; all text is fixed at 11 pt.
-    fig, ax = plt.subplots(figsize=(6.6, 4.8), dpi=220)
+    fig, ax = plt.subplots(figsize=(7, 3), dpi=300)
     x = list(range(len(EXPOSURES)))
     all_values: list[float] = []
 
@@ -160,7 +160,7 @@ def draw(
     # Put each axis name beside its arrow head.
     ax.text(
         1.1,
-        -0.1,
+        0.15,
         "Exposure level",
         transform=ax.transAxes,
         ha="right",
