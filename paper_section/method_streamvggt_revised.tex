@@ -356,11 +356,17 @@ of overlapping patches is below a threshold. We then define
     {\sum_{P\in\Omega_{ij}}q_{ij,P}+\epsilon},
 \end{equation}
 where
-$q_{ij,P}=\sqrt{C_{i,P}^{\mathrm{ref}}
-\widetilde C_{j\rightarrow i,P}^{\mathrm{ref}}}$.
-The confidence, reprojection depth, and pose are detached in this loss, so the
-constraint updates the event derivative branch rather than exploiting a
-confidence, depth, or pose shortcut.
+$q_{ij,P}=\sqrt{G_{i,P}^{N}
+\widetilde G_{j\rightarrow i,P}^{N}}$, where $G_i^{N}$ is the independently
+predicted normal-refinement gate (implemented as \texttt{normal\_fusion\_gate})
+and $\widetilde G_{j\rightarrow i}^{N}$ is its reprojection from view $j$.
+Thus, the implementation uses the geometric mean of the two refinement gates,
+not their arithmetic mean and not the source-view gate alone.  The trusted
+overlap is applied separately through $P\in\Omega_{ij}$.  Importantly,
+$G_i^{N}$ is not the front-end event contribution map used for RGB--event token
+fusion.  Both refinement gates, as well as reprojection depth and pose, are
+detached in this loss, so the constraint updates the event derivative branch
+rather than exploiting a confidence, depth, or pose shortcut.
 
 \paragraph{Stage-Conditioned Optimization.}
 The losses are not optimized as an unstructured parallel sum. They follow the
